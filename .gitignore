@@ -29,7 +29,6 @@ node_modules
 **/__pycache__
 **/dist
 **/dist_*
-**/test*
 .Rproj.user
 .Rprofile
 **/oisst-avhrr-v02r01.202205*.nc
