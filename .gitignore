@@ -38,3 +38,4 @@ node_modules
 **/predict_anom_1982_*_nc.RData
 **/.env
 **/*.zarr
+**/*.nc
