@@ -54,7 +54,7 @@ def get_tide_time(start_date, end_date):
 
 
 # calculate complex phase in radians for Euler's
-def get_tide(amp, ph, c, tide_time, format="netcdf"):
+def get_tide_series(amp, ph, c, tide_time, format="netcdf"):
     cph = -1j * ph * np.pi / 180.0
     # calculate constituent oscillation
     hc = (amp * np.exp(cph))[np.newaxis, :]
@@ -76,7 +76,7 @@ def get_tide(amp, ph, c, tide_time, format="netcdf"):
 
 
 # Note dz is the data from Zarr
-def get_current_zarr(dz, tide_time, format='netcdf'):
+def get_tide_map(dz, tide_time, format='netcdf', type=['u', 'v'], drop_dim=False):
     DELTAT = np.zeros_like(tide_time)
     c = dz.coords['constituents'].values
     nx = dz.coords['lon'].size
@@ -84,7 +84,7 @@ def get_current_zarr(dz, tide_time, format='netcdf'):
     timelen = len(tide_time)
     tide = {}
 
-    for TYPE in ['u', 'v']:
+    for TYPE in type:
         amp = dz[TYPE+'_amp'].values
         ph = dz[TYPE+'_ph'].values
         shpx = amp.shape
@@ -99,17 +99,28 @@ def get_current_zarr(dz, tide_time, format='netcdf'):
         # Convert hc to a masked array
         hc = ma.array(hc, mask=mask)  # mask=False
 
-        tide[TYPE] = np.ma.zeros((ny, nx, timelen))
-
-        for hour in range(timelen):
-            # predict tidal elevations at time and infer minor corrections
-            TIDE = map(tide_time[hour], hc, c,
-                       deltat=DELTAT[hour], corrections=format)
+        if drop_dim:
+            TIDE = map(tide_time[0], hc, c,
+                       deltat=DELTAT[0], corrections=format)
             MINOR = infer_minor(
-                tide_time[hour], hc, c, deltat=DELTAT[hour], corrections=format)
-            # add major and minor components and reform grid
-            # Reshape TIDE and MINOR to have the shape (ny, nx)
-            tide[TYPE][:, :, hour] = np.reshape((TIDE+MINOR), (ny, nx))
+                tide_time[0], hc, c, deltat=DELTAT[0], corrections=format)
+            tx = TIDE+MINOR
+            tx.data[tx.mask] = np.nan
+            tide[TYPE] = tx.data
+        else:
+            tide[TYPE] = np.ma.zeros((ny, nx, timelen))
+            for hour in range(timelen):
+                # print('Get tidal current in time: ', hour)
+                # predict tidal elevations at time and infer minor corrections
+                TIDE = map(tide_time[hour], hc, c,
+                           deltat=DELTAT[hour], corrections=format)
+                MINOR = infer_minor(
+                    tide_time[hour], hc, c, deltat=DELTAT[hour], corrections=format)
+                # add major and minor components and reform grid
+                # Reshape TIDE and MINOR to have the shape (ny, nx)
+                # print("Before reshape, TIDE'shape")
+                # print(TIDE.shape, MINOR.shape) #It's 1D ny*nx length!!
+                tide[TYPE][:, :, hour] = np.reshape((TIDE+MINOR), (ny, nx))
 
     return tide
 
@@ -119,7 +130,7 @@ def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5):
     grid_sz = 1/30
     dsub = dz.sel(lon=slice(x0-grid_sz, x1+grid_sz),
                   lat=slice(y0-grid_sz, y1+grid_sz))
-    gtide = get_current_zarr(dsub, tide_time[0:1])
+    gtide = get_tide_map(dsub, tide_time[0:1])
 
     t = 0
     nx = dsub.coords['lon'].size
@@ -128,8 +139,8 @@ def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5):
         dsub.coords['lon'].values, dsub.coords['lat'].values)
 
     # Reshape u and v to 2D
-    u0 = gtide['u'][:, :, t]
-    v0 = gtide['v'][:, :, t]
+    u0 = gtide['u'][:, :, t]*0.01
+    v0 = gtide['v'][:, :, t]*0.01
 
     # Create a grid of indices for subsetting
     X, Y = np.meshgrid(np.arange(nx), np.arange(ny))
@@ -137,17 +148,17 @@ def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5):
     # Calculate magnitude of the current
     magnitude = np.sqrt(u0**2 + v0**2)
     # Normalize the arrows to create a uniform arrow size across the plot
-    u = u0/magnitude
-    v = v0/magnitude
+    # u = u0/magnitude
+    # v = v0/magnitude
 
     n = mask_grid
     mask = (X % n == 0) & (Y % n == 0)
 
     x = glon[mask]
     y = glat[mask]
-    u = u[mask]
-    v = v[mask]
-    mag = magnitude[mask]*0.01
+    u = u0[mask]
+    v = v0[mask]
+    mag = magnitude[mask]
 
     return x, y, u, v, mag
 

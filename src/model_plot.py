@@ -66,7 +66,7 @@ def plot_current(x, y, u, v, mag, label_time):
     fig, ax = plt.subplots(figsize=(10, 8))
 
     # Plotting, note the "angles" and "scale" parameters
-    plt.colorbar(ax.quiver(x, y, u, v, mag,
+    plt.colorbar(ax.quiver(x, y, u, v,  mag,
                            angles='xy', scale_units='xy',
                            scale=3, pivot='middle', width=0.003, cmap='jet'),
                  ax=ax, label='Current speed')
