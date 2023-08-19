@@ -168,3 +168,80 @@ def read_netcdf_transport(
     f.close() if kwargs['compressed'] else None
     # return the transport components and constituent
     return (tr, con.strip())
+
+
+# PURPOSE: read grid file
+def read_netcdf_grid(
+    input_file: str | pathlib.Path,
+    variable: str,
+    **kwargs
+):
+    """
+    Read grid file to extract model coordinates and bathymetry
+
+    Parameters
+    ----------
+    input_file: str or pathlib.Path
+        input grid file
+    variable: str
+        Tidal variable to read
+
+            - ``'z'``: heights
+            - ``'u'``: horizontal transport velocities
+            - ``'U'``: horizontal depth-averaged transport
+            - ``'v'``: vertical transport velocities
+            - ``'V'``: vertical depth-averaged transport
+
+    compressed: bool, default False
+        Input file is gzip compressed
+
+    Returns
+    -------
+    lon: np.ndarray
+        longitudinal coordinates of input grid
+    lat: np.ndarray
+        latitudinal coordinates of input grid
+    bathymetry: np.ndarray
+        model bathymetry
+    """
+    # set default keyword arguments
+    kwargs.setdefault('compressed', False)
+    # read the netcdf format tide grid file
+    input_file = pathlib.Path(input_file).expanduser()
+    # reading a combined global solution with localized solutions
+    if kwargs['compressed']:
+        # read gzipped netCDF4 file
+        f = gzip.open(input_file, 'rb')
+        fileID = netCDF4.Dataset(uuid.uuid4().hex, 'r', memory=f.read())
+    else:
+        fileID = netCDF4.Dataset(input_file, 'r')
+    # variable dimensions
+    nx = fileID.dimensions['nx'].size
+    ny = fileID.dimensions['ny'].size
+    # allocate numpy masked array for bathymetry
+    bathymetry = np.ma.zeros((ny, nx))
+    # read bathymetry and coordinates for variable type
+    if (variable == 'z'):
+        # get bathymetry at nodes
+        bathymetry.data[:, :] = fileID.variables['hz'][:, :].T
+        # read latitude and longitude at z-nodes
+        lon = fileID.variables['lon_z'][:].copy()
+        lat = fileID.variables['lat_z'][:].copy()
+    elif variable in ('U', 'u'):
+        # get bathymetry at u-nodes
+        bathymetry.data[:, :] = fileID.variables['hu'][:, :].T
+        # read latitude and longitude at u-nodes
+        lon = fileID.variables['lon_u'][:].copy()
+        lat = fileID.variables['lat_u'][:].copy()
+    elif variable in ('V', 'v'):
+        # get bathymetry at v-nodes
+        bathymetry.data[:, :] = fileID.variables['hv'][:, :].T
+        # read latitude and longitude at v-nodes
+        lon = fileID.variables['lon_v'][:].copy()
+        lat = fileID.variables['lat_v'][:].copy()
+    # set bathymetry mask
+    bathymetry.mask = (bathymetry.data == 0.0)
+    # close the grid file
+    fileID.close()
+    f.close() if kwargs['compressed'] else None
+    return (lon, lat, bathymetry)

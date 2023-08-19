@@ -184,10 +184,10 @@ def spline_2d(
         data = np.ma.array(data)
         data.mask = np.zeros_like(data, dtype=bool)
     # interpolate gridded data values to data
-    npts = len(ilon)
+    # npts = len(ilon)
     # allocate to output interpolated data array
-    out = np.ma.zeros((npts), dtype=dtype, fill_value=fill_value)
-    out.mask = np.ones((npts), dtype=bool)
+    # out = np.ma.zeros((npts), dtype=dtype, fill_value=fill_value)
+    # out.mask = np.ones((npts), dtype=bool)
 
     # interpolate gridded data values to data
     nlat, nlon = ilon.shape
