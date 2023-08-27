@@ -1,7 +1,6 @@
 import numpy as np
 import numpy.ma as ma
-from scipy.ndimage import label
-from scipy.interpolate import RectBivariateSpline, griddata
+from scipy.interpolate import RectBivariateSpline
 from pyTMD.io import model, GOT, ATLAS
 from pyTMD.predict import time_series, infer_minor, map
 from pyTMD.time import convert_calendar_dates, datetime_to_list
@@ -219,27 +218,3 @@ def spline_2d(
 
     # return interpolated values
     return out
-
-
-# # FUNCTION to fill NA in gridded data
-def fill_gridded_nans(data):
-    # Create coordinate arrays
-    x = np.arange(data.shape[1])
-    y = np.arange(data.shape[0])
-    X, Y = np.meshgrid(x, y)
-
-    # Indices of non-NaN values
-    valid_idx = ~np.isnan(data)
-    coords_non_nan = np.column_stack((X[valid_idx], Y[valid_idx]))
-
-    # Interpolated NaN values
-    data_no_nans = griddata(
-        coords_non_nan, data[valid_idx], (X, Y), method='nearest')
-
-    return data_no_nans
-
-
-# FUNCTION to label blocks of NaNs
-def label_blocks(array):
-    labeled_array, num_features = label(np.isnan(array))
-    return labeled_array

@@ -1,13 +1,13 @@
 import numpy as np
 import xarray as xr
-import pandas as pd
-import pathlib
+# import pandas as pd
 import os
 from src.model_utils import *
 from src.model_plot import *
 from src.pytmd_utils import *
 # from pyTMD.io import read_netcdf_elevation, read_netcdf_transport, read_netcdf_grid #not work for read_netcdf_grid
-from pyTMD.interpolate import extrapolate
+# from pyTMD.interpolate import extrapolate
+from pyTMD.io import ATLAS
 import concurrent.futures
 
 # Global variables
@@ -17,162 +17,46 @@ tpxo_model_format = 'netcdf'
 tpxo_compressed = False
 tpxo_model_name = 'TPXO9-atlas-v5'
 # global_grid = True
-xChunkSz = 45
-yChunkSz = 45
+xChunkSz = 15
+yChunkSz = 15
 grid_sz = 1/30
 chunk_file = 'tpxo9_chunks.zarr'
 maxWorkers = 4
 
 
-def extract_ATLAS(lon, lat, start_lon, end_lon, start_lat, end_lat, bathymetry,
-                  tide_model, type=None, global_grid=False,
-                  en_interpolate=False, interpolate_to=None):
+def extract_ATLAS(lon, lat, start_lon, end_lon, start_lat, end_lat,
+                  tide_model, type, constituents, chunk_num):
+    print('model type-chunk is: ', type, '-', chunk_num)
     if type in ['u', 'v']:
         model_files = tide_model.model_file[type]
     else:
         model_files = tide_model.model_file
 
-    compressed = tide_model.compressed
-    scale = tide_model.scale
-    type = tide_model.type if type is None else type
-    print('model type is: ', type)
+    lon_chunk = lon[start_lon:end_lon]
+    lat_chunk = lat[start_lat:end_lat]
+    lon_grid, lat_grid = np.meshgrid(lon_chunk, lat_chunk)
 
-    # number of constituents
-    nc = len(model_files)
-    # list of constituents
-    constituents = []
-    # hc = np.ma.zeros((ny, nx, nc), dtype=np.complex128)
-    # amplitude and phase
+    # if type == 'z':
+    # if constituents is None:
+    #    constituents = ATLAS.read_constants(
+    #        tide_model.grid_file, model_files, type=type, compressed=tide_model.compressed)
+
+    # amp, ph, D = ATLAS.interpolate_constants(
+    #    lon_grid.ravel(), lat_grid.ravel(),
+    #    constituents, type=type, scale=tide_model.scale,
+    #    method='spline', extrapolate=True)
+    # else:
+    amp, ph, D, c = ATLAS.extract_constants(
+        lon_grid.ravel(), lat_grid.ravel(),
+        tide_model.grid_file,
+        model_files, type=type, method='spline',
+        scale=tide_model.scale, compressed=tide_model.compressed)
+
     chunkx = end_lon - start_lon  # slicing is not include end_lon
     chunky = end_lat - start_lat
-    ampl = np.ma.zeros((chunky, chunkx, nc))
-    ampl.mask = np.zeros((chunky, chunkx, nc), dtype=bool)
-    ph = np.ma.zeros((chunky, chunkx, nc))
-    ph.mask = np.zeros((chunky, chunkx, nc), dtype=bool)
-    Di = np.ma.zeros((chunky, chunkx))
-    Di.mask = np.zeros((chunky, chunkx), dtype=bool)
-
-    if en_interpolate:
-        if interpolate_to is None:
-            lon_chunk = lon[start_lon:end_lon]
-            lat_chunk = lat[start_lat:end_lat]
-            Di = np.ma.array(
-                      bathymetry.data[start_lat:end_lat, start_lon:end_lon],
-                      mask=bathymetry.mask[start_lat:end_lat, start_lon:end_lon])
-        else:
-            glon, glat, gbathy = interpolate_to
-            if global_grid:
-                lon_chunk = glon[(start_lon-1):(end_lon-1)]
-                Di = np.ma.array(
-                         gbathy.data[start_lat:end_lat,
-                                     (start_lon-1):(end_lon-1)],
-                         mask=gbathy.mask[start_lat:end_lat,
-                                     (start_lon-1):(end_lon-1)])
-            else:
-                lon_chunk = glon[start_lon:end_lon]
-                Di = np.ma.array(
-                         gbathy.data[start_lat:end_lat, start_lon:end_lon],
-                         mask=gbathy.mask[start_lat:end_lat, start_lon:end_lon])
-            lat_chunk = glat[start_lat:end_lat]
-
-        lon_grid, lat_grid = np.meshgrid(lon_chunk, lat_chunk)
-        print("Interpolate to write: ",
-              lon_chunk[0], lon_chunk[-1], lat_chunk[0], lat_chunk[-1])
-
-    # only when type is u or v, i.e en_interpolate = True, to the following to do unit_conv = D/100
-    # https://github.com/tsutterley/pyTMD/blob/ba49b1f9d466e02104317adef7373c0d8e80e476/pyTMD/io/ATLAS.py#L257
-    # I think Di is no need, The Du, Dv, Dz are slightly different because C-grid method that
-    # use different u-node, v-node, z-node in one C-grid
-    # so if we interpolate u-node's hc to z-node's position, We just use Dz, no need to do interpolation Du
-    # Di = spline_2d(lon, lat, bathymetry, lon_grid, lat_grid, reducer=np.ceil, kx=1, ky=1)
-
-    for i, model_file in enumerate(model_files):
-        # check that model file is accessible
-        model_file = pathlib.Path(model_file).expanduser()
-        if not model_file.exists():
-            raise FileNotFoundError(str(model_file))
-        if (type == 'z'):
-            # read constituent from elevation file (hcx is in 5401 * 10800)
-            hcx, cons = read_netcdf_elevation(
-                model_file, compressed=compressed)
-        elif type in ('U', 'u', 'V', 'v'):
-            # read constituent from transport file
-            hcx, cons = read_netcdf_transport(
-                model_file, variable=type, compressed=compressed)
-
-        # append constituent to list
-        constituents.append(cons)
-        # replace original values with extend matrices
-        if global_grid:
-            hcx = extend_matrix(hcx)
-
-        # print('----after extend-----')
-        # print(hcx.mask.shape)
-        hcx.mask[:, :] |= bathymetry.mask[:, :]
-
-        if en_interpolate:
-            lon_grid, lat_grid = np.meshgrid(lon_chunk, lat_chunk)
-            # lon_grid, lat_grid is in chunk, not in full range, default is 360*45 in degree, 10800*1351 in size
-            hci = spline_2d(lon, lat, hcx, lon_grid, lat_grid,
-                            reducer=np.ceil, kx=1, ky=1)
-
-            # if interpolate_to is not None:
-            #    if global_grid:
-            #        hci.mask[:] = np.copy(gbathy.mask[start_lat:end_lat, (start_lon-1):(end_lon-1)])
-            #    else:
-            #        hci.mask[:] = np.copy(gbathy.mask[start_lat:end_lat, start_lon:end_lon])
-            # else:
-            #    hci.mask[:] |= np.copy(bathymetry.mask[start_lat:end_lat, start_lon:end_lon])
-
-            non_masked_zero = np.logical_and(Di.mask == False, Di.data == 0)
-            print('---- non_masked_indices:', np.sum(non_masked_zero))
-            Di.mask |= non_masked_zero
-            hci.mask[:] |= np.copy(Di.mask[:])
-            hci.data[hci.mask] = hci.fill_value
-            print("extrapolate: ", hci.mask.shape)
-            # so hci should be in lat_chunk * lon_chunk degree size
-            invy, invx = np.nonzero(hci.mask)
-            # replace invalid values with nan
-            hcx.data[hcx.mask] = np.nan
-            extra_coords = np.column_stack((lon_chunk[invx], lat_chunk[invy]))
-            # extrapolate points within cutoff of valid model points
-            hci[invy, invx] = extrapolate(
-                lon, lat, hcx, extra_coords[:, 0], extra_coords[:, 1], dtype=hcx.dtype)
-        else:
-            hci = hcx[start_lat:end_lat, start_lon:end_lon]
-            hci.mask[:] |= np.copy(Di.mask[:])
-            hci.data[hci.mask] = hci.fill_value
-
-        if en_interpolate:
-            ampx = np.ma.zeros((chunky, chunkx))
-            non_masked_zero = np.logical_or(Di.mask == True, hci.mask == True)
-            hci.mask |= non_masked_zero
-            unit_conv = (Di.data[hci.mask == False]/100.0)
-            # print("----min, max of unit_conv: ", np.min(unit_conv), np.max(unit_conv))
-            zeroidx = np.where(unit_conv == 0)
-            if len(zeroidx[0]) > 0:  # np.where() function returns a tuple of arrays
-                print("----Warning: may divide by zero----")
-                print((Di.mask[hci.mask == False])[zeroidx])
-                print((hci.mask[hci.mask == False])[zeroidx])
-
-            ampx.data[hci.mask == False] = np.abs(
-                hci.data[hci.mask == False])/unit_conv
-            ampx.data[hci.mask] = 0  # np.abs(hci.data[hci.mask])
-            # print("----min, max of ampx: ", np.min(ampx.data), np.max(ampx.data))
-            ampl.data[:, :, i] = ampx.data
-        else:
-            ampl.data[:, :, i] = np.abs(hci.data)  # /unit_conv, now is 1
-
-        ampl.mask[:, :, i] = np.copy(hci.mask)
-        ph.data[:, :, i] = np.arctan2(-np.imag(hci.data), np.real(hci.data))
-        ph.mask[:, :, i] = np.copy(hci.mask)
-
-    # convert amplitude from input units to meters
-    amplitude = ampl*scale
-    # convert phase to degrees
-    phase = ph*180.0/np.pi
-    phase[phase < 0] += 360.0
-    return amplitude, phase, constituents
+    amplitude = np.reshape(amp, (chunky, chunkx, len(c)))
+    phase = np.reshape(ph, (chunky, chunkx, len(c)))
+    return amplitude, phase, c
 
 
 def save_to_zarr(amplitude, phase, constituents, amp_var, ph_var, lon, lat, output_file, group_name, mode='write_chunk'):
@@ -199,10 +83,11 @@ def save_to_zarr(amplitude, phase, constituents, amp_var, ph_var, lon, lat, outp
 
 # Function to process each chunk
 def process_chunk(lon, lat, start_lon, end_lon, start_lat, end_lat, bathymetry,
-                  tpxo_model, type, global_grid, en_interpolate, interpolate_to, chunk_num, amp_var, ph_var, chunk_file, mode):
+                  tpxo_model, type, global_grid, en_interpolate, interpolate_to, constituents,
+                  chunk_num, amp_var, ph_var, chunk_file, mode):
 
-    amp_chunk, ph_chunk, c = extract_ATLAS(lon, lat, start_lon, end_lon, start_lat, end_lat, bathymetry,
-                                           tpxo_model, type, global_grid, en_interpolate, interpolate_to)
+    amp_chunk, ph_chunk, c = extract_ATLAS(lon, lat, start_lon, end_lon, start_lat, end_lat,  # bathymetry,
+                                           tpxo_model, type, constituents, chunk_num)  # , global_grid, en_interpolate, interpolate_to)
 
     amp_chunk[amp_chunk.mask] = np.nan
     ph_chunk[ph_chunk.mask] = np.nan
@@ -221,6 +106,8 @@ def process_chunk(lon, lat, start_lon, end_lon, start_lat, end_lat, bathymetry,
         lat_chunk = lat[start_lat:end_lat]
 
     group_name = f"chunk_{chunk_num}"
+    # c = ['q1', 'o1', 'p1', 'k1', 'n2', 'm2', 's1',
+    #     's2', 'k2', 'm4', 'ms4', 'mn4', '2n2', 'mf', 'mm']
     save_to_zarr(amp, ph, c, amp_var, ph_var, lon_chunk,
                  lat_chunk, chunk_file, group_name, mode)
     return chunk_num
@@ -229,7 +116,8 @@ def process_chunk(lon, lat, start_lon, end_lon, start_lat, end_lat, bathymetry,
 def tpxo2zarr(lon, lat, bathymetry, amp_var, ph_var, tpxo_model,
               chunk_size_lon=45, chunk_size_lat=45, grid_sz=1/30,
               chunk_file='chunks.zarr', type=None, mode='write_chunk',
-              global_grid=False, en_interpolate=False, interpolate_to=None):
+              global_grid=False, en_interpolate=False, interpolate_to=None,
+              constituents=None):
 
     if (global_grid):
         lon_range = range(0, len(lon), int(chunk_size_lon/grid_sz))
@@ -253,7 +141,8 @@ def tpxo2zarr(lon, lat, bathymetry, amp_var, ph_var, tpxo_model,
             end_lon = lon_range[lon_idx+1]
             start_lat, end_lat = lat_range[lat_idx], lat_range[lat_idx+1]
             chunks.append((lon, lat, start_lon, end_lon, start_lat, end_lat, bathymetry, tpxo_model,
-                          type, global_grid, en_interpolate, interpolate_to, len(chunks), amp_var, ph_var, chunk_file, mode))
+                          type, global_grid, en_interpolate, interpolate_to, constituents,
+                          len(chunks), amp_var, ph_var, chunk_file, mode))
 
     processed_chunks = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=maxWorkers) as executor:
@@ -302,18 +191,34 @@ def main():
         lat_range.append(len(latz))
     print(lat_range)
 
-    TYPE = ['u', 'v'] #'z',
+    # 'z', 'u' #seems have some bugs, that u -> v cannot work
+    # 'z', 'u', #not it's parallel unsure bug, 'u', 'v' cannot run sequently
+    # Note that if you specify 'v' only, modify the elif type == 'u' to else
+    TYPE = ['v']
     for type in TYPE:
         if type == 'z':
             tpxo_model = get_tide_model(
                 tpxo_model_name, tpxo_model_directory, tpxo_model_format, tpxo_compressed)
             global_grid = False
             en_interpolate = False
-        else:
+        else:  # Note that if continuously run u and v, no need change tpxo_model in memory
+            # elif type == 'u':
             tpxo_model = get_current_model(
                 tpxo_model_name, tpxo_model_directory, tpxo_model_format, tpxo_compressed)
-            global_grid = True
-            en_interpolate = True
+            global_grid = False  # True #used in etract_ATLAS_v1,v2
+            en_interpolate = False  # True
+
+        print('model type is: ', type)
+        if type in ['u', 'v']:
+            model_files = tpxo_model.model_file[type]
+            mode = "append_chunk"
+        else:
+            model_files = tpxo_model.model_file
+            mode = 'write_chunk'
+
+        constituents = None
+        # ATLAS.read_constants(
+        #    tpxo_model.grid_file, model_files, type=type, compressed=tpxo_model.compressed)
 
         if global_grid:
             lonc, latc, bathy_c = read_netcdf_grid(
@@ -328,16 +233,18 @@ def main():
 
             chunkx = tpxo2zarr(lonx, latc, bathy_x, type+'_amp', type+'_ph',
                                tpxo_model, xChunkSz, yChunkSz, grid_sz=grid_sz,
-                               chunk_file=chunk_file, type=type, mode="append_chunk",
+                               chunk_file=chunk_file, type=type, mode=mode,
                                global_grid=global_grid,
                                en_interpolate=en_interpolate,
-                               interpolate_to=(lonz, latz, bathy_z))
+                               interpolate_to=(lonz, latz, bathy_z),
+                               constituents=constituents)
         else:
             print('----Original bathy: ', bathy_z.shape, ' for type: ', type)
-            chunkx = tpxo2zarr(lonz, latz, bathy_z, 'h_amp', 'h_ph',  tpxo_model,
+            chunkx = tpxo2zarr(lonz, latz, bathy_z, type+'_amp', type+'_ph',  tpxo_model,
                                xChunkSz, yChunkSz, grid_sz=grid_sz, chunk_file=chunk_file,
-                               type=type, mode='write_chunk', global_grid=False,
-                               en_interpolate=False, interpolate_to=None)
+                               type=type, mode=mode, global_grid=False,
+                               en_interpolate=False, interpolate_to=None,
+                               constituents=constituents)
 
         print('----Done for type: ', type, ' with chunk:', chunkx)
         combine_chunk_zarr(lon_range, lat_range, chunk_file)
