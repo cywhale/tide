@@ -1,13 +1,12 @@
 import numpy as np
 import xarray as xr
-# import pandas as pd
 import os
 from src.model_utils import *
 from src.model_plot import *
 from src.pytmd_utils import *
 # from pyTMD.io import read_netcdf_elevation, read_netcdf_transport, read_netcdf_grid #not work for read_netcdf_grid
 # from pyTMD.interpolate import extrapolate
-from pyTMD.io import ATLAS
+from src.model_extract import extract_ATLAS_v2
 import concurrent.futures
 
 # Global variables
@@ -21,42 +20,12 @@ xChunkSz = 15
 yChunkSz = 15
 grid_sz = 1/30
 chunk_file = 'tpxo9_chunks.zarr'
+# if D < shallowLimit, then dont compute u,v which U/(D/100) can cause very large value.
+ShallowLimit = 0
+extract_method = 'extract_Atlas_v2'  # 'extract_pytmd'
+enExtrapolate = True
+# concurrent processors used
 maxWorkers = 4
-
-
-def extract_ATLAS(lon, lat, start_lon, end_lon, start_lat, end_lat,
-                  tide_model, type, constituents, chunk_num):
-    print('model type-chunk is: ', type, '-', chunk_num)
-    if type in ['u', 'v']:
-        model_files = tide_model.model_file[type]
-    else:
-        model_files = tide_model.model_file
-
-    lon_chunk = lon[start_lon:end_lon]
-    lat_chunk = lat[start_lat:end_lat]
-    lon_grid, lat_grid = np.meshgrid(lon_chunk, lat_chunk)
-
-    # if type == 'z':
-    # if constituents is None:
-    #    constituents = ATLAS.read_constants(
-    #        tide_model.grid_file, model_files, type=type, compressed=tide_model.compressed)
-
-    # amp, ph, D = ATLAS.interpolate_constants(
-    #    lon_grid.ravel(), lat_grid.ravel(),
-    #    constituents, type=type, scale=tide_model.scale,
-    #    method='spline', extrapolate=True)
-    # else:
-    amp, ph, D, c = ATLAS.extract_constants(
-        lon_grid.ravel(), lat_grid.ravel(),
-        tide_model.grid_file,
-        model_files, type=type, method='spline',
-        scale=tide_model.scale, compressed=tide_model.compressed)
-
-    chunkx = end_lon - start_lon  # slicing is not include end_lon
-    chunky = end_lat - start_lat
-    amplitude = np.reshape(amp, (chunky, chunkx, len(c)))
-    phase = np.reshape(ph, (chunky, chunkx, len(c)))
-    return amplitude, phase, c
 
 
 def save_to_zarr(amplitude, phase, constituents, amp_var, ph_var, lon, lat, output_file, group_name, mode='write_chunk'):
@@ -83,11 +52,15 @@ def save_to_zarr(amplitude, phase, constituents, amp_var, ph_var, lon, lat, outp
 
 # Function to process each chunk
 def process_chunk(lon, lat, start_lon, end_lon, start_lat, end_lat, bathymetry,
-                  tpxo_model, type, global_grid, en_interpolate, interpolate_to, constituents,
-                  chunk_num, amp_var, ph_var, chunk_file, mode):
+                  tpxo_model, type, global_grid, en_interpolate, interpolate_to,
+                  constituents, chunk_num, amp_var, ph_var, chunk_file, mode):
 
-    amp_chunk, ph_chunk, c = extract_ATLAS(lon, lat, start_lon, end_lon, start_lat, end_lat,  # bathymetry,
-                                           tpxo_model, type, constituents, chunk_num)  # , global_grid, en_interpolate, interpolate_to)
+    # if extract_method == 'extract_ATLAS_pytmd'
+    # amp_chunk, ph_chunk, c = extract_ATLAS_pytmd(lon, lat, start_lon, end_lon, start_lat, end_lat,
+    #                                             tpxo_model, type, constituents, chunk_num)
+    amp_chunk, ph_chunk, c = extract_ATLAS_v2(lon, lat, start_lon, end_lon, start_lat, end_lat, bathymetry,
+                                              tpxo_model, type, chunk_num, global_grid, en_interpolate, interpolate_to,
+                                              en_extrapolate=enExtrapolate, shallowLimit=ShallowLimit)
 
     amp_chunk[amp_chunk.mask] = np.nan
     ph_chunk[ph_chunk.mask] = np.nan
@@ -194,7 +167,7 @@ def main():
     # 'z', 'u' #seems have some bugs, that u -> v cannot work
     # 'z', 'u', #not it's parallel unsure bug, 'u', 'v' cannot run sequently
     # Note that if you specify 'v' only, modify the elif type == 'u' to else
-    TYPE = ['v']
+    TYPE = ['u']
     for type in TYPE:
         if type == 'z':
             tpxo_model = get_tide_model(
@@ -205,8 +178,9 @@ def main():
             # elif type == 'u':
             tpxo_model = get_current_model(
                 tpxo_model_name, tpxo_model_directory, tpxo_model_format, tpxo_compressed)
-            global_grid = False  # True #used in etract_ATLAS_v1,v2
-            en_interpolate = False  # True
+            # used if not etract_ATLAS_v1,v2
+            global_grid = True if extract_method == 'extract_Atlas_v2' else False
+            en_interpolate = True if extract_method == 'extract_Atlas_v2' else False
 
         print('model type is: ', type)
         if type in ['u', 'v']:

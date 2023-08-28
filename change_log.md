@@ -4,3 +4,4 @@
 
 #### ver 0.0.3 u,v = small U/(D/100) problem: use pyTMD extract constant (not yet)/n2
 
+#### ver 0.0.4 small U/(D/100) problem: use shallowLimit or without (not yet)/n3

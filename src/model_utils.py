@@ -147,16 +147,16 @@ def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5):
     # Calculate magnitude of the current
     magnitude = np.sqrt(u0**2 + v0**2)
     # Normalize the arrows to create a uniform arrow size across the plot
-    # u = u0/magnitude
-    # v = v0/magnitude
+    u = u0/magnitude
+    v = v0/magnitude
 
     n = mask_grid
     mask = (X % n == 0) & (Y % n == 0)
 
     x = glon[mask]
     y = glat[mask]
-    u = u0[mask]
-    v = v0[mask]
+    u = u[mask]
+    v = v[mask]
     mag = magnitude[mask]
 
     return x, y, u, v, mag
