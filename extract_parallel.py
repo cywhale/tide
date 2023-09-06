@@ -167,7 +167,7 @@ def main():
     # 'z', 'u' #seems have some bugs, that u -> v cannot work
     # 'z', 'u', #not it's parallel unsure bug, 'u', 'v' cannot run sequently
     # Note that if you specify 'v' only, modify the elif type == 'u' to else
-    TYPE = ['u']
+    TYPE = ['v']
     for type in TYPE:
         if type == 'z':
             tpxo_model = get_tide_model(

@@ -2,8 +2,10 @@ import numpy as np
 import numpy.ma as ma
 from scipy.interpolate import RectBivariateSpline
 from pyTMD.io import model, GOT, ATLAS
-from pyTMD.predict import time_series, infer_minor, map
+from pyTMD import predict
 from pyTMD.time import convert_calendar_dates, datetime_to_list
+from pyTMD.load_constituent import load_constituent
+import pyTMD.arguments
 from datetime import timedelta
 
 
@@ -66,12 +68,58 @@ def get_tide_series(amp, ph, c, tide_time, format="netcdf"):
     DELTAT = np.zeros_like(tide_time)
 
     # Predict tide
-    tide = time_series(tide_time, hc, c, deltat=DELTAT, corrections=format)
-    minor = infer_minor(tide_time, hc, c, deltat=DELTAT, corrections=format)
+    tide = predict.time_series(
+        tide_time, hc, c, deltat=DELTAT, corrections=format)
+    minor = predict.infer_minor(
+        tide_time, hc, c, deltat=DELTAT, corrections=format)
     tide.data[:] += minor.data[:]
     # convert to centimeters
     tide.data[:] *= 100.0
     return tide
+
+
+# modified from pyTMD.predict.time_series() to get each constituent, not summer up
+def time_series_for_constituents(t, hc, constituents, deltat=0.0):
+    nt = len(t)
+    # load the nodal corrections
+    pu, pf, G = pyTMD.arguments(
+        t + 48622.0, constituents, deltat=deltat, corrections='ATLAS')
+    # allocate for output time series
+    ht = np.ma.zeros((nt, len(constituents)))
+    # for each constituent
+    for k, c in enumerate(constituents):
+        # if corrections in ('OTIS', 'ATLAS', 'TMD3', 'netcdf'):
+        # load parameters for each constituent
+        amp, ph, omega, alpha, species = load_constituent(c)
+        th = omega * t * 86400.0 + ph + pu[:, k]
+        # elif corrections in ('GOT', 'FES'):
+        #   th = G[:, k] * np.pi / 180.0 + pu[:, k]
+        ht[:, k] = pf[:, k] * hc.real[0, k] * \
+            np.cos(th) - pf[:, k] * hc.imag[0, k] * np.sin(th)
+
+    return ht
+
+
+def calculate_ellipse_parameters(u, v):
+    # Assuming u and v are complex amplitude components
+    U = u.real + 1j * v.real
+    V = u.imag + 1j * v.imag
+
+    # Major and minor axes
+    major = np.abs(U)
+    minor = np.abs(V)
+
+    # Inclination
+    inclination = np.angle(U) * 0.5
+    if np.isscalar(inclination):
+        inclination = inclination if inclination >= 0 else inclination + np.pi
+    else:
+        inclination[inclination < 0] += np.pi
+
+    # Phase of maximum velocity
+    phase = np.angle(-V)
+
+    return major, minor, inclination, phase
 
 
 # Note dz is the data from Zarr
@@ -99,9 +147,9 @@ def get_tide_map(dz, tide_time, format='netcdf', type=['u', 'v'], drop_dim=False
         hc = ma.array(hc, mask=mask)  # mask=False
 
         if drop_dim:
-            TIDE = map(tide_time[0], hc, c,
-                       deltat=DELTAT[0], corrections=format)
-            MINOR = infer_minor(
+            TIDE = predict.map(tide_time[0], hc, c,
+                               deltat=DELTAT[0], corrections=format)
+            MINOR = predict.infer_minor(
                 tide_time[0], hc, c, deltat=DELTAT[0], corrections=format)
             tx = TIDE+MINOR
             tx.data[tx.mask] = np.nan
@@ -111,9 +159,9 @@ def get_tide_map(dz, tide_time, format='netcdf', type=['u', 'v'], drop_dim=False
             for hour in range(timelen):
                 # print('Get tidal current in time: ', hour)
                 # predict tidal elevations at time and infer minor corrections
-                TIDE = map(tide_time[hour], hc, c,
-                           deltat=DELTAT[hour], corrections=format)
-                MINOR = infer_minor(
+                TIDE = predict.map(tide_time[hour], hc, c,
+                                   deltat=DELTAT[hour], corrections=format)
+                MINOR = predict.infer_minor(
                     tide_time[hour], hc, c, deltat=DELTAT[hour], corrections=format)
                 # add major and minor components and reform grid
                 # Reshape TIDE and MINOR to have the shape (ny, nx)
@@ -161,9 +209,8 @@ def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5):
 
     return x, y, u, v, mag
 
+
 # Ref/modified from pyTMD.interpolate.spline()
-
-
 def spline_2d(
     lon_axis: np.ndarray,
     lat_axis: np.ndarray,

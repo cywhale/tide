@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 from mpl_toolkits.basemap import Basemap
 
 
@@ -116,5 +117,19 @@ def plot_current_map(x, y, u, v, mag, label_time):
     ax.set_title('Tidal Currents at ' + str(label_time))
     ax.set_xlabel('Longitude', labelpad=30)  # Adjust labelpad as needed
     ax.set_ylabel('Latitude', labelpad=30)   # Adjust labelpad as needed
+
+    plt.show()
+
+
+def plot_ellipse(lon, lat, major, minor, inclination):
+    grid_sz = 1/30
+    fig, ax = plt.subplots()
+    ax.set_aspect('equal', 'box')
+    ax.set_xlim(lon - 2*grid_sz, lon + 2*grid_sz)
+    ax.set_ylim(lat - 2*grid_sz, lat + 2*grid_sz)
+
+    ellipse = patches.Ellipse((lon, lat), width=2*major, height=2*minor, angle=np.degrees(inclination),
+                              fill=False, edgecolor='r', linewidth=2)
+    ax.add_patch(ellipse)
 
     plt.show()
