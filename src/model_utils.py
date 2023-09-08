@@ -100,28 +100,6 @@ def time_series_for_constituents(t, hc, constituents, deltat=0.0):
     return ht
 
 
-def calculate_ellipse_parameters(u, v):
-    # Assuming u and v are complex amplitude components
-    U = u.real + 1j * v.real
-    V = u.imag + 1j * v.imag
-
-    # Major and minor axes
-    major = np.abs(U)
-    minor = np.abs(V)
-
-    # Inclination
-    inclination = np.angle(U) * 0.5
-    if np.isscalar(inclination):
-        inclination = inclination if inclination >= 0 else inclination + np.pi
-    else:
-        inclination[inclination < 0] += np.pi
-
-    # Phase of maximum velocity
-    phase = np.angle(-V)
-
-    return major, minor, inclination, phase
-
-
 # Note dz is the data from Zarr
 def get_tide_map(dz, tide_time, format='netcdf', type=['u', 'v'], drop_dim=False):
     DELTAT = np.zeros_like(tide_time)
