@@ -32,17 +32,8 @@ maxWorkers = 4 if extract_method == "extract_Atlas_v2" else 3
 
 
 def save_to_zarr(
-    amplitude,
-    phase,
-    constituents,
-    amp_var,
-    ph_var,
-    lon,
-    lat,
-    output_file,
-    group_name,
-    mode="write_chunk",
-):
+    amplitude, phase, constituents, amp_var, ph_var, lon, lat,
+    output_file, group_name, mode="write_chunk"):
     # Check if the group exists in the Zarr file
     if mode == "append_chunk":
         ds = xr.open_zarr(output_file, group=group_name)
@@ -69,38 +60,14 @@ def save_to_zarr(
 
 # Function to process each chunk
 def process_chunk(
-    lon,
-    lat,
-    start_lon,
-    end_lon,
-    start_lat,
-    end_lat,
-    bathymetry,
-    tpxo_model,
-    type,
-    global_grid,
-    en_interpolate,
-    interpolate_to,
-    constituents,
-    chunk_num,
-    amp_var,
-    ph_var,
-    chunk_file,
-    mode,
+    lon, lat, start_lon, end_lon, start_lat, end_lat,
+    bathymetry, tpxo_model, type, global_grid, en_interpolate, interpolate_to,
+    constituents, chunk_num, amp_var, ph_var, chunk_file, mode
 ):
     # if extract_method == 'extract_ATLAS_pytmd'
     amp_chunk, ph_chunk, c = extract_ATLAS_pytmd(
-        lon,
-        lat,
-        start_lon,
-        end_lon,
-        start_lat,
-        end_lat,
-        tpxo_model,
-        type,
-        constituents,
-        chunk_num,
-    )
+        lon, lat, start_lon, end_lon, start_lat, end_lat,
+        tpxo_model, type, constituents, chunk_num)
     # amp_chunk, ph_chunk, c = extract_ATLAS_v2(lon, lat, start_lon, end_lon, start_lat, end_lat, bathymetry,
     #                                          tpxo_model, type, chunk_num, global_grid, en_interpolate, interpolate_to,
     #                                          en_extrapolate=enExtrapolate, shallowLimit=ShallowLimit)
@@ -131,23 +98,10 @@ def process_chunk(
 
 
 def tpxo2zarr(
-    lon,
-    lat,
-    bathymetry,
-    amp_var,
-    ph_var,
-    tpxo_model,
-    chunk_size_lon=45,
-    chunk_size_lat=45,
-    grid_sz=1 / 30,
-    chunk_file="chunks.zarr",
-    type=None,
-    mode="write_chunk",
-    global_grid=False,
-    en_interpolate=False,
-    interpolate_to=None,
-    constituents=None,
-):
+    lon, lat, bathymetry, amp_var, ph_var, tpxo_model,
+    chunk_size_lon=45, chunk_size_lat=45, grid_sz=1 / 30,
+    chunk_file="chunks.zarr", type=None, mode="write_chunk",
+    global_grid=False, en_interpolate=False, interpolate_to=None, constituents=None):
     if global_grid:
         lon_range = range(0, len(lon), int(chunk_size_lon / grid_sz))
         lon_range = list([x + 1 for x in lon_range])
@@ -172,26 +126,11 @@ def tpxo2zarr(
             end_lon = lon_range[lon_idx + 1]
             start_lat, end_lat = lat_range[lat_idx], lat_range[lat_idx + 1]
             chunks.append(
-                (
-                    lon,
-                    lat,
-                    start_lon,
-                    end_lon,
-                    start_lat,
-                    end_lat,
-                    bathymetry,
-                    tpxo_model,
-                    type,
-                    global_grid,
-                    en_interpolate,
-                    interpolate_to,
-                    constituents,
-                    len(chunks),
-                    amp_var,
-                    ph_var,
-                    chunk_file,
-                    mode,
-                )
+                (lon, lat, start_lon, end_lon, start_lat, end_lat,
+                 bathymetry, tpxo_model, type,
+                 global_grid, en_interpolate, interpolate_to,
+                 constituents, len(chunks), amp_var, ph_var,
+                 chunk_file, mode)
             )
 
     processed_chunks = []
@@ -306,18 +245,10 @@ def main():
             print("----Extend bathy: ", bathy_x.shape, " for type: ", type)
 
             chunkx = tpxo2zarr(
-                lonx,
-                latc,
-                bathy_x,
-                type + "_amp",
-                type + "_ph",
-                tpxo_model,
-                xChunkSz,
-                yChunkSz,
-                grid_sz=grid_sz,
-                chunk_file=chunk_file,
-                type=type,
-                mode=mode,
+                lonx, latc, bathy_x,
+                type + "_amp", type + "_ph",
+                tpxo_model, xChunkSz, yChunkSz, grid_sz=grid_sz,
+                chunk_file=chunk_file, type=type, mode=mode,
                 global_grid=global_grid,
                 en_interpolate=en_interpolate,
                 interpolate_to=(lonz, latz, bathy_z),
@@ -333,18 +264,10 @@ def main():
                 global_grid,
             )
             chunkx = tpxo2zarr(
-                lonz,
-                latz,
-                bathy_z,
-                type + "_amp",
-                type + "_ph",
-                tpxo_model,
-                xChunkSz,
-                yChunkSz,
-                grid_sz=grid_sz,
-                chunk_file=chunk_file,
-                type=type,
-                mode=mode,
+                lonz, latz, bathy_z,
+                type + "_amp", type + "_ph",
+                tpxo_model, xChunkSz, yChunkSz, grid_sz=grid_sz,
+                chunk_file=chunk_file, type=type, mode=mode,
                 global_grid=False,
                 en_interpolate=False,
                 interpolate_to=None,

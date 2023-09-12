@@ -9,16 +9,8 @@ from src.model_utils import spline_2d
 # Use pyTMD extract_constants, basically work, but not solve small unit_conv = D/100 problem
 # A newer trial: use interpolate_constant
 def extract_ATLAS_pytmd(
-    lon,
-    lat,
-    start_lon,
-    end_lon,
-    start_lat,
-    end_lat,
-    tide_model,
-    type,
-    constituents,
-    chunk_num,
+    lon, lat, start_lon, end_lon, start_lat, end_lat,
+    tide_model, type, constituents, chunk_num
 ):
     print("model type-chunk is: ", type, "-", chunk_num)
     if type in ["u", "v"]:
@@ -35,22 +27,22 @@ def extract_ATLAS_pytmd(
     #    constituents = ATLAS.read_constants(
     #        tide_model.grid_file, model_files, type=type, compressed=tide_model.compressed)
 
-    amp, ph, D = ATLAS.interpolate_constants(
-        lon_grid.ravel(),
-        lat_grid.ravel(),
-        constituents,
-        type=type,
-        scale=tide_model.scale,
-        method="spline",
-        extrapolate=True,
-    )
-    c = constituents
+    #amp, ph, D = ATLAS.interpolate_constants(
+    #    lon_grid.ravel(),
+    #    lat_grid.ravel(),
+    #    constituents,
+    #    type=type,
+    #    scale=tide_model.scale,
+    #    method="spline",
+    #    extrapolate=True,
+    #)
+    #c = constituents
     # else:
-    # amp, ph, D, c = ATLAS.extract_constants(
-    #    lon_grid.ravel(), lat_grid.ravel(),
-    #    tide_model.grid_file,
-    #    model_files, type=type, method='spline',
-    #    scale=tide_model.scale, compressed=tide_model.compressed)
+    amp, ph, D, c = ATLAS.extract_constants(
+        lon_grid.ravel(), lat_grid.ravel(),
+        tide_model.grid_file,
+        model_files, type=type, method='spline',
+        scale=tide_model.scale, compressed=tide_model.compressed)
 
     chunkx = end_lon - start_lon  # slicing is not include end_lon
     chunky = end_lat - start_lat
