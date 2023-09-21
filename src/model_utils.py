@@ -55,7 +55,7 @@ def get_tide_time(start_date, end_date):
 
 
 # calculate complex phase in radians for Euler's
-def get_tide_series(amp, ph, c, tide_time, format="netcdf"):
+def get_tide_series(amp, ph, c, tide_time, format="netcdf", unit="cm", drop_mask=False):
     cph = -1j * ph * np.pi / 180.0
     # calculate constituent oscillation
     hc = (amp * np.exp(cph))[np.newaxis, :]
@@ -74,8 +74,15 @@ def get_tide_series(amp, ph, c, tide_time, format="netcdf"):
         tide_time, hc, c, deltat=DELTAT, corrections=format)
     tide.data[:] += minor.data[:]
     # convert to centimeters
-    tide.data[:] *= 100.0
-    return tide
+    if unit=='cm':
+        tide.data[:] *= 100.0
+
+    if not drop_mask:
+        return tide
+    
+    tide.data[tide.mask] = np.nan
+    out = tide.data
+    return out
 
 
 # modified from pyTMD.predict.time_series() to get each constituent, not summer up

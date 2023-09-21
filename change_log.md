@@ -7,3 +7,5 @@
 #### ver 0.0.4 small U/(D/100) problem: use shallowLimit or without (not yet)/n3
 
 #### ver 0.0.5 re-fill NA in extract_ATLAS_pytmd both extract_constants and interpolate methods (not yet)/n4
+
+#### ver 0.0.6 first draft-version of tide API, re-fill NA by 3*1 neighbors (not yet)/n5

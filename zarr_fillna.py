@@ -25,7 +25,7 @@ def replace_na_from_second_dataset(method1, method2):
             ds1[var] = xr.where(condition, ds2[var], ds1[var])
 
     # Save the corrected dataset
-    ds1.to_zarr('tpxo9_fillna04.zarr')
+    ds1.to_zarr('tpxo9_fillna05.zarr')
 
 
 if __name__ == "__main__":
