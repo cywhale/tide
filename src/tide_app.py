@@ -1,14 +1,16 @@
 import xarray as xr
 import pandas as pd
 import numpy as np
-#import polars as pl
-from fastapi import FastAPI, Query, HTTPException
+import polars as pl
+from fastapi import FastAPI, status, Query, HTTPException
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from typing import Optional #List
 from pydantic import Field #BaseModel,
+import requests #, httpx
+import json
 #from tempfile import NamedTemporaryFile
 from datetime import date, datetime, timedelta
 from src.model_utils import get_tide_time, get_tide_series, get_tide_map
@@ -58,7 +60,22 @@ def to_global_lonlat(lon: float, lat: float) -> tuple:
     mlon = 180 if lon > 180 else (-180 if lon < -180 else lon)
     mlat = 90 if lat > 90 else (-90 if lat < -90 else lat)
     mlon = mlon + 360 if mlon < 0 else mlon
-    return (mlon, mlat)
+    return mlon, mlat
+
+
+def arr_global_lonlat(lon, lat):
+    # Convert lon and lat to NumPy arrays if they are not already
+    lon = np.array(lon)
+    lat = np.array(lat)
+
+    # Ensure lon and lat are within -180 to 180 and -90 to 90
+    lon = np.clip(lon, -180, 180)
+    lat = np.clip(lat, -90, 90)
+
+    # Convert lon to the 0-360 range
+    lon = np.where(lon < 0, lon + 360, lon)
+
+    return lon, lat
 
 
 def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1): #, format="list"):
@@ -117,7 +134,7 @@ def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1): #,
 async def startup():
     config.dz = xr.open_zarr('tpxo9.zarr', chunks='auto', decode_times=False)
     config.gridSz = 1/30
-    config.timeLimit = 7
+    config.timeLimit = 30
     config.LON_RANGE_LIMIT = 45
     config.LAT_RANGE_LIMIT = 45
     config.AREA_LIMIT = config.LON_RANGE_LIMIT * config.LAT_RANGE_LIMIT
@@ -152,8 +169,8 @@ async def get_tide(
     Query tide from TPXO9-atlas-v5 model by longitude/latitude/date (in JSON).
 
     #### Usage
-    * One-point tide height with time-span limitation (<= 7 days, hourly data): e.g. /tide?lon0=135&lat0=15&start=2023-07-25&end=2023-07-26T01:30:00.000Z
-    * Get current in bounding-box <= 90x90 in degrees at one time moment(in ISOstring): e.g. /tide?lon0=135&lon1&=140&lat0=15&lat1=30&start=2023-07-25T01:30:00.000
+    * One-point tide height with time-span limitation (<= 30 days, hourly data): e.g. /tide?lon0=135&lat0=15&start=2023-07-25&end=2023-07-26T01:30:00.000Z
+    * Get current in bounding-box <= 45x45 in degrees at one time moment(in ISOstring): e.g. /tide?lon0=135&lon1&=140&lat0=15&lat1=30&start=2023-07-25T01:30:00.000
     """
 
     if append is None:
@@ -291,3 +308,264 @@ async def get_tide(
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+def numarr_query_validator(qry):
+    if ',' in qry:
+        try:
+            out = np.array([float(x.strip()) for x in qry.split(',')])
+            return (out)
+        except ValueError:
+            return ("Format Error")
+    else:
+        try:
+            out = np.array([float(qry.strip())])
+            return (out)
+        except ValueError:
+            return ("Format Error")
+
+
+#def custom_encoder(obj):
+#    if isinstance(obj, np.ndarray):
+#        return obj.tolist()  # Convert NumPy arrays to Python lists
+#    elif isinstance(obj, np.generic):
+#        return np.asscalar(obj)
+#    else:
+#        return obj
+def custom_encoder(obj):
+    if isinstance(obj, (int, float, bool, str, type(None))):
+        return obj  # Basic types are already JSON serializable
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()  # Convert NumPy arrays to Python lists
+    elif isinstance(obj, np.generic):
+        return np.asscalar(obj)
+    elif isinstance(obj, dict):
+        # Recursively encode values in dictionaries
+        return {key: custom_encoder(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        # Recursively encode elements in lists or tuples
+        return [custom_encoder(item) for item in obj]
+    else:
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+    
+""" ---- wide format ----
+def const_to_output(data_dict): #, data_var='amp'):
+    # Initialize an empty DataFrame with longitude and latitude columns
+    #if data_var == 'amp':
+    #    varx = 'amplitude'
+    #elif data_var == 'ph':
+    #    varx = 'phase'
+    #else:
+    #    varx = 'hc_real'
+    columns = ['longitude', 'latitude']
+    df = pd.DataFrame(columns=columns)
+
+    # Iterate through data_dict and dynamically append columns based on keys
+    for data in data_dict: #enumerate(data_dict): #[varx]):
+        # Extract longitude and latitude
+        longitude = data['longitude'] #[idx]
+        latitude = data['latitude'] #[idx]  
+        row_dict = {'longitude': longitude, 'latitude': latitude}
+    
+        # Iterate through amp, ph, hc_real, and hc_imag keys in data_dict
+        for key in data.keys():
+            if key != 'longitude' and key != 'latitude':
+                for constituent_type, value in data[key].items():
+                    constituent, data_type = constituent_type.split('_')
+                    col_name = f"{key}_{constituent}_{data_type}"
+                    row_dict[col_name] = value
+
+        df = pd.concat([df, pd.DataFrame([row_dict])], ignore_index=True)  
+
+    return df    
+"""
+def const_to_output(data_dict):
+    data_list = []
+
+    for data in data_dict:
+        longitude = data['longitude']
+        latitude = data['latitude']
+
+        for key in data.keys():
+            if key != 'longitude' and key != 'latitude':
+                for constituent_type, value in data[key].items():
+                    constituent, data_type = constituent_type.split('_')
+                    row_dict = {
+                        'longitude': longitude,
+                        'latitude': latitude,
+                        'variable': key,
+                        'constituents': constituent,
+                        'type': data_type,
+                        'value': value  # Store the value
+                    }
+                    data_list.append(row_dict)
+
+    df = pd.DataFrame(data_list)
+    return df
+
+
+def get_constituent(dz, vars=['amp', 'ph'],
+                    constituent=['q1', 'o1', 'p1', 'k1', 'n2', 'm2', 's1', 's2', 'k2', 'm4', 'ms4', 'mn4', '2n2', 'mf', 'mm'],    
+                    type=['u', 'v']):  
+    # Note dz should be a filtered zarr dataset including only filtered constituents
+    amplitudes = {}
+    phase = {}
+    imag = {}
+    real = {}
+    out = {}
+
+    #vars = list(set([var.strip() for var in mode.split(',') if var.strip() in ['amp', 'ph', 'hc']]))
+    if not vars:
+        vars = ['amp', 'ph']
+
+    for TYPE in type:
+        for const in constituent:
+            key = f"{const}_{TYPE}"
+            amp = dz[TYPE+'_amp'].sel(constituents=const).values
+            amplitudes[key] = float(amp.ravel())
+            ph = dz[TYPE+'_ph'].sel(constituents=const).values
+            phase[key] = float(ph.ravel())
+            cph = -1j * ph * np.pi / 180.0
+            # Calculate constituent oscillation
+            hc = amp * np.exp(cph)       
+            imag[key] = float(hc.imag.ravel())
+            real[key] = float(hc.real.ravel())
+
+    if 'amp' in vars:
+        out["amplitude"] = amplitudes
+
+    if 'ph' in vars:
+        out["phase"] = phase
+    
+    if 'hc' in vars:
+        out["hc_real"] = real
+        out["hc_imag"] = imag
+
+    return out
+
+
+@app.get("/tide/const")
+async def get_tide_const(
+    lon: Optional[str] = Query(
+            None,
+            description="comma-separated longitude values. One of lon/lat and jsonsrc should be specified as longitude/latitude input.",
+            example="122.36,122.47"),
+    lat: Optional[str] = Query(
+            None,
+            description="comma-separated latitude values. One of lon/lat and jsonsrc should be specified as longitude/latitude input.",
+            example="25.02,24.82"),
+    mode: Optional[str] = Query(
+        None,
+        description="Allowed modes: row. Optional can be none"),
+    append: Optional[str] = Query(
+        None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z, u, v"),
+    constituent: Optional[str] = Query(
+        None,
+        description="Allowed harmonic constituents are 'q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm'. If none, all 15 constituents will be included in evaluation. See also: https://www.tpxo.net/global"),
+    complex: Optional[str] = Query(
+        None, description="Harmonic complex constants for output, separated by commas. If none, 'amp,ph' is default. Allowed variables: amp, ph, hc, which means amplitude, phase, harmonic in complex (real, imag), respectively"),
+    jsonsrc: Optional[str] = Query(
+        None,
+        description='Optional. A valid URL for JSON source or a JSON string that contains longitude and latitude keys with values in array.\n' +
+                    'Example: {"longitude":[122.36,122.47,122.56,122.66],"latitude":[25.02,24.82,24.72,24.62]}')
+):
+    """
+    Query harmonic constituents from TPXO9-atlas-v5 model by longitude/latitude.
+    """
+
+    try:
+        if jsonsrc:
+            # Validate it's a URL
+            try:
+                json_resp = requests.get(jsonsrc)
+                json_resp.raise_for_status()
+                json_obj = json_resp.json()
+            except:
+                try:
+                    json_obj = json.loads(jsonsrc)
+                except:
+                    raise ValueError("Input jsonsrc must be a valid URL or a JSON string.")
+
+            # Validate the JSON has 'longitude' and 'latitude' keys
+            # LonLat(**json_obj)
+            loni = np.array(json_obj['longitude'])
+            lati = np.array(json_obj['latitude'])
+        else:
+            if lon and lat:
+                loni = numarr_query_validator(lon)
+                lati = numarr_query_validator(lat)
+
+                if isinstance(loni, str) or isinstance(lati, str):
+                    return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
+                                        content=jsonable_encoder({"Error": "Check your input format should be comma-separated values"}))
+            else:
+                raise ValueError("Both 'lon' and 'lat' parameters must be provided, otherwise use 'jsonsrc' as input")
+
+    except (ValueError, json.JSONDecodeError) as e:
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
+                            content={"Error": str(e)})
+    except requests.HTTPError as e:
+        return JSONResponse(status_code=e.response.status_code,
+                            content={"Error": str(e)})
+
+    if len(loni) != len(lati):
+        config.dz.close()
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
+                            content=jsonable_encoder({"Error": "Check your input of lon/lat should be in equal length"}))
+
+    mlon, mlat = arr_global_lonlat(loni, lati) #to 0-360
+
+    if append is None:
+        append = 'z'
+
+    variables = list(set([var.strip() for var in append.split(
+        ',') if var.strip() in ['z', 'u', 'v']]))
+    if not variables:
+        raise HTTPException(
+            status_code=400, detail="Invalid variable(s). Allowed variables are 'z', 'u', 'v'")
+    variables.sort()  # in-place sort not return anything
+
+    if constituent is None:
+        cons = config.cons
+    else:
+        cons = list(set([c.strip() for c in constituent.split(',') if c.strip() in config.cons]))
+        if not cons:
+            raise HTTPException(
+                status_code=400, detail="Invalid constituents. Allowed constituents are 'q1','o1','p1','k1','n2','m2','s1','s2','k2','m4','ms4','mn4','2n2','mf','mm'")
+
+    pars = list(set([par.strip() for par in complex.split(
+        ',') if par.strip() in ['amp', 'ph', 'hc']]))
+    if not pars:
+        pars = ['amp', 'ph']
+
+    out = []
+    for lon0, lat0 in zip(mlon, mlat):
+        dsub = config.dz.sel(lon=slice(lon0, lon0+1.0*config.gridSz),
+                             lat=slice(lat0, lat0+1.0*config.gridSz),
+                             constituents=cons)
+        results = {}            
+        results['longitude'] = lon0
+        results['latitude'] = lat0
+        #results['grid_lon'] = dsub["lon"].values[0]
+        #results['grid_lat'] = dsub["lat"].values[0]
+        constants = get_constituent(dsub, vars=pars, constituent=cons, type=variables)
+        for key, value in constants.items():
+            results[key] = value
+        out.append(results)
+
+    print(out)
+
+
+    if mode is not None and mode == 'object':
+        out_encoded = custom_encoder(out)
+        # Serialize the data to JSON
+        # json_data = json.dumps(out_encoded)
+        return JSONResponse(content=jsonable_encoder(custom_encoder(out)))
+        
+    dfout = const_to_output(out) #, pars[0])
+    #print(dfout)
+    if mode is not None and mode == 'row':
+        df1 = pl.from_pandas(dfout)
+        return JSONResponse(content=df1.to_dicts())
+
+    return JSONResponse(content=dfout.to_dict())
