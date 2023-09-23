@@ -10,4 +10,5 @@
 
 #### ver 0.0.6 first draft-version of tide API, re-fill NA by 3*1 neighbors (not yet)/n5
 
-    - add /tide, /tide/const to load each harmonic constituent
+    -- add /tide, /tide/const to load each harmonic constituent
+    -- refine project structure before rerun zarr dataset https://github.com/tsutterley/pyTMD/discussions/241
