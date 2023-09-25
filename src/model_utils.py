@@ -20,7 +20,7 @@ def get_current_model(model_name, model_directory, model_format, compressed=Fals
 
 
 # Load and interpolate tidal constants
-def get_tide_constants(lon, lat, tide_model, model_name):
+def get_tide_constants(lon, lat, tide_model, model_name, isCurrModel=False):
     if 'GOT' in model_name:
         constituents = GOT.read_constants(
             tide_model.model_file, compressed=tide_model.compressed)
@@ -29,11 +29,12 @@ def get_tide_constants(lon, lat, tide_model, model_name):
                                             method='spline', extrapolate=True)
 
     elif 'atlas' in model_name:
+        scale = 1e-4 if isCurrModel else tide_model.scale
         constituents = ATLAS.read_constants(
             tide_model.grid_file, tide_model.model_file, type=tide_model.type, compressed=tide_model.compressed)
         amp, ph, D = ATLAS.interpolate_constants(
             np.atleast_1d(lon), np.atleast_1d(lat),
-            constituents, type=tide_model.type, scale=tide_model.scale,
+            constituents, type=tide_model.type, scale=scale, #tide_model.scale, #use 1e-4 before pyTMD new release
             method='spline', extrapolate=True)
 
     return constituents, amp, ph
@@ -171,8 +172,8 @@ def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5):
         dsub.coords['lon'].values, dsub.coords['lat'].values)
 
     # Reshape u and v to 2D
-    u0 = gtide['u'][:, :, t]*0.01
-    v0 = gtide['v'][:, :, t]*0.01
+    u0 = gtide['u'][:, :, t] #*0.01
+    v0 = gtide['v'][:, :, t] #*0.01
 
     # Create a grid of indices for subsetting
     X, Y = np.meshgrid(np.arange(nx), np.arange(ny))

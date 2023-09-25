@@ -38,11 +38,12 @@ def extract_ATLAS_pytmd(
     #)
     #c = constituents
     # else:
+    scale = 1e-4 if type in ['u', 'v'] else tide_model.scale
     amp, ph, D, c = ATLAS.extract_constants(
         lon_grid.ravel(), lat_grid.ravel(),
         tide_model.grid_file,
         model_files, type=type, method='spline',
-        scale=tide_model.scale, compressed=tide_model.compressed)
+        scale=scale, compressed=tide_model.compressed)
 
     chunkx = end_lon - start_lon  # slicing is not include end_lon
     chunky = end_lat - start_lat
@@ -74,7 +75,7 @@ def extract_ATLAS_v2(
         model_files = tide_model.model_file
 
     compressed = tide_model.compressed
-    scale = tide_model.scale
+    scale = 1e-4 if type in ['u', 'v'] else tide_model.scale
     type = tide_model.type if type is None else type
     print("model type-chunk is: ", type, "-", chunk_num)
 

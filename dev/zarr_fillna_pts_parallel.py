@@ -6,6 +6,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pyTMD.io import ATLAS
 from src.model_utils import get_current_model
 from src.pytmd_utils import read_netcdf_grid
+from numcodecs import MsgPack
+import zarr
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -42,11 +44,12 @@ def recompute_na_points(coord, lonz, latz, bathy_mask, bathy_data):
 
     results = {}
     for var_type in ['u', 'v']:
+        scale = 1e-4 #tpxo_model.scale 
         amp, ph, _, _ = ATLAS.extract_constants(
             np.atleast_1d(ilon), np.atleast_1d(ilat),
             tpxo_model.grid_file,
             tpxo_model.model_file[var_type], type=var_type, method='spline',
-            scale=tpxo_model.scale, compressed=tpxo_model.compressed
+            scale=scale, compressed=tpxo_model.compressed
         )
         results[f"{var_type}_amp"] = amp
         results[f"{var_type}_ph"] = ph
@@ -59,29 +62,30 @@ def process_chunk(cluster, lonz, latz, tpxo_model, var_type, cluster_idx, cluste
     lon_chunk = lonz[start_lon:end_lon]
     lat_chunk = latz[start_lat:end_lat]
     lon_grid, lat_grid = np.meshgrid(lon_chunk, lat_chunk)
+    scale = 1e-4 ## replace tpxo_model.scale before pyTMD new release
 
     amp, ph, D, c = ATLAS.extract_constants(
         lon_grid.ravel(), lat_grid.ravel(),
         tpxo_model.grid_file,
         tpxo_model.model_file[var_type], type=var_type, method='spline',
-        scale=tpxo_model.scale, compressed=tpxo_model.compressed)
+        scale=scale, compressed=tpxo_model.compressed, extrapolate=True)
 
     # reshape back amp and ph
     amp = amp.reshape((end_lat - start_lat, end_lon - start_lon, -1))
     ph = ph.reshape((end_lat - start_lat, end_lon - start_lon, -1))
-    print(f"Cluster index: {cluster_idx}/{cluster_num} for variable: {var_type}")
+    print(f"Cluster index: {cluster_idx}/{cluster_num} for variable: {var_type} wtih scale: {scale}")
 
     return (cluster_idx, cluster_num, start_lat, end_lat, start_lon, end_lon, var_type, amp, ph)
 
 
-def filter_and_form_clusters(coords_to_recompute):
+def filter_and_form_clusters(coords_to_recompute, neighborx=1, neighbory=4):
     coords_to_recompute = set(coords_to_recompute)  # Ensure it's a set for efficient removal
     clusters = []
 
     while coords_to_recompute:
         ilat_idx, ilon_idx = next(iter(coords_to_recompute))  # Take one coord from the set without removing it
 
-        neighbors = [(ilat_idx + dlat, ilon_idx + dlon) for dlat in range(5) for dlon in range(5)]
+        neighbors = [(ilat_idx + dlat, ilon_idx + dlon) for dlat in range(neighbory) for dlon in range(neighborx)]
 
         if all(neighbor in coords_to_recompute for neighbor in neighbors):
             start_lat, start_lon = min(neighbors, key=lambda x: (x[0], x[1]))
@@ -114,9 +118,10 @@ def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_dat
     print(f"Total points to process: {total_points}")
 
     # Filter coordinates and form 5x5 clusters
-    clusters = filter_and_form_clusters(coords_to_recompute)
+    # clusters = filter_and_form_clusters(coords_to_recompute)
+    clusters = filter_and_form_clusters(coords_to_recompute, neighborx=1, neighbory=4)
 
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(max_workers=maxWorkers) as executor:
         futures_list = []
         total_clusters = len(clusters)
         for idx, chunk in enumerate(clusters):
@@ -126,7 +131,7 @@ def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_dat
 
         for future in as_completed(futures_list):
             idx_processed, cluster_num, start_lat, end_lat, start_lon, end_lon, var_type_processed, amp, ph = future.result()
-            logging.info(f"Processed cluster index: {idx_processed}/{cluster_num} for variable: {var_type_processed}")
+            print(f"Processed cluster index: {idx_processed}/{cluster_num} for variable: {var_type_processed}")
 
             # Refill zarr dataset based on the variable type
             if var_type_processed == 'u':
@@ -134,26 +139,65 @@ def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_dat
                 ds['u_ph'][start_lat:end_lat, start_lon:end_lon, :] = ph
             else:
                 ds['v_amp'][start_lat:end_lat, start_lon:end_lon, :] = amp
-                ds['v_ph'][start_lat:end_lat, start_lon:end_lon, :] = ph
+                ds['v_ph'][start_lat:end_lat, start_lon:end_lon, :] = ph    
 
     # If there are still individual points left, you might want to process them separately
     # remaining_points = coords_to_recompute - filtered_coords
     # if remaining_points:
     #    print("Remaining points at final: ", len(remaining_points))
     #    #pass
-
-    # Save the updated dataset
-    print("Start to re-write zarr dataset...")
-    ds.to_zarr(input_file, mode='w')
-    ds.close()
+    return ds
 
 
 def main():
-    input_file = "tpxo9.zarr"
+    input_file = "../data/tpxo9.zarr"
+    output_file = "../data/tpxo9_fillna05.zarr"
     lonz, latz, bathy_z = read_netcdf_grid(BATHY_gridfile, variable='z')
-    replace_na_from_second_dataset(
+    ds = replace_na_from_second_dataset(
         input_file, lonz, latz, bathy_z.mask, bathy_z.data)
 
+    # Save the updated dataset but may too large to overload memory
+    print("Start to re-write zarr dataset...")
+    # ds.to_zarr(input_file, mode='w')
+    # ds.close()
+    store = zarr.open(output_file, mode='w')
+
+    # Save dimension data
+    for dim_name in ['lat', 'lon', 'constituents']:
+        data = ds[dim_name].values
+        chunks = ds[dim_name].encoding.get('chunks', ds[dim_name].shape)
+        dtype = ds[dim_name].dtype
+    
+        # Check if dtype is object and handle accordingly
+        if dtype == object:
+            codec = MsgPack()
+            arr = store.array(dim_name, data=data, chunks=chunks, dtype=dtype, object_codec=codec)
+        else:
+            arr = store.array(dim_name, data=data, chunks=chunks, dtype=dtype)
+    
+        arr.attrs['_ARRAY_DIMENSIONS'] = [dim_name]
+
+    # Assuming chunking over lat and lon as in your example
+    chunk_size = 338
+
+    # Create placeholder arrays with `_ARRAY_DIMENSIONS` attribute
+    for var_name in ds.data_vars:
+        shape = ds[var_name].shape
+        dtype = ds[var_name].dtype
+        chunks = (chunk_size, chunk_size, ds['constituents'].shape[0])  # Assuming 3D data with constituents as the third dimension
+        arr = store.empty(var_name, shape=shape, dtype=dtype, chunks=chunks)
+        arr.attrs['_ARRAY_DIMENSIONS'] = ['lat', 'lon', 'constituents']
+
+    # Write data in chunks
+    for i in range(0, len(ds['lat']), chunk_size):
+        for j in range(0, len(ds['lon']), chunk_size):
+
+            # Extract chunk from dataset
+            ds_chunk = ds.isel(lat=slice(i, i+chunk_size), lon=slice(j, j+chunk_size))
+
+            # Write chunk to appropriate location in Zarr store
+            for var_name, variable in ds_chunk.data_vars.items():
+                store[var_name][i:i+chunk_size, j:j+chunk_size, :] = variable.values
 
 if __name__ == '__main__':
     main()
