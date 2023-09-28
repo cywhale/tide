@@ -3,7 +3,7 @@ import numpy as np
 
 All_NA_CONDITION = True
 
-def replace_na_from_second_dataset(method1, method2):
+def resave_fillna_dataset(method1, method2):
 #   with xr.open_zarr(method1) as ds1, xr.open_zarr(method2) as ds2:
     with xr.open_zarr(method1) as ds1, xr.open_zarr(method2, chunks='auto', decode_times=False, consolidated=True) as ds2:
         # For u_amp, u_ph, v_amp, v_ph
@@ -31,4 +31,4 @@ def replace_na_from_second_dataset(method1, method2):
 if __name__ == "__main__":
     method1_file = "../data/tpxo9_fillna07.zarr" #"tpxo9_method1.zarr" #All_NA_CONDITION set False 
     method2_file = "../data/tpxo9.zarr" #"tpxo9_method2.zarr"
-    replace_na_from_second_dataset(method1_file, method2_file)
+    resave_fillna_dataset(method1_file, method2_file)

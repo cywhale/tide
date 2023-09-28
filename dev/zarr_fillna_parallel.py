@@ -8,11 +8,11 @@ from src.model_utils import get_current_model
 from src.pytmd_utils import read_netcdf_grid
 from numcodecs import MsgPack
 import zarr
-import logging
+import time
+from datetime import datetime
+# import logging
+# logging.basicConfig(level=logging.INFO)
 
-logging.basicConfig(level=logging.INFO)
-
-maxWorkers = 6
 # client = Client('tcp://localhost:8786')
 # try:
 #    client = get_client()
@@ -22,7 +22,6 @@ maxWorkers = 6
 #    # No existing Dask client
 #    pass
 # client = Client(n_workers=4, dashboard_address=':8798', scheduler_port=0)
-
 BATHY_gridfile = '/home/bioer/python/tide/data_src/TPXO9_atlas_v5/grid_tpxo9_atlas_30_v5.nc'
 tpxo_model_directory = '/home/bioer/python/tide/data_src'
 tpxo_model_format = 'netcdf'
@@ -30,6 +29,20 @@ tpxo_compressed = False
 tpxo_model_name = 'TPXO9-atlas-v5'
 tpxo_model = get_current_model(
     tpxo_model_name, tpxo_model_directory, tpxo_model_format, tpxo_compressed)
+
+## Global variables
+maxWorkers = 6
+
+
+def log_elapsed_time(start_time, work=""):
+    et = time.time()
+    end_time = datetime.fromtimestamp(et)
+    elapsed_time = et - start_time
+    # Convert seconds to hours, minutes, and seconds
+    hours, remainder = divmod(elapsed_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    print(f'{work} DONE at: {end_time}') 
+    print(f'Elapsed time: {int(hours)} hr, {int(minutes)} min, {int(seconds)} sec')
 
 
 def recompute_na_points(coord, lonz, latz, bathy_mask, bathy_data):
@@ -101,25 +114,40 @@ def filter_and_form_clusters(coords_to_recompute, neighborx=1, neighbory=4):
     return clusters
 
 
-def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_data):
+def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_data, variables, 
+                                   neighborx=5, neighbory=5, All_na_condition=True):
     ds = xr.open_zarr(input_file)
 
     # Check for NaNs in the four variables
     coords_to_recompute = set()
-    for var in ['u_amp', 'v_amp']:
+    # variables = ['u_amp', 'v_amp', 'u_ph', 'v_ph']
+    # nan_loc1 = set(map(tuple, np.argwhere(np.isnan(ds['u_amp'].values).any(axis=-1))))
+    ## it seems cause memory crash? #nan_loc1.update(map(tuple, np.argwhere(np.isnan(ds['u_ph'].values).any(axis=-1))))    
+    # nan_loc2 = set(map(tuple, np.argwhere(np.isnan(ds['v_amp'].values).any(axis=-1))))
+    #### nan_loc2.update(map(tuple, np.argwhere(np.isnan(ds['v_ph'].values).any(axis=-1))))
+    #intersecting_nans = nan_loc1.intersection(nan_loc2)
+    #for ilat_idx, ilon_idx in intersecting_nans:
+    for var in variables:
         print("Now process var to find na: ", var)
-        nan_locs = np.argwhere(np.isnan(ds[var].values).any(axis=-1))
+        ## it's slow # nan_locs = np.argwhere(np.isnan(ds[var].values))
+        if All_na_condition:
+            nan_locs = np.argwhere(np.isnan(ds[var].values).all(axis=-1))
+        else:    
+            nan_locs = np.argwhere(np.isnan(ds[var].values).any(axis=-1))
+        #It will get 204969 points if scan u_amp, v_amp, u_ph, v_ph     
         for loc in nan_locs:
             ilat_idx, ilon_idx = loc
             if not bathy_mask[ilat_idx, ilon_idx] and bathy_data[ilat_idx, ilon_idx] > 0.0:
                 coords_to_recompute.add((ilat_idx, ilon_idx))
 
+               
     total_points = len(coords_to_recompute)
     print(f"Total points to process: {total_points}")
 
     # Filter coordinates and form 5x5 clusters
     # clusters = filter_and_form_clusters(coords_to_recompute)
-    clusters = filter_and_form_clusters(coords_to_recompute, neighborx=1, neighbory=4)
+    clusters = filter_and_form_clusters(coords_to_recompute, neighborx=neighborx, neighbory=neighbory)
+    print(f"Total clusters to process: {len(clusters)}")
 
     with ProcessPoolExecutor(max_workers=maxWorkers) as executor:
         futures_list = []
@@ -149,55 +177,108 @@ def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_dat
     return ds
 
 
+def resave_fillna_dataset(method1, method2, save_file, All_na_condition=True):
+#   with xr.open_zarr(method1) as ds1, xr.open_zarr(method2) as ds2:
+    with xr.open_zarr(method1) as ds1, xr.open_zarr(method2, chunks='auto', decode_times=False, consolidated=True) as ds2:
+        # For u_amp, u_ph, v_amp, v_ph
+        ds2['lat'].values[2700] = 0
+        ds2 = ds2.sortby('lat')
+        # Rechunk the dataset for uniform chunks
+        ds2 = ds2.chunk({'lat': 113, 'lon': 113, 'constituents': 8})
+
+        variables = ['u_amp', 'u_ph', 'v_amp', 'v_ph']
+        for var in variables:
+            # Check where ds1 is NaN and ds2 is not NaN
+            if All_na_condition:
+                condition_all_nan = np.isnan(ds1[var]).all(dim='constituents')
+                condition_not_all_nan = ~np.isnan(ds2[var]).all(dim='constituents')
+                condition = condition_all_nan & condition_not_all_nan
+            else:
+                condition = np.isnan(ds1[var]) & ~np.isnan(ds2[var])
+
+            ds1[var] = xr.where(condition, ds2[var], ds1[var])
+
+    # Save the corrected dataset
+    ds1.to_zarr(save_file)
+
 def main():
-    input_file = "../data/tpxo9.zarr"
-    output_file = "../data/tpxo9_fillna05.zarr"
+    st = time.time()
+    start_time = datetime.fromtimestamp(st)
+    print("Fill_NA Main process start: ", start_time)
+    input_file = "../data/tpxo9_fillna08.zarr"
+    output_file = "../data/tpxo9.zarr"
+    resave_file = "../data/tpxo9_fillna09.zarr"
+    All_NA_CONDITION = False #all NA or any NA in constituents should be recomputed
+    #SAVE_SMALL_DATA = False #always False
+
     lonz, latz, bathy_z = read_netcdf_grid(BATHY_gridfile, variable='z')
+
     ds = replace_na_from_second_dataset(
-        input_file, lonz, latz, bathy_z.mask, bathy_z.data)
+            input_file, lonz, latz, bathy_z.mask, bathy_z.data,
+            variables=['u_ph', 'v_ph'], neighborx=5, neighbory=5,
+            All_na_condition=All_NA_CONDITION)
+
+    log_elapsed_time(st, "1. Replace NA")
 
     # Save the updated dataset but may too large to overload memory
-    print("Start to re-write zarr dataset...")
-    # ds.to_zarr(input_file, mode='w')
-    # ds.close()
-    store = zarr.open(output_file, mode='w')
+    st = time.time()          
+    start_time = datetime.fromtimestamp(st)
 
-    # Save dimension data
-    for dim_name in ['lat', 'lon', 'constituents']:
-        data = ds[dim_name].values
-        chunks = ds[dim_name].encoding.get('chunks', ds[dim_name].shape)
-        dtype = ds[dim_name].dtype
+    if False: #SAVE_SMALL_DATA:
+        ds.to_zarr(output_file, mode='w')
+        # ds.close()
+    else:     
+        print("Start to re-write zarr dataset...: ", start_time)
+        store = zarr.open(output_file, mode='w')
+
+        # Save dimension data
+        for dim_name in ['lat', 'lon', 'constituents']:
+            data = ds[dim_name].values
+            chunks = ds[dim_name].encoding.get('chunks', ds[dim_name].shape)
+            dtype = ds[dim_name].dtype
     
-        # Check if dtype is object and handle accordingly
-        if dtype == object:
-            codec = MsgPack()
-            arr = store.array(dim_name, data=data, chunks=chunks, dtype=dtype, object_codec=codec)
-        else:
-            arr = store.array(dim_name, data=data, chunks=chunks, dtype=dtype)
+            # Check if dtype is object and handle accordingly
+            if dtype == object:
+                codec = MsgPack()
+                arr = store.array(dim_name, data=data, chunks=chunks, dtype=dtype, object_codec=codec)
+            else:
+                arr = store.array(dim_name, data=data, chunks=chunks, dtype=dtype)
     
-        arr.attrs['_ARRAY_DIMENSIONS'] = [dim_name]
+            arr.attrs['_ARRAY_DIMENSIONS'] = [dim_name]
 
-    # Assuming chunking over lat and lon as in your example
-    chunk_size = 338
+        # Assuming chunking over lat and lon as in your example
+        chunk_size = 338
 
-    # Create placeholder arrays with `_ARRAY_DIMENSIONS` attribute
-    for var_name in ds.data_vars:
-        shape = ds[var_name].shape
-        dtype = ds[var_name].dtype
-        chunks = (chunk_size, chunk_size, ds['constituents'].shape[0])  # Assuming 3D data with constituents as the third dimension
-        arr = store.empty(var_name, shape=shape, dtype=dtype, chunks=chunks)
-        arr.attrs['_ARRAY_DIMENSIONS'] = ['lat', 'lon', 'constituents']
+        # Create placeholder arrays with `_ARRAY_DIMENSIONS` attribute
+        for var_name in ds.data_vars:
+            shape = ds[var_name].shape
+            dtype = ds[var_name].dtype
+            chunks = (chunk_size, chunk_size, ds['constituents'].shape[0])  # Assuming 3D data with constituents as the third dimension
+            arr = store.empty(var_name, shape=shape, dtype=dtype, chunks=chunks)
+            arr.attrs['_ARRAY_DIMENSIONS'] = ['lat', 'lon', 'constituents']
 
-    # Write data in chunks
-    for i in range(0, len(ds['lat']), chunk_size):
-        for j in range(0, len(ds['lon']), chunk_size):
+        # Write data in chunks
+        for i in range(0, len(ds['lat']), chunk_size):
+            for j in range(0, len(ds['lon']), chunk_size):
 
-            # Extract chunk from dataset
-            ds_chunk = ds.isel(lat=slice(i, i+chunk_size), lon=slice(j, j+chunk_size))
+                # Extract chunk from dataset
+                ds_chunk = ds.isel(lat=slice(i, i+chunk_size), lon=slice(j, j+chunk_size))
 
-            # Write chunk to appropriate location in Zarr store
-            for var_name, variable in ds_chunk.data_vars.items():
-                store[var_name][i:i+chunk_size, j:j+chunk_size, :] = variable.values
+                # Write chunk to appropriate location in Zarr store
+                for var_name, variable in ds_chunk.data_vars.items():
+                    store[var_name][i:i+chunk_size, j:j+chunk_size, :] = variable.values
+
+    log_elapsed_time(st, "2. Save result to output_file")
+
+    # merge zarr_fillna_savefile.py
+    st = time.time()
+    print("Save ok!! Now consolidate_metadata")
+    zarr.convenience.consolidate_metadata(output_file)
+
+    print("Start to resave the fillna zarr dataset: ", resave_file)
+    resave_fillna_dataset(input_file, output_file, resave_file, All_na_condition=All_NA_CONDITION)
+    log_elapsed_time(st, "3. Re-save ok!! All processes done")
+
 
 if __name__ == '__main__':
     main()
