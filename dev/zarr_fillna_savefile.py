@@ -1,7 +1,7 @@
 import xarray as xr
 import numpy as np
 
-All_NA_CONDITION = True
+All_NA_CONDITION = False
 
 def resave_fillna_dataset(method1, method2):
 #   with xr.open_zarr(method1) as ds1, xr.open_zarr(method2) as ds2:
@@ -9,6 +9,7 @@ def resave_fillna_dataset(method1, method2):
         # For u_amp, u_ph, v_amp, v_ph
         ds2['lat'].values[2700] = 0
         ds2 = ds2.sortby('lat')
+        ds2['constituents'].encoding = {'dtype': 'str'}
         # Rechunk the dataset for uniform chunks
         ds2 = ds2.chunk({'lat': 113, 'lon': 113, 'constituents': 8})
 
@@ -20,15 +21,15 @@ def resave_fillna_dataset(method1, method2):
                 condition_not_all_nan = ~np.isnan(ds2[var]).all(dim='constituents')
                 condition = condition_all_nan & condition_not_all_nan
             else:
-                condition = np.isnan(ds1[var]) & ~np.isnan(ds2[var])
+                condition = np.isnan(ds1[var]).any(dim='constituents') & ~np.isnan(ds2[var]).any(dim='constituents')
 
             ds1[var] = xr.where(condition, ds2[var], ds1[var])
 
     # Save the corrected dataset
-    ds1.to_zarr('../data/tpxo9_fillna08.zarr')
+    ds1.to_zarr('../data/tpxo9_fillna11.zarr')
 
 
 if __name__ == "__main__":
-    method1_file = "../data/tpxo9_fillna07.zarr" #"tpxo9_method1.zarr" #All_NA_CONDITION set False 
+    method1_file = "../data/tpxo9_fillna10.zarr" #"tpxo9_method1.zarr" #All_NA_CONDITION set False 
     method2_file = "../data/tpxo9.zarr" #"tpxo9_method2.zarr"
     resave_fillna_dataset(method1_file, method2_file)

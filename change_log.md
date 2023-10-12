@@ -14,3 +14,5 @@
     -- refine project structure before rerun zarr dataset https://github.com/tsutterley/pyTMD/discussions/241
 
 #### ver 0.0.7 Rescale u,v amplitude by model.scale=1e-4 according to pyTMD/pull/243, fill NA/n7
+
+    -- small fix TypeError: expected unicode string, found 15 problem in constituents, fill NA/n11
