@@ -22,8 +22,8 @@ from datetime import datetime
 #    # No existing Dask client
 #    pass
 # client = Client(n_workers=4, dashboard_address=':8798', scheduler_port=0)
-BATHY_gridfile = '/home/bioer/python/tide/data_src/TPXO9_atlas_v5/grid_tpxo9_atlas_30_v5.nc'
-tpxo_model_directory = '/home/bioer/python/tide/data_src'
+BATHY_gridfile = '/home/odbadmin/python/tide/data_src/TPXO9_atlas_v5/grid_tpxo9_atlas_30_v5.nc'
+tpxo_model_directory = '/home/odbadmin/python/tide/data_src'
 tpxo_model_format = 'netcdf'
 tpxo_compressed = False
 tpxo_model_name = 'TPXO9-atlas-v5'
@@ -31,7 +31,7 @@ tpxo_model = get_current_model(
     tpxo_model_name, tpxo_model_directory, tpxo_model_format, tpxo_compressed)
 
 ## Global variables
-maxWorkers = 6
+maxWorkers = 12
 
 
 def log_elapsed_time(start_time, work=""):
@@ -91,7 +91,7 @@ def process_chunk(cluster, lonz, latz, tpxo_model, var_type, cluster_idx, cluste
     return (cluster_idx, cluster_num, start_lat, end_lat, start_lon, end_lon, var_type, amp, ph)
 
 
-def filter_and_form_clusters(coords_to_recompute, neighborx=1, neighbory=4):
+def filter_and_form_clusters(coords_to_recompute, neighborx=5, neighbory=5):
     coords_to_recompute = set(coords_to_recompute)  # Ensure it's a set for efficient removal
     clusters = []
 
@@ -114,7 +114,7 @@ def filter_and_form_clusters(coords_to_recompute, neighborx=1, neighbory=4):
     return clusters
 
 
-def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_data, variables, 
+def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_data, variables,
                                    neighborx=5, neighbory=5, All_na_condition=True):
     ds = xr.open_zarr(input_file)
 
@@ -122,7 +122,7 @@ def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_dat
     coords_to_recompute = set()
     # variables = ['u_amp', 'v_amp', 'u_ph', 'v_ph']
     # nan_loc1 = set(map(tuple, np.argwhere(np.isnan(ds['u_amp'].values).any(axis=-1))))
-    ## it seems cause memory crash? #nan_loc1.update(map(tuple, np.argwhere(np.isnan(ds['u_ph'].values).any(axis=-1))))    
+    ## it seems cause memory crash? #nan_loc1.update(map(tuple, np.argwhere(np.isnan(ds['u_ph'].values).any(axis=-1))))
     # nan_loc2 = set(map(tuple, np.argwhere(np.isnan(ds['v_amp'].values).any(axis=-1))))
     #### nan_loc2.update(map(tuple, np.argwhere(np.isnan(ds['v_ph'].values).any(axis=-1))))
     #intersecting_nans = nan_loc1.intersection(nan_loc2)
@@ -132,15 +132,15 @@ def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_dat
         ## it's slow # nan_locs = np.argwhere(np.isnan(ds[var].values))
         if All_na_condition:
             nan_locs = np.argwhere(np.isnan(ds[var].values).all(axis=-1))
-        else:    
+        else:
             nan_locs = np.argwhere(np.isnan(ds[var].values).any(axis=-1))
-        #It will get 204969 points if scan u_amp, v_amp, u_ph, v_ph     
+        #It will get 204969 points if scan u_amp, v_amp, u_ph, v_ph
         for loc in nan_locs:
             ilat_idx, ilon_idx = loc
             if not bathy_mask[ilat_idx, ilon_idx] and bathy_data[ilat_idx, ilon_idx] > 0.0:
                 coords_to_recompute.add((ilat_idx, ilon_idx))
 
-               
+
     total_points = len(coords_to_recompute)
     print(f"Total points to process: {total_points}")
 
@@ -167,7 +167,7 @@ def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_dat
                 ds['u_ph'][start_lat:end_lat, start_lon:end_lon, :] = ph
             else:
                 ds['v_amp'][start_lat:end_lat, start_lon:end_lon, :] = amp
-                ds['v_ph'][start_lat:end_lat, start_lon:end_lon, :] = ph    
+                ds['v_ph'][start_lat:end_lat, start_lon:end_lon, :] = ph
 
     # If there are still individual points left, you might want to process them separately
     # remaining_points = coords_to_recompute - filtered_coords
@@ -205,29 +205,30 @@ def main():
     st = time.time()
     start_time = datetime.fromtimestamp(st)
     print("Fill_NA Main process start: ", start_time)
-    input_file = "../data/tpxo9_fillna08.zarr"
+    input_file = "../data/tpxo9_fillna11.zarr"
     output_file = "../data/tpxo9.zarr"
-    resave_file = "../data/tpxo9_fillna09.zarr"
+    resave_file = "../data/tpxo9_fillna12.zarr"
     All_NA_CONDITION = False #all NA or any NA in constituents should be recomputed
     #SAVE_SMALL_DATA = False #always False
+    RESAVE = False
 
     lonz, latz, bathy_z = read_netcdf_grid(BATHY_gridfile, variable='z')
 
     ds = replace_na_from_second_dataset(
             input_file, lonz, latz, bathy_z.mask, bathy_z.data,
-            variables=['u_ph', 'v_ph'], neighborx=5, neighbory=5,
+            variables=['u_ph', 'v_ph'], neighborx=3, neighbory=2,
             All_na_condition=All_NA_CONDITION)
 
     log_elapsed_time(st, "1. Replace NA")
 
     # Save the updated dataset but may too large to overload memory
-    st = time.time()          
+    st = time.time()
     start_time = datetime.fromtimestamp(st)
 
     if False: #SAVE_SMALL_DATA:
         ds.to_zarr(output_file, mode='w')
         # ds.close()
-    else:     
+    else:
         print("Start to re-write zarr dataset...: ", start_time)
         store = zarr.open(output_file, mode='w')
 
@@ -236,14 +237,14 @@ def main():
             data = ds[dim_name].values
             chunks = ds[dim_name].encoding.get('chunks', ds[dim_name].shape)
             dtype = ds[dim_name].dtype
-    
+
             # Check if dtype is object and handle accordingly
             if dtype == object:
                 codec = MsgPack()
                 arr = store.array(dim_name, data=data, chunks=chunks, dtype=dtype, object_codec=codec)
             else:
                 arr = store.array(dim_name, data=data, chunks=chunks, dtype=dtype)
-    
+
             arr.attrs['_ARRAY_DIMENSIONS'] = [dim_name]
 
         # Assuming chunking over lat and lon as in your example
@@ -275,9 +276,10 @@ def main():
     print("Save ok!! Now consolidate_metadata")
     zarr.convenience.consolidate_metadata(output_file)
 
-    print("Start to resave the fillna zarr dataset: ", resave_file)
-    resave_fillna_dataset(input_file, output_file, resave_file, All_na_condition=All_NA_CONDITION)
-    log_elapsed_time(st, "3. Re-save ok!! All processes done")
+    if RESAVE:
+        print("Start to resave the fillna zarr dataset: ", resave_file)
+        resave_fillna_dataset(input_file, output_file, resave_file, All_na_condition=All_NA_CONDITION)
+        log_elapsed_time(st, "3. Re-save ok!! All processes done")
 
 
 if __name__ == '__main__':

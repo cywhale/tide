@@ -5,7 +5,7 @@ import polars as pl
 from fastapi import FastAPI, status, Query, HTTPException
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, ORJSONResponse
 from fastapi.encoders import jsonable_encoder
 from typing import Optional #List
 from pydantic import Field #BaseModel,
@@ -36,7 +36,7 @@ def generate_custom_openapi():
     return app.openapi_schema
 
 
-app = FastAPI(root_path="/tide", docs_url=None)
+app = FastAPI(root_path="/tide", docs_url=None, default_response_class=ORJSONResponse)
 
 
 @app.get("/api/swagger/tide/openapi.json", include_in_schema=False)
@@ -89,11 +89,13 @@ def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1): #,
     longitude, latitude = np.meshgrid(lon, lat)
 
     # Flatten the longitude and latitude grids
-    longitude_flat = longitude.ravel().tolist()
+    longitude_flat = longitude.ravel()
+    mask = longitude_flat > 180
+    longitude_flat = np.where(mask, longitude_flat - 360, longitude_flat)
     latitude_flat = latitude.ravel().tolist()
 
     out_dict = {
-        'longitude': longitude_flat,
+        'longitude': longitude_flat.tolist(),
         'latitude': latitude_flat,
         'time': dtime if mode == 'time' else [dtime[0]]
     }
@@ -157,7 +159,10 @@ async def get_tide(
         5, description="Re-sampling every N points(default 5)"),
     mode: Optional[str] = Query(
         None,
-        description="Allowed modes: row. Optional can be none"),
+        description="Allowed modes, and ptional can be none (default output is in list format). Multiple/special modes can be specified and separated by comma"),
+    tol: Optional[float] = Query(
+        None, 
+        description="Tolerance for nearest method, only work for querying single point. Nearest method can explictly specied in mode as a special mode, or by just giving tolerance value. Default tolerance is ±1/30 degree, and maximum is ±2.5*1/30 degree."),
     append: Optional[str] = Query(
         None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z, u, v"),
     constituent: Optional[str] = Query(
@@ -226,17 +231,35 @@ async def get_tide(
         if lon1 is None or lat1 is None or (orig_lon0 == orig_lon1 and lat0 == lat1) or (abs(lat1 - lat0) < config.gridSz and abs(orig_lon1 - orig_lon0) < config.gridSz):
             # Only one point, no date range limitation
             #dsub = config.dz.sel(lat=lat0, lon=lon0, constituents=cons, method='nearest')
-            dsub = config.dz.sel(lon=slice(lon0, lon0+1.0*config.gridSz),
-                                 lat=slice(lat0, lat0+1.0*config.gridSz),
-                                 constituents=cons)
+            findNear = False
+            if 'nearest' in mode.lower():
+                findNear = True
+
+            if not tol in [np.nan, np.NaN, None] or findNear:
+                findNear = True        
+                if tol in [np.nan, np.NaN, None] or tol <= 0:
+                    tol = config.gridSz
+                elif tol > 2.5*config.gridSz:
+                    tol = 2.5*config.gridSz
+
+            if findNear:
+                dsub = config.dz.sel(lon=lon0, lat=lat0, method="nearest", tolerance=tol).sel(constituents=cons)
+            else:
+                dsub = config.dz.sel(lon=slice(lon0, lon0+1.0*config.gridSz),
+                                     lat=slice(lat0, lat0+1.0*config.gridSz),
+                                     constituents=cons)
             tide = {}
             for var in variables:
                 amp_var = f'{var}_amp'
                 ph_var = f'{var}_ph'
 
-                ts = get_tide_series(dsub[amp_var].isel(lon=0, lat=0).values,
-                                     dsub[ph_var].isel(lon=0, lat=0).values,
-                                     cons, tide_time, format="netcdf", unit="cm", drop_mask=True)
+                if findNear:
+                    ts = get_tide_series(dsub[amp_var].values, dsub[ph_var].values,
+                                         cons, tide_time, format="netcdf", unit="cm", drop_mask=True)
+                else:
+                    ts = get_tide_series(dsub[amp_var].isel(lon=0, lat=0).values,
+                                         dsub[ph_var].isel(lon=0, lat=0).values,
+                                         cons, tide_time, format="netcdf", unit="cm", drop_mask=True)
                 tide[var] = ts
         else:
             # Bounding box
@@ -252,7 +275,6 @@ async def get_tide(
 
             if lon1 == lon0 or abs(lon1 - lon0) < config.gridSz:
                 offset_lon = 1.0
-                #print("lon0, lon1 equal: ", lon0, lon1)
 
             if lon1 < lon0:
                 lon0, lon1 = lon1, lon0
@@ -274,15 +296,15 @@ async def get_tide(
 
             if np.sign(orig_lon0) != np.sign(orig_lon1):
                 # Requested area crosses the zero meridian
-                if orig_lon1 < 0:
-                    # Swap if orig_lon1 < 0 and now 180 < lon1 < 360
-                    lon0, lon1 = lon1, lon0
-                    orig_lon0, orig_lon1 = orig_lon1, orig_lon0
-
+                # The following should not happen because lon1 < lon0 had been swapped aboving
+                #if orig_lon1 < 0:
+                #    # Swap if orig_lon1 < 0 and now 180 < lon1 < 360
+                #    lon0, lon1 = lon1, lon0
+                #    orig_lon0, orig_lon1 = orig_lon1, orig_lon0
                 subset1 = config.dz.sel(
                     lon=slice(lon0, 360), lat=slice(lat0, lat1+offset_lat*config.gridSz), constituents=cons)
                 subset2 = config.dz.sel(
-                    lon=slice(0, lon1), lat=slice(lat0, lat1+offset_lat*config.gridSz), constituents=cons)
+                    lon=slice(0, lon1+1.0*config.gridSz), lat=slice(lat0, lat1+offset_lat*config.gridSz), constituents=cons)
                 ds1 = xr.concat([subset1, subset2], dim='lon')
             else:
                 # Requested area doesn't cross the zero meridian
@@ -298,12 +320,12 @@ async def get_tide(
             output_mode = 'map'
 
         #if mode is None or mode != 'row':
-        print(tide)
+        #print(tide)
         out = tide_to_output(tide, dsub.coords['lon'].values, dsub.coords['lat'].values, dtime, variables, output_mode, absmax=10000.0) #, 'list')
-        return JSONResponse(content=jsonable_encoder(out))
+        return ORJSONResponse(content=jsonable_encoder(out))
         #else:
         #    out = tide_to_output(tide, dsub.coords['lon'].values, dsub.coords['lat'].values, variables, 'dataframe')
-        #    return JSONResponse(content=out.to_dicts())
+        #    return ORJSONResponse(content=out.to_dicts())
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -378,7 +400,21 @@ def const_to_output(data_dict): #, data_var='amp'):
 
     return df
 """
-def const_to_output(data_dict):
+def data_to_wide(df): 
+    # Convert to wide format (use methods discussed earlier)
+    # Note wide format conversion cannot allow NA rows
+    # df = df.dropna().reset_index(drop=True)
+    # print("Before to wide: ", df)
+    # print(df['longitude'].apply(type).unique())
+    wide_format = df.pivot_table(index=['longitude', 'latitude', 'type'], 
+                                 columns=['constituents', 'variable'], 
+                                 values='value').reset_index()
+    col_names = ['longitude', 'latitude', 'type'] + \
+                [f"{c[0].upper()}_{c[1]}"for c in wide_format.columns[3:]]
+    wide_format.columns = col_names
+    return wide_format
+
+def const_to_output(data_dict, mode):
     data_list = []
 
     for data in data_dict:
@@ -400,10 +436,13 @@ def const_to_output(data_dict):
                     data_list.append(row_dict)
 
     df = pd.DataFrame(data_list)
+    if 'wide' in mode.lower():
+        return data_to_wide(df)
+        
     return df
 
 
-def get_constituent(dz, vars=['amp', 'ph'],
+def get_constituent(dz, lon, lat, vars=['amp', 'ph'],
                     constituent=['q1', 'o1', 'p1', 'k1', 'n2', 'm2', 's1', 's2', 'k2', 'm4', 'ms4', 'mn4', '2n2', 'mf', 'mm'],
                     type=['u', 'v']):
     # Note dz should be a filtered zarr dataset including only filtered constituents
@@ -412,6 +451,11 @@ def get_constituent(dz, vars=['amp', 'ph'],
     imag = {}
     real = {}
     out = {}
+    lon = lon-360 if lon > 180 else lon
+    out['longitude'] = lon
+    out['latitude'] = lat
+    if (lon == 120.1375 and lat == 23.61861):
+        print("Find target: ", dz)
 
     #vars = list(set([var.strip() for var in mode.split(',') if var.strip() in ['amp', 'ph', 'hc']]))
     if not vars:
@@ -431,14 +475,14 @@ def get_constituent(dz, vars=['amp', 'ph'],
             real[key] = float(hc.real.ravel())
 
     if 'amp' in vars:
-        out["amplitude"] = amplitudes
+        out["amp"] = amplitudes
 
     if 'ph' in vars:
-        out["phase"] = phase
+        out["ph"] = phase
 
     if 'hc' in vars:
-        out["hc_real"] = real
-        out["hc_imag"] = imag
+        out["real"] = real
+        out["imag"] = imag
 
     return out
 
@@ -455,7 +499,10 @@ async def get_tide_const(
             example="25.02,24.82"),
     mode: Optional[str] = Query(
         None,
-        description="Allowed modes: row. Optional can be none"),
+        description="Allowed modes: object, row, wide. Optional can be none (default output is in list format), and multiple/special modes can be separated by comma"),
+    tol: Optional[float] = Query(
+        None, 
+        description="Tolerance for nearest method to locate points. Nearest method can explictly specied in mode as a special mode, or by just giving tolerance value. Default tolerance is ±1/30 degree, and maximum is ±2.5*1/30 degree."),
     append: Optional[str] = Query(
         None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z, u, v"),
     constituent: Optional[str] = Query(
@@ -537,34 +584,72 @@ async def get_tide_const(
     if not pars:
         pars = ['amp', 'ph']
 
+    findNear = False
+    if 'nearest' in mode.lower():
+        findNear = True
+
+    if not tol in [np.nan, np.NaN, None] or findNear:
+        findNear = True        
+        if tol in [np.nan, np.NaN, None] or tol <= 0:
+            tol = config.gridSz
+        elif tol > 2.5*config.gridSz:
+            tol = 2.5*config.gridSz
+
+    #pre-subsetting if bounding box within 45 x 45 degrees
+    min_lon, max_lon = min(loni), max(loni)
+    min_lat, max_lat = min(lati), max(lati)
+    lon_rng = max_lon - min_lon
+    lat_rng = max_lat - min_lat
+    if (lon_rng > config.LON_RANGE_LIMIT and lat_rng > config.LAT_RANGE_LIMIT) or lon_rng * lat_rng > config.AREA_LIMIT or np.sign(min_lon) != np.sign(max_lon):
+        # Note if sign is different, do pre-subset may cause error because we must use slice in ds.sel
+        ds = config.dz.sel(constituents=cons)   
+    else:
+        #if np.sign(min_lon) != np.sign(max_lon):
+        #    min_lon, max_lon = min(mlon), max(mlon)   
+        #    subset1 = config.dz.sel(
+        #            lon=slice(min_lon, 360),
+        #            lat=slice(min_lat, max_lat+1.0*config.gridSz),
+        #            constituents=cons)
+        #    subset2 = config.dz.sel(
+        #            lon=slice(0, max_lon+1.0*config.gridSz),
+        #            lat=slice(min_lat, max_lat+1.0*config.gridSz),
+        #            constituents=cons)
+        #    ds = xr.concat([subset1, subset2], dim='lon')
+        #else:    
+        min_lon, max_lon = min(mlon), max(mlon)
+        ds = config.dz.sel(lon=slice(min_lon, max_lon+1.0*config.gridSz),
+                    lat=slice(min_lat, max_lat+1.0*config.gridSz),
+                    constituents=cons)
+       
     out = []
     for lon0, lat0 in zip(mlon, mlat):
-        dsub = config.dz.sel(lon=slice(lon0, lon0+1.0*config.gridSz),
-                             lat=slice(lat0, lat0+1.0*config.gridSz),
-                             constituents=cons)
-        results = {}
-        results['longitude'] = lon0
-        results['latitude'] = lat0
+        if findNear:
+            dsub = ds.sel(lon=lon0, lat=lat0, method="nearest", tolerance=tol)
+        else:
+            dsub = ds.sel(lon=slice(lon0, lon0+1.0*config.gridSz),
+                          lat=slice(lat0, lat0+1.0*config.gridSz))
+        #results = {}
+        #results['longitude'] = lon0
+        #results['latitude'] = lat0
         #results['grid_lon'] = dsub["lon"].values[0]
         #results['grid_lat'] = dsub["lat"].values[0]
-        constants = get_constituent(dsub, vars=pars, constituent=cons, type=variables)
-        for key, value in constants.items():
-            results[key] = value
-        out.append(results)
+        constants = get_constituent(dsub, lon0, lat0, vars=pars, constituent=cons, type=variables)
+        #for key, value in constants.items():
+        #    results[key] = value
+        out.append(constants)
+    #print(out)
 
-    print(out)
-
-
-    if mode is not None and mode == 'object':
+    if mode is not None and 'object' in mode.lower():
         out_encoded = custom_encoder(out)
         # Serialize the data to JSON
         # json_data = json.dumps(out_encoded)
-        return JSONResponse(content=jsonable_encoder(custom_encoder(out)))
+        return ORJSONResponse(content=jsonable_encoder(custom_encoder(out)))
 
-    dfout = const_to_output(out) #, pars[0])
+    dfout = const_to_output(out, mode)
+    #dfout = dfout.where(pd.notna(dfout), None)
     #print(dfout)
-    if mode is not None and mode == 'row':
+    if mode is not None and 'row' in mode.lower():
         df1 = pl.from_pandas(dfout)
-        return JSONResponse(content=df1.to_dicts())
+        return ORJSONResponse(content=df1.to_dicts())
 
-    return JSONResponse(content=dfout.to_dict())
+    return ORJSONResponse(content=dfout.to_dict())
