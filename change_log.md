@@ -18,3 +18,5 @@
     -- small fix TypeError: expected unicode string, found 15 problem in constituents, fill NA/n11
 
 #### ver 0.0.8 Add nearest method to locate points by Zarr; Validate api results with Jen's paper
+
+    -- change to use pipenv for package version management    

@@ -454,10 +454,9 @@ def get_constituent(dz, lon, lat, vars=['amp', 'ph'],
     lon = lon-360 if lon > 180 else lon
     out['longitude'] = lon
     out['latitude'] = lat
-    if (lon == 120.1375 and lat == 23.61861):
-        print("Find target: ", dz)
-
-    #vars = list(set([var.strip() for var in mode.split(',') if var.strip() in ['amp', 'ph', 'hc']]))
+    # Just debug if (lon == 120.1375 and lat == 23.61861):
+    #                print("Find target: ", dz)
+    # vars = list(set([var.strip() for var in mode.split(',') if var.strip() in ['amp', 'ph', 'hc']]))
     if not vars:
         vars = ['amp', 'ph']
 
