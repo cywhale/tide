@@ -142,7 +142,7 @@ async def startup():
     config.cons = config.dz.coords['constituents'].values
 
 
-@app.get("/tide")
+@app.get("/api/tide")
 async def get_tide(
     lon0: float = Query(...,
                         description="Minimum longitude, range: [-180, 180]"),
@@ -161,7 +161,7 @@ async def get_tide(
         None,
         description="Allowed modes, and ptional can be none (default output is in list format). Multiple/special modes can be specified and separated by comma"),
     tol: Optional[float] = Query(
-        None, 
+        None,
         description="Tolerance for nearest method, only work for querying single point. Nearest method can explictly specied in mode as a special mode, or by just giving tolerance value. Default tolerance is ±1/30 degree, and maximum is ±2.5*1/30 degree."),
     append: Optional[str] = Query(
         None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z, u, v"),
@@ -400,7 +400,7 @@ def const_to_output(data_dict): #, data_var='amp'):
 
     return df
 """
-def data_to_wide(df): 
+def data_to_wide(df):
     # Convert to wide format (use methods discussed earlier)
     # Note wide format conversion cannot allow NA rows
     # df = df.dropna().reset_index(drop=True)
@@ -438,7 +438,7 @@ def const_to_output(data_dict, mode):
     df = pd.DataFrame(data_list)
     if 'wide' in mode.lower():
         return data_to_wide(df)
-        
+
     return df
 
 
@@ -486,7 +486,7 @@ def get_constituent(dz, lon, lat, vars=['amp', 'ph'],
     return out
 
 
-@app.get("/tide/const")
+@app.get("/api/tide/const")
 async def get_tide_const(
     lon: Optional[str] = Query(
             None,

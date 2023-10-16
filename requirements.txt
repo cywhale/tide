@@ -8,6 +8,7 @@ netCDF4==1.6.4
 netCDF4==1.6.4
 numcodecs==0.12.0
 numpy==1.25.2
+orjson==3.9.9
 pandas==2.1.1
 polars==0.19.8
 pydantic==2.4.2
