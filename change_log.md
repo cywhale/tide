@@ -19,4 +19,6 @@
 
 #### ver 0.0.8 Add nearest method to locate points by Zarr; Validate api results with Jen's paper
 
-    -- change to use pipenv for package version management    
+    -- change to use pipenv for package version management
+
+#### ver 0.0.9 Use vectorized/nearest method to solve mult-point constituents/fix datetime, mode None problems

@@ -26,10 +26,10 @@ def resave_fillna_dataset(method1, method2):
             ds1[var] = xr.where(condition, ds2[var], ds1[var])
 
     # Save the corrected dataset
-    ds1.to_zarr('../data/tpxo9_fillna11.zarr')
+    ds1.to_zarr('../data/tpxo9.zarr')
 
 
 if __name__ == "__main__":
-    method1_file = "../data/tpxo9_fillna10.zarr" #"tpxo9_method1.zarr" #All_NA_CONDITION set False 
-    method2_file = "../data/tpxo9.zarr" #"tpxo9_method2.zarr"
+    method1_file = "../data/tpxo9_fillna11.zarr" #"tpxo9_method1.zarr" #All_NA_CONDITION set False 
+    method2_file = "../data/tpxo9_new.zarr" #"tpxo9_method2.zarr"
     resave_fillna_dataset(method1_file, method2_file)
