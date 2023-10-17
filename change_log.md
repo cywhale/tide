@@ -22,3 +22,5 @@
     -- change to use pipenv for package version management
 
 #### ver 0.0.9 Use vectorized/nearest method to solve mult-point constituents/fix datetime, mode None problems
+
+    -- change wide dataframe format is default. Specify mode=long if long format is preferred

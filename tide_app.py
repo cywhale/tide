@@ -233,7 +233,7 @@ async def get_tide(
             # Only one point, no date range limitation
             #dsub = config.dz.sel(lat=lat0, lon=lon0, constituents=cons, method='nearest')
             findNear = False
-            if 'nearest' in mode.lower():
+            if 'nearest' in mode:
                 findNear = True
 
             if not tol in [np.nan, np.NaN, None] or findNear:
@@ -410,7 +410,7 @@ def data_to_wide(df, mode):
     wide_format = df.pivot_table(index=['longitude', 'latitude', 'grid_lon', 'grid_lat', 'type'], 
                                  columns=['constituents', 'variable'], 
                                  values='value').reset_index()
-    #if 'uppercase' in mode.lower():
+    #if 'uppercase' in mode:
     #    col_names = ['longitude', 'latitude', 'type'] + \
     #                [f"{c[0].upper()}_{c[1]}"for c in wide_format.columns[3:]]
     #else:
@@ -442,10 +442,10 @@ def const_to_output(data_dict, mode):
                     data_list.append(row_dict)
 
     df = pd.DataFrame(data_list)
-    if 'wide' in mode.lower():
-        return data_to_wide(df)
-
-    return df
+    if 'long' in mode:
+        return df
+    
+    return data_to_wide(df, mode)
 
 
 def const_to_output_vec(data_dict, mode):
@@ -473,10 +473,10 @@ def const_to_output_vec(data_dict, mode):
             data_list.append(row_dict)
 
     df = pd.DataFrame(data_list)
-    if 'wide' in mode.lower():
-        return data_to_wide(df, mode)
-
-    return df
+    if 'long' in mode:
+        return df
+    
+    return data_to_wide(df, mode)
 
 
 def get_constituent_vec(
@@ -563,7 +563,7 @@ async def get_tide_const(
             example="25.02,24.82"),
     mode: Optional[str] = Query(
         None,
-        description="Allowed modes: object, row, wide. Optional can be none (default output is dataframe in wide format), and multiple/special modes can be separated by comma"),
+        description="Allowed modes: object, row (in wide format). Optional can be none (default output is dataframe in wide format), and multiple/special modes can be separated by comma"),
     tol: Optional[float] = Query(
         None, 
         description="Tolerance for nearest method to locate points. Nearest method can explictly specied in mode as a special mode, or by just giving tolerance value. Default tolerance is ±1/30 degree, and maximum is ±0.25 degree."),
@@ -658,13 +658,13 @@ async def get_tide_const(
     if not pars:
         pars = ['amp', 'ph']
 
-    if mode is None:
-        mode = 'wide'
+    mode = 'list' if mode is None else mode.lower()
+
     if onlyOnePt:
         mode = mode + ',onlyOnePt'    
 
     findNear = False
-    if 'nearest' in mode.lower():
+    if 'nearest' in mode:
         findNear = True
 
     if not tol in [np.nan, np.NaN, None] or findNear:
@@ -738,7 +738,7 @@ async def get_tide_const(
     #    out.append(constants)
     # print("Test vec version:", out)
 
-    if mode is not None and 'object' in mode.lower():
+    if mode is not None and 'object' in mode:
         out_encoded = custom_encoder(out)
         # Serialize the data to JSON
         # json_data = json.dumps(out_encoded)
@@ -747,7 +747,7 @@ async def get_tide_const(
     dfout = const_to_output_vec(out, mode)
     #dfout = dfout.where(pd.notna(dfout), None)
     #print(dfout)
-    if mode is not None and 'row' in mode.lower():
+    if mode is not None and 'row' in mode:
         df1 = pl.from_pandas(dfout)
         return ORJSONResponse(content=df1.to_dicts())
 
