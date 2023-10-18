@@ -201,13 +201,34 @@ def resave_fillna_dataset(method1, method2, save_file, All_na_condition=True):
     # Save the corrected dataset
     ds1.to_zarr(save_file)
 
+
+# parallel write to zarr version 20231017
+def save_chunk_to_zarr(store, ds, i, j, chunk_size):
+    # Extract chunk from dataset
+    ds_chunk = ds.isel(lat=slice(i, i+chunk_size), lon=slice(j, j+chunk_size))
+    # Write chunk to appropriate location in Zarr store
+    for var_name, variable in ds_chunk.data_vars.items():
+        store[var_name][i:i+chunk_size, j:j+chunk_size, :] = variable.values
+
+
+def save_dataset_parallel(ds, store, chunk_size, max_workers=4):
+    tasks = []
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        for i in range(0, len(ds['lat']), chunk_size):
+            for j in range(0, len(ds['lon']), chunk_size):
+                tasks.append(executor.submit(save_chunk_to_zarr, store, ds, i, j, chunk_size))
+        # Ensure all tasks have finished
+        for future in as_completed(tasks):
+            future.result()
+
+
 def main():
     st = time.time()
     start_time = datetime.fromtimestamp(st)
     print("Fill_NA Main process start: ", start_time)
-    input_file = "../data/tpxo9_fillna11.zarr"
-    output_file = "../data/tpxo9.zarr"
-    resave_file = "../data/tpxo9_fillna12.zarr"
+    input_file = "../data/tpxo9_fillna12.zarr"
+    output_file = "../data/tpxo9_new.zarr"
+    resave_file = "../data/tpxo9_fillna13.zarr"
     All_NA_CONDITION = False #all NA or any NA in constituents should be recomputed
     #SAVE_SMALL_DATA = False #always False
     RESAVE = False
@@ -216,7 +237,7 @@ def main():
 
     ds = replace_na_from_second_dataset(
             input_file, lonz, latz, bathy_z.mask, bathy_z.data,
-            variables=['u_ph', 'v_ph'], neighborx=3, neighbory=2,
+            variables=['u_amp', 'v_ph'], neighborx=2, neighbory=4,
             All_na_condition=All_NA_CONDITION)
 
     log_elapsed_time(st, "1. Replace NA")
@@ -258,16 +279,18 @@ def main():
             arr = store.empty(var_name, shape=shape, dtype=dtype, chunks=chunks)
             arr.attrs['_ARRAY_DIMENSIONS'] = ['lat', 'lon', 'constituents']
 
-        # Write data in chunks
-        for i in range(0, len(ds['lat']), chunk_size):
-            for j in range(0, len(ds['lon']), chunk_size):
+        # Write data in chunks by one-core
+        #for i in range(0, len(ds['lat']), chunk_size):
+        #    for j in range(0, len(ds['lon']), chunk_size):
 
-                # Extract chunk from dataset
-                ds_chunk = ds.isel(lat=slice(i, i+chunk_size), lon=slice(j, j+chunk_size))
+        #        # Extract chunk from dataset
+        #        ds_chunk = ds.isel(lat=slice(i, i+chunk_size), lon=slice(j, j+chunk_size))
 
-                # Write chunk to appropriate location in Zarr store
-                for var_name, variable in ds_chunk.data_vars.items():
-                    store[var_name][i:i+chunk_size, j:j+chunk_size, :] = variable.values
+        #        # Write chunk to appropriate location in Zarr store
+        #        for var_name, variable in ds_chunk.data_vars.items():
+        #            store[var_name][i:i+chunk_size, j:j+chunk_size, :] = variable.values
+        # Parallel version 20231017
+        save_dataset_parallel(ds, store, chunk_size=chunk_size, max_workers=int(maxWorkers/2)) #save only use maxWorkers/2
 
     log_elapsed_time(st, "2. Save result to output_file")
 

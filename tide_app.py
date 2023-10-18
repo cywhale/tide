@@ -24,7 +24,7 @@ def generate_custom_openapi():
     openapi_schema = get_openapi(
         title="ODB Tide API",
         version="1.0.0",
-        # description="ODB geoconv API schema",
+        description="ODB Open API to query TPXO9-v5 global tide models",
         routes=app.routes,
     )
     openapi_schema["servers"] = [
@@ -172,8 +172,8 @@ async def get_tide(
     Query tide from TPXO9-atlas-v5 model by longitude/latitude/date (in JSON).
 
     #### Usage
-    * One-point tide height with time-span limitation (<= 30 days, hourly data): e.g. /tide?lon0=135&lat0=15&start=2023-07-25&end=2023-07-26T01:30:00.000Z
-    * Get current in bounding-box <= 45x45 in degrees at one time moment(in ISOstring): e.g. /tide?lon0=135&lon1&=140&lat0=15&lat1=30&start=2023-07-25T01:30:00.000
+    * One-point tide height with time-span limitation (<= 30 days, hourly data): e.g. /tide?lon0=125&lat0=15&start=2023-07-25&end=2023-07-26T01:30:00.000
+    * Get current in bounding-box <= 45x45 in degrees at one time moment(in ISOstring): e.g. /tide?lon0=125&lon1&=135&lat0=15&lat1=30&start=2023-07-25T01:30:00.000
     """
 
     if append is None:
