@@ -1,7 +1,9 @@
 import numpy as np
 import xarray as xr
 from concurrent.futures import ProcessPoolExecutor, as_completed
-# from dask import delayed, compute
+import dask.array as da
+from dask import delayed #, compute
+from dask.diagnostics import ProgressBar
 # from dask.distributed import get_client, default_client, LocalCluster, Client
 from pyTMD.io import ATLAS
 from src.model_utils import get_current_model
@@ -10,9 +12,9 @@ from numcodecs import MsgPack
 import zarr
 import time
 from datetime import datetime
-# import logging
-# logging.basicConfig(level=logging.INFO)
 
+# import logging
+# logging.basicConfig(level=logging.DEBUG)
 # client = Client('tcp://localhost:8786')
 # try:
 #    client = get_client()
@@ -32,7 +34,7 @@ tpxo_model = get_current_model(
 
 ## Global variables
 maxWorkers = 12
-
+MAX_CLUSTERS = -1 #None if need test
 
 def log_elapsed_time(start_time, work=""):
     et = time.time()
@@ -149,6 +151,10 @@ def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_dat
     clusters = filter_and_form_clusters(coords_to_recompute, neighborx=neighborx, neighbory=neighbory)
     print(f"Total clusters to process: {len(clusters)}")
 
+    if MAX_CLUSTERS is not None and MAX_CLUSTERS >= 0: #force test
+        clusters = clusters[:MAX_CLUSTERS]
+        print(f"Using only first {MAX_CLUSTERS} clusters for this test run.")
+
     with ProcessPoolExecutor(max_workers=maxWorkers) as executor:
         futures_list = []
         total_clusters = len(clusters)
@@ -202,24 +208,21 @@ def resave_fillna_dataset(method1, method2, save_file, All_na_condition=True):
     ds1.to_zarr(save_file)
 
 
-# parallel write to zarr version 20231017
-def save_chunk_to_zarr(store, ds, i, j, chunk_size):
-    # Extract chunk from dataset
-    ds_chunk = ds.isel(lat=slice(i, i+chunk_size), lon=slice(j, j+chunk_size))
-    # Write chunk to appropriate location in Zarr store
-    for var_name, variable in ds_chunk.data_vars.items():
-        store[var_name][i:i+chunk_size, j:j+chunk_size, :] = variable.values
+def save_dataset_parallel(ds, store, chunk_size):
+    # Convert xarray dataset to dask-backed arrays
+    ds_dask = ds.chunk({'lat': chunk_size, 'lon': chunk_size})
+    dask_arrays = {var: da.from_array(ds_dask[var].values, chunks=(chunk_size, chunk_size, -1)) for var in ds.data_vars}
 
+    # Create placeholder arrays in the Zarr store
+    for var_name, dask_arr in dask_arrays.items():
+        zarr_arr = store.empty(var_name, shape=dask_arr.shape, dtype=dask_arr.dtype, chunks=dask_arr.chunksize)
+        zarr_arr.attrs['_ARRAY_DIMENSIONS'] = ['lat', 'lon', 'constituents']
 
-def save_dataset_parallel(ds, store, chunk_size, max_workers=4):
-    tasks = []
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for i in range(0, len(ds['lat']), chunk_size):
-            for j in range(0, len(ds['lon']), chunk_size):
-                tasks.append(executor.submit(save_chunk_to_zarr, store, ds, i, j, chunk_size))
-        # Ensure all tasks have finished
-        for future in as_completed(tasks):
-            future.result()
+    # Store dask-backed arrays to Zarr with parallel writes
+    with ProgressBar():
+        for var_name, dask_arr in dask_arrays.items():
+            print("Current process: ", var_name)
+            da.to_zarr(dask_arr, store[var_name], compute=True)
 
 
 def main():
@@ -272,25 +275,14 @@ def main():
         chunk_size = 338
 
         # Create placeholder arrays with `_ARRAY_DIMENSIONS` attribute
-        for var_name in ds.data_vars:
-            shape = ds[var_name].shape
-            dtype = ds[var_name].dtype
-            chunks = (chunk_size, chunk_size, ds['constituents'].shape[0])  # Assuming 3D data with constituents as the third dimension
-            arr = store.empty(var_name, shape=shape, dtype=dtype, chunks=chunks)
-            arr.attrs['_ARRAY_DIMENSIONS'] = ['lat', 'lon', 'constituents']
+        # for var_name in ds.data_vars:
+        #     shape = ds[var_name].shape
+        #     dtype = ds[var_name].dtype
+        #     chunks = (chunk_size, chunk_size, ds['constituents'].shape[0])  # Assuming 3D data with constituents as the third dimension
+        #     arr = store.empty(var_name, shape=shape, dtype=dtype, chunks=chunks)
+        #     arr.attrs['_ARRAY_DIMENSIONS'] = ['lat', 'lon', 'constituents']
 
-        # Write data in chunks by one-core
-        #for i in range(0, len(ds['lat']), chunk_size):
-        #    for j in range(0, len(ds['lon']), chunk_size):
-
-        #        # Extract chunk from dataset
-        #        ds_chunk = ds.isel(lat=slice(i, i+chunk_size), lon=slice(j, j+chunk_size))
-
-        #        # Write chunk to appropriate location in Zarr store
-        #        for var_name, variable in ds_chunk.data_vars.items():
-        #            store[var_name][i:i+chunk_size, j:j+chunk_size, :] = variable.values
-        # Parallel version 20231017
-        save_dataset_parallel(ds, store, chunk_size=chunk_size, max_workers=int(maxWorkers/2)) #save only use maxWorkers/2
+        save_dataset_parallel(ds, store, chunk_size=chunk_size)
 
     log_elapsed_time(st, "2. Save result to output_file")
 

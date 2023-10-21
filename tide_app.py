@@ -24,7 +24,7 @@ def generate_custom_openapi():
     openapi_schema = get_openapi(
         title="ODB Tide API",
         version="1.0.0",
-        description="ODB Open API to query TPXO9-v5 global tide models",
+        description='Open API to query TPXO9-v5 global tide models, compiled by ODB. Reference: Egbert, Gary D., and Svetlana Y. Erofeeva. "Efficient inverse modeling of barotropic ocean tides." Journal of Atmospheric and Oceanic Technology 19.2 (2002): 183-204.',
         routes=app.routes,
     )
     openapi_schema["servers"] = [
@@ -158,12 +158,12 @@ async def get_tide(
         5, description="Re-sampling every N points(default 5)"),
     mode: Optional[str] = Query(
         None,
-        description="Allowed modes, and ptional can be none (default output is in list format). Multiple/special modes can be specified and separated by comma"),
+        description="Allowed modes: list. Optional can be none (default output is list). Multiple/special modes can be separated by comma."),
     tol: Optional[float] = Query(
         None,
-        description="Tolerance for nearest method, only work for querying single point. Nearest method can explictly specied in mode as a special mode, or by just giving tolerance value. Default tolerance is ±1/30 degree, and maximum is ±2.5*1/30 degree."),
+        description="Tolerance for nearest method to locate points. Nearest method can explictly specified in mode as a special mode 'nearest', or by just giving tolerance value. Default tolerance is ±1/30 degree, and maximum is ±0.25 degree."),
     append: Optional[str] = Query(
-        None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z, u, v"),
+        None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z,u,v"),
     constituent: Optional[str] = Query(
         None,
         description="Allowed harmonic constituents are 'q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm'. If none, all 15 constituents will be included in evaluation. See also: https://www.tpxo.net/global")
@@ -563,12 +563,12 @@ async def get_tide_const(
             example="25.02,24.82"),
     mode: Optional[str] = Query(
         None,
-        description="Allowed modes: object, row (in wide format). Optional can be none (default output is dataframe in wide format), and multiple/special modes can be separated by comma"),
+        description="Allowed modes: list, object, row (dataframe in wide format; long-format dataframe is also available as a special mode 'long'). Optional can be none (default output is list). Multiple/special modes can be separated by comma."),
     tol: Optional[float] = Query(
         None, 
-        description="Tolerance for nearest method to locate points. Nearest method can explictly specied in mode as a special mode, or by just giving tolerance value. Default tolerance is ±1/30 degree, and maximum is ±0.25 degree."),
+        description="Tolerance for nearest method to locate points. Nearest method can explictly specified in mode as a special mode 'nearest', or by just giving tolerance value. Default tolerance is ±1/30 degree, and maximum is ±0.25 degree."),
     append: Optional[str] = Query(
-        None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z, u, v"),
+        None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z,u,v"),
     constituent: Optional[str] = Query(
         None,
         description="Allowed harmonic constituents are 'q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm'. If none, all 15 constituents will be included in evaluation. See also: https://www.tpxo.net/global"),
