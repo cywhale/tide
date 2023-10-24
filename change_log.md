@@ -26,3 +26,4 @@
     -- change wide dataframe format is default. Specify mode=long if long format is preferred
     -- /tide/const example to plot tidal ellipses. Parallel re-fill-NA savings
     -- fix Parallel re-fill-NA savings deadlock problem by Dask version
+    -- add FastAPI pydantic response_model

@@ -7,8 +7,8 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, ORJSONResponse
 from fastapi.encoders import jsonable_encoder
-from typing import Optional #List
-from pydantic import Field #validator, BaseModel
+from typing import Optional, List, Union
+from pydantic import Field, BaseModel
 import requests
 import json
 from datetime import datetime, timedelta
@@ -76,7 +76,7 @@ def arr_global_lonlat(lon, lat):
     return lon, lat
 
 
-def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1): #, format="list"):
+def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1):
     # Check if tide is all NaN values
     if all(np.all(np.isnan(np.array(tide[var])) if isinstance(tide[var], list) else np.isnan(tide[var])) for var in variables):
         # Return an empty JSON response
@@ -141,7 +141,16 @@ async def startup():
     config.cons = config.dz.coords['constituents'].values
 
 
-@app.get("/api/tide")
+class TideResponse(BaseModel):
+    longitude: float
+    latitude: float
+    time: str
+    z: Optional[float]
+    u: Optional[float]
+    v: Optional[float]
+
+
+@app.get("/api/tide", response_model=List[TideResponse], tags=["Tide"], summary="Query tide height and tidal current")
 async def get_tide(
     lon0: float = Query(...,
                         description="Minimum longitude, range: [-180, 180]"),
@@ -237,7 +246,7 @@ async def get_tide(
                 findNear = True
 
             if not tol in [np.nan, np.NaN, None] or findNear:
-                findNear = True        
+                findNear = True
                 if tol in [np.nan, np.NaN, None] or tol <= 0:
                     tol = config.gridSz
                 elif tol > 2.5*config.gridSz:
@@ -407,8 +416,8 @@ def data_to_wide(df, mode):
     if 'onlyOnePt' in mode:
         df['value'] = df['value'].apply(lambda x: x[0] if isinstance(x, list) and len(x) > 0 else x)
 
-    wide_format = df.pivot_table(index=['longitude', 'latitude', 'grid_lon', 'grid_lat', 'type'], 
-                                 columns=['constituents', 'variable'], 
+    wide_format = df.pivot_table(index=['longitude', 'latitude', 'grid_lon', 'grid_lat', 'type'],
+                                 columns=['constituents', 'variable'],
                                  values='value').reset_index()
     #if 'uppercase' in mode:
     #    col_names = ['longitude', 'latitude', 'type'] + \
@@ -416,7 +425,7 @@ def data_to_wide(df, mode):
     #else:
     col_names = ['longitude', 'latitude', 'grid_lon', 'grid_lat', 'type'] + \
                 [f"{c[0]}_{c[1]}"for c in wide_format.columns[5:]]
-        
+
     wide_format.columns = col_names
     return wide_format
 
@@ -444,7 +453,7 @@ def const_to_output(data_dict, mode):
     df = pd.DataFrame(data_list)
     if 'long' in mode:
         return df
-    
+
     return data_to_wide(df, mode)
 
 
@@ -475,19 +484,19 @@ def const_to_output_vec(data_dict, mode):
     df = pd.DataFrame(data_list)
     if 'long' in mode:
         return df
-    
+
     return data_to_wide(df, mode)
 
 
 def get_constituent_vec(
-        dsub, loni, lati, vars=['amp', 'ph'], 
-        constituent=['q1', 'o1', 'p1', 'k1', 'n2', 'm2', 's1', 's2', 'k2', 'm4', 'ms4', 'mn4', '2n2', 'mf', 'mm'], 
+        dsub, loni, lati, vars=['amp', 'ph'],
+        constituent=['q1', 'o1', 'p1', 'k1', 'n2', 'm2', 's1', 's2', 'k2', 'm4', 'ms4', 'mn4', '2n2', 'mf', 'mm'],
         type=['u', 'v']):
-    out = {'longitude': loni.tolist(), 
+    out = {'longitude': loni.tolist(),
            'latitude': lati.tolist(),
            'grid_lon': dsub['lon'].values.tolist(),
            'grid_lat': dsub['lat'].values.tolist()}
-    
+
     for TYPE in type:
         amp_all = dsub[TYPE+'_amp'].values
         ph_all = dsub[TYPE+'_ph'].values
@@ -500,7 +509,7 @@ def get_constituent_vec(
             if 'amp' in vars:
                 out[key+"_amp"] = amp.tolist()
             if 'ph' in vars:
-                out[key+"_ph"] = ph.tolist()    
+                out[key+"_ph"] = ph.tolist()
             if 'hc' in vars:
                 out[key+"_real"] = hc.real.tolist()
                 out[key+"_imag"] = hc.imag.tolist()
@@ -551,7 +560,16 @@ def get_constituent(dz, lon, lat, vars=['amp', 'ph'],
     return out
 
 
-@app.get("/api/tide/const")
+class ConstMinResponse(BaseModel):
+    longitude: float
+    latitude: float
+    grid_lon: float
+    grid_lat: float
+    type: str
+
+
+@app.get("/api/tide/const", response_model=List[Union[ConstMinResponse, dict]],
+         tags=["Tide"], summary="Get harmonic constituents of TPXO9 model")
 async def get_tide_const(
     lon: Optional[str] = Query(
             None,
@@ -565,7 +583,7 @@ async def get_tide_const(
         None,
         description="Allowed modes: list, object, row (dataframe in wide format; long-format dataframe is also available as a special mode 'long'). Optional can be none (default output is list). Multiple/special modes can be separated by comma."),
     tol: Optional[float] = Query(
-        None, 
+        None,
         description="Tolerance for nearest method to locate points. Nearest method can explictly specified in mode as a special mode 'nearest', or by just giving tolerance value. Default tolerance is ±1/30 degree, and maximum is ±0.25 degree."),
     append: Optional[str] = Query(
         None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z,u,v"),
@@ -624,7 +642,7 @@ async def get_tide_const(
                             content=jsonable_encoder({"Error": "Check your input of lon/lat should be in equal length"}))
     onlyOnePt = False
     if len(loni) == 1:
-        onlyOnePt = True   
+        onlyOnePt = True
 
     mlon, mlat = arr_global_lonlat(loni, lati) #to 0-360
 
@@ -649,7 +667,7 @@ async def get_tide_const(
     if complex is None:
         complex = 'amp,ph'
 
-    if ',' in complex:       
+    if ',' in complex:
         pars = list(set([par.strip() for par in complex.split(
             ',') if par.strip() in ['amp', 'ph', 'hc']]))
     elif complex.strip() in ['amp', 'ph', 'hc']:
@@ -661,14 +679,14 @@ async def get_tide_const(
     mode = 'list' if mode is None else mode.lower()
 
     if onlyOnePt:
-        mode = mode + ',onlyOnePt'    
+        mode = mode + ',onlyOnePt'
 
     findNear = False
     if 'nearest' in mode:
         findNear = True
 
     if not tol in [np.nan, np.NaN, None] or findNear:
-        findNear = True        
+        findNear = True
         if tol in [np.nan, np.NaN, None] or tol <= 0:
             tol = config.gridSz
         elif tol > 7.5*config.gridSz:
@@ -683,10 +701,10 @@ async def get_tide_const(
         if (lon_rng > config.LON_RANGE_LIMIT and lat_rng > config.LAT_RANGE_LIMIT) or (
             lon_rng * lat_rng > config.AREA_LIMIT) or np.sign(min_lon) != np.sign(max_lon):
             # Note if sign is different, do pre-subset may cause error because we must use slice in ds.sel
-            ds = config.dz.sel(constituents=cons)   
+            ds = config.dz.sel(constituents=cons)
         else:
             #if np.sign(min_lon) != np.sign(max_lon):
-            #    min_lon, max_lon = min(mlon), max(mlon)   
+            #    min_lon, max_lon = min(mlon), max(mlon)
             #    subset1 = config.dz.sel(
             #            lon=slice(min_lon, 360),
             #            lat=slice(min_lat, max_lat+1.0*config.gridSz),
@@ -696,22 +714,22 @@ async def get_tide_const(
             #            lat=slice(min_lat, max_lat+1.0*config.gridSz),
             #            constituents=cons)
             #    ds = xr.concat([subset1, subset2], dim='lon')
-            #else:    
+            #else:
             min_lon, max_lon = min(mlon), max(mlon)
             ds = config.dz.sel(lon=slice(min_lon-0.5*config.gridSz, max_lon+0.5*config.gridSz),
                                lat=slice(min_lat-0.5*config.gridSz, max_lat+0.5*config.gridSz),
-                               constituents=cons)        
+                               constituents=cons)
         #vectorized version
         # Create a multi-dimensional coordinate array for vectorized selection
-        coords = xr.DataArray(np.arange(len(mlon)), 
-                    coords={'points_lon': ('points', mlon), 
+        coords = xr.DataArray(np.arange(len(mlon)),
+                    coords={'points_lon': ('points', mlon),
                             'points_lat': ('points', mlat)}, dims='points')
         if findNear:
             dsub = ds.sel(lon=coords.points_lon, lat=coords.points_lat, method="nearest", tolerance=tol)
         else:
             dsub = ds.sel(lon=coords.points_lon, lat=coords.points_lat, method="nearest", tolerance=0.5*config.gridSz)
 
-    else:        
+    else:
         if findNear:
             dsub = config.dz.sel(lon=mlon[0], lat=mlat[0], method="nearest", tolerance=tol)
         else:
