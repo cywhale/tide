@@ -8,7 +8,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, ORJSONResponse
 from fastapi.encoders import jsonable_encoder
 from typing import Optional, List, Union
-from pydantic import Field, BaseModel
+from pydantic import BaseModel
 import requests
 import json
 from datetime import datetime, timedelta
@@ -235,22 +235,19 @@ async def get_tide(
         mode = 'list'
 
     try:
-        orig_lon0, orig_lon1 = lon0, lon1
-        lon0, lat0 = to_global_lonlat(lon0, lat0)
-
-        if lon1 is None or lat1 is None or (orig_lon0 == orig_lon1 and lat0 == lat1) or (abs(lat1 - lat0) < config.gridSz and abs(orig_lon1 - orig_lon0) < config.gridSz):
+        if lon1 is None or lat1 is None or (lon0 == lon1 and lat0 == lat1) or (abs(lat1 - lat0) < config.gridSz and abs(lon1 - lon0) < config.gridSz):
             # Only one point, no date range limitation
-            #dsub = config.dz.sel(lat=lat0, lon=lon0, constituents=cons, method='nearest')
+            lon0, lat0 = to_global_lonlat(lon0, lat0)
             findNear = False
             if 'nearest' in mode:
                 findNear = True
 
-            if not tol in [np.nan, np.NaN, None] or findNear:
+            if tol not in [np.nan, np.NaN, None] or findNear:
                 findNear = True
                 if tol in [np.nan, np.NaN, None] or tol <= 0:
                     tol = config.gridSz
-                elif tol > 2.5*config.gridSz:
-                    tol = 2.5*config.gridSz
+                elif tol > 7.5*config.gridSz:
+                    tol = 7.5*config.gridSz
 
             if findNear:
                 dsub = config.dz.sel(lon=lon0, lat=lat0, method="nearest", tolerance=tol).sel(constituents=cons)
@@ -273,13 +270,6 @@ async def get_tide(
                 tide[var] = ts
         else:
             # Bounding box
-            # offset_lat = 0.0
-            # offset_lon = 0.0
-            #if lat1 == lat0 or abs(lat1 - lat0) < config.gridSz:
-            #   offset_lat = 0.5 #0.5 means 0.5 * config.gridSz, not in degree
-                #because the to_global_lonlat() not snap to grid, so must expand to ensure have at least one point
-            #if lon1 == lon0 or abs(lon1 - lon0) < config.gridSz:
-            #   offset_lon = 0.5
             if lat1 < lat0:
                 lat0, lat1 = lat1, lat0
             if lon1 < lon0:
@@ -289,18 +279,21 @@ async def get_tide(
             lon0, lat0 = to_global_lonlat(lon0, lat0)
             lon1, lat1 = to_global_lonlat(lon1, lat1)
 
-            lon_range = abs(orig_lon1 - orig_lon0)
+            lon_range = abs(orig_lon1 - orig_lon0) #cannot use lon0, lon1 to evaluate range if cross-zero
             lat_range = abs(lat1 - lat0)
             area_range = lon_range * lat_range
 
             if (lon_range > config.LON_RANGE_LIMIT and lat_range > config.LAT_RANGE_LIMIT) or (area_range > config.AREA_LIMIT):
                 orig_lon1 = orig_lon0 + \
                     config.LON_RANGE_LIMIT if lon_range > config.LON_RANGE_LIMIT else orig_lon1
+                print("Greater than range with lon, lat:", lon0, lat0, lon1, lat1, orig_lon0, orig_lon1)
                 lat1 = lat0 + config.LAT_RANGE_LIMIT if lat_range > config.LAT_RANGE_LIMIT else lat1
-                lon1 = orig_lon1
+                lon1 = orig_lon0 + config.LON_RANGE_LIMIT if lon_range > config.LON_RANGE_LIMIT else orig_lon1
+                orig_lon1 = lon1
                 lon1, lat1 = to_global_lonlat(lon1, lat1)
 
             if np.sign(orig_lon0) != np.sign(orig_lon1):
+                print("Cross-zero lon, lat:", lon0, lat0, lon1, lat1, orig_lon0, orig_lon1)
                 # Requested area crosses the zero meridian
                 # The following should not happen because lon1 < lon0 had been swapped aboving
                 #if orig_lon1 < 0:
@@ -318,6 +311,7 @@ async def get_tide(
                 ds1 = xr.concat([subset1, subset2], dim='lon')
             else:
                 # Requested area doesn't cross the zero meridian
+                print("Current subsetting lon, lat:", lon0, lat0, lon1, lat1)
                 ds1 = config.dz.sel(lon=slice(lon0-0.5*config.gridSz, lon1+0.5*config.gridSz),
                                     lat=slice(lat0-0.5*config.gridSz, lat1+0.5*config.gridSz),
                                     constituents=cons)
@@ -608,10 +602,10 @@ async def get_tide_const(
                 json_resp = requests.get(jsonsrc)
                 json_resp.raise_for_status()
                 json_obj = json_resp.json()
-            except:
+            except:  # noqa: E722
                 try:
                     json_obj = json.loads(jsonsrc)
-                except:
+                except:  # noqa: E722
                     raise ValueError("Input jsonsrc must be a valid URL or a JSON string.")
 
             # Validate the JSON has 'longitude' and 'latitude' keys
@@ -685,7 +679,7 @@ async def get_tide_const(
     if 'nearest' in mode:
         findNear = True
 
-    if not tol in [np.nan, np.NaN, None] or findNear:
+    if tol not in [np.nan, np.NaN, None] or findNear:
         findNear = True
         if tol in [np.nan, np.NaN, None] or tol <= 0:
             tol = config.gridSz
@@ -757,7 +751,6 @@ async def get_tide_const(
     # print("Test vec version:", out)
 
     if mode is not None and 'object' in mode:
-        out_encoded = custom_encoder(out)
         # Serialize the data to JSON
         # json_data = json.dumps(out_encoded)
         return ORJSONResponse(content=jsonable_encoder(custom_encoder(out)))

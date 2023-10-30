@@ -27,3 +27,4 @@
     -- /tide/const example to plot tidal ellipses. Parallel re-fill-NA savings
     -- fix Parallel re-fill-NA savings deadlock problem by Dask version
     -- add FastAPI pydantic response_model
+    -- fix bounding box convert to (0,360) bug
