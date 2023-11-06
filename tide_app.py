@@ -286,14 +286,14 @@ async def get_tide(
             if (lon_range > config.LON_RANGE_LIMIT and lat_range > config.LAT_RANGE_LIMIT) or (area_range > config.AREA_LIMIT):
                 orig_lon1 = orig_lon0 + \
                     config.LON_RANGE_LIMIT if lon_range > config.LON_RANGE_LIMIT else orig_lon1
-                print("Greater than range with lon, lat:", lon0, lat0, lon1, lat1, orig_lon0, orig_lon1)
+                # print("Greater than range with lon, lat:", lon0, lat0, lon1, lat1, orig_lon0, orig_lon1)
                 lat1 = lat0 + config.LAT_RANGE_LIMIT if lat_range > config.LAT_RANGE_LIMIT else lat1
                 lon1 = orig_lon0 + config.LON_RANGE_LIMIT if lon_range > config.LON_RANGE_LIMIT else orig_lon1
                 orig_lon1 = lon1
                 lon1, lat1 = to_global_lonlat(lon1, lat1)
 
             if np.sign(orig_lon0) != np.sign(orig_lon1):
-                print("Cross-zero lon, lat:", lon0, lat0, lon1, lat1, orig_lon0, orig_lon1)
+                # print("Cross-zero lon, lat:", lon0, lat0, lon1, lat1, orig_lon0, orig_lon1)
                 # Requested area crosses the zero meridian
                 # The following should not happen because lon1 < lon0 had been swapped aboving
                 #if orig_lon1 < 0:
@@ -311,7 +311,7 @@ async def get_tide(
                 ds1 = xr.concat([subset1, subset2], dim='lon')
             else:
                 # Requested area doesn't cross the zero meridian
-                print("Current subsetting lon, lat:", lon0, lat0, lon1, lat1)
+                # print("Current subsetting lon, lat:", lon0, lat0, lon1, lat1)
                 ds1 = config.dz.sel(lon=slice(lon0-0.5*config.gridSz, lon1+0.5*config.gridSz),
                                     lat=slice(lat0-0.5*config.gridSz, lat1+0.5*config.gridSz),
                                     constituents=cons)

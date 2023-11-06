@@ -28,3 +28,4 @@
     -- fix Parallel re-fill-NA savings deadlock problem by Dask version
     -- add FastAPI pydantic response_model
     -- fix bounding box convert to (0,360) bug
+    -- fill 2x2 neighbor NA. Note that trouble to mix tpxo9.zarr/_fillna.zarr should be avoided

@@ -229,9 +229,9 @@ def main():
     st = time.time()
     start_time = datetime.fromtimestamp(st)
     print("Fill_NA Main process start: ", start_time)
-    input_file = "../data/tpxo9_fillna12.zarr"
+    input_file = "../data/tpxo9_fillna13.zarr"
     output_file = "../data/tpxo9_new.zarr"
-    resave_file = "../data/tpxo9_fillna13.zarr"
+    resave_file = "../data/tpxo9_fillna14.zarr"
     All_NA_CONDITION = False #all NA or any NA in constituents should be recomputed
     #SAVE_SMALL_DATA = False #always False
     RESAVE = False
@@ -240,7 +240,7 @@ def main():
 
     ds = replace_na_from_second_dataset(
             input_file, lonz, latz, bathy_z.mask, bathy_z.data,
-            variables=['u_amp', 'v_ph'], neighborx=2, neighbory=4,
+            variables=['u_amp', 'v_ph'], neighborx=2, neighbory=2,
             All_na_condition=All_NA_CONDITION)
 
     log_elapsed_time(st, "1. Replace NA")
