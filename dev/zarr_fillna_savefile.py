@@ -70,7 +70,7 @@ def resave_fillna_dataset(method1, method2):
 
 
 if __name__ == "__main__":
-    method1_file = "../data/tpxo9_bak17.zarr" #"tpxo9_method1.zarr" #All_NA_CONDITION set False 
+    method1_file = "../data/tpxo9_bak20.zarr" #"tpxo9_method1.zarr" #All_NA_CONDITION set False 
     method2_file = "../data/tpxo9_new.zarr" #"tpxo9_method2.zarr"
     zarr.convenience.consolidate_metadata(method2_file)
     resave_fillna_dataset(method1_file, method2_file)

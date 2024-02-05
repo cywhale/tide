@@ -7,6 +7,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, ORJSONResponse
 from fastapi.encoders import jsonable_encoder
+from contextlib import asynccontextmanager
 from typing import Optional, List, Union
 from pydantic import BaseModel
 import requests
@@ -24,7 +25,10 @@ def generate_custom_openapi():
     openapi_schema = get_openapi(
         title="ODB Tide API",
         version="1.0.0",
-        description='Open API to query TPXO9-v5 global tide models, compiled by ODB. Reference: Egbert, Gary D., and Svetlana Y. Erofeeva. "Efficient inverse modeling of barotropic ocean tides." Journal of Atmospheric and Oceanic Technology 19.2 (2002): 183-204.',
+        description=('Open API to query TPXO9-v5 global tide models, compiled by ODB. Reference: Egbert, Gary D., and Svetlana Y. Erofeeva. "Efficient inverse modeling of barotropic ocean tides." Journal of Atmospheric and Oceanic Technology 19.2 (2002): 183-204.\n' +
+                     '* The tide model predictions provided by this API are for reference purposes only and are intended to serve as a preliminary resource, not to be considered as definitive for scientific research or risk assessment. Users should understand that no legal liability or responsibility is assumed by the provider of this API for any decisions made based on reliance on this data. Users should conduct their own independent analysis and verification before relying on the data.\n' +
+                     '* 本API提供的模型預測數據僅供參考之用，旨在做為初步的資訊來源，而不應被視為科學研究或風險評估的決定性依據。使用者須理解，對於依賴這些數據所做出的任何決策，本API提供者不承擔任何法律責任或義務。使用者在依賴這些數據前，應進行獨立分析和驗證。\n' +
+                     '* Parts of this API utilize functions provided by pyTMD (https://github.com/tsutterley/pyTMD). We acknowledge and thank the original authors for their contributions.'),
         routes=app.routes,
     )
     openapi_schema["servers"] = [
@@ -36,7 +40,23 @@ def generate_custom_openapi():
     return app.openapi_schema
 
 
-app = FastAPI(root_path="/api/tide", docs_url=None, default_response_class=ORJSONResponse)
+# @app.on_event("startup")
+# async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    config.dz = xr.open_zarr('data/tpxo9.zarr', chunks='auto', decode_times=False)
+    config.gridSz = 1/30
+    config.timeLimit = 30
+    config.LON_RANGE_LIMIT = 45
+    config.LAT_RANGE_LIMIT = 45
+    config.AREA_LIMIT = config.LON_RANGE_LIMIT * config.LAT_RANGE_LIMIT
+    config.cons = config.dz.coords['constituents'].values
+    yield
+    # below code to execute when app is shutting down
+    config.dz.close()
+
+
+app = FastAPI(lifespan=lifespan, docs_url=None, default_response_class=ORJSONResponse)
 
 
 @app.get("/api/swagger/tide/openapi.json", include_in_schema=False)
@@ -128,17 +148,6 @@ def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1):
     # Convert the dictionary to a Polars DataFrame
     # df = pl.DataFrame(out_dict)
     # return df
-
-
-@app.on_event("startup")
-async def startup():
-    config.dz = xr.open_zarr('data/tpxo9.zarr', chunks='auto', decode_times=False)
-    config.gridSz = 1/30
-    config.timeLimit = 30
-    config.LON_RANGE_LIMIT = 45
-    config.LAT_RANGE_LIMIT = 45
-    config.AREA_LIMIT = config.LON_RANGE_LIMIT * config.LAT_RANGE_LIMIT
-    config.cons = config.dz.coords['constituents'].values
 
 
 class TideResponse(BaseModel):
@@ -593,8 +602,10 @@ async def get_tide_const(
 ):
     """
     Query harmonic constituents from TPXO9-atlas-v5 model by longitude/latitude.
-    """
 
+    #### Usage
+    * e.g. /tide/const?lon=122.36,122.47&lat=25.02,24.82&constituent=k1,m2,n2,o1,p1,s2&complex=amp,ph,hc&append=z,u,v
+    """
     try:
         if jsonsrc:
             # Validate it's a URL
@@ -631,7 +642,7 @@ async def get_tide_const(
                             content={"Error": str(e)})
 
     if len(loni) != len(lati):
-        config.dz.close()
+        # config.dz.close()
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content=jsonable_encoder({"Error": "Check your input of lon/lat should be in equal length"}))
     onlyOnePt = False

@@ -4,26 +4,26 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-basemap = "==1.3.8"
+basemap = "==1.4.0"
 basemap-data = "==1.3.2"
 basemap-data-hires = "==1.3.2"
-dask = "==2023.12.1"
-fastapi = "==0.108.0"
-matplotlib = "==3.7.4"
+dask = "==2024.1.1"
+fastapi = "==0.109.2"
+matplotlib = "==3.8.2"
 netcdf4 = "==1.6.5"
 numcodecs = "==0.12.1"
-numpy = "==1.26.2"
-pandas = "==2.1.4"
-polars = "==0.20.3"
+numpy = "==1.26.3"
+pandas = "==2.2.0"
+polars = "==0.20.5"
 pydantic = "==2.5.2"
-pytmd = "==2.0.9"
+pytmd = "==2.1.0"
 requests = "==2.31.0"
-scipy = "==1.11.4"
-xarray = "==2023.12.0"
+scipy = "==1.12.0"
+xarray = "==2024.1.1"
 zarr = "==2.16.1"
 src = {file = ".", editable = true}
 gunicorn = "==21.2.0"
-uvicorn = "==0.25.0"
+uvicorn = "==0.27.0.post1"
 
 [dev-packages]
 

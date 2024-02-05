@@ -30,3 +30,5 @@
     -- fix bounding box convert to (0,360) bug
     -- fill 2x2 neighbor NA. Note that trouble to mix tpxo9.zarr/_fillna.zarr should be avoided
     -- small package upgrade/fill_NA trials(15th --> 18th)
+
+#### ver 0.1.0 Add API Readme.md, disclaimer, fastapi lifespan for package upgrade
