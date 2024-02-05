@@ -1,5 +1,7 @@
 # Open API to query TPXO9-v5 global tide models
 
+[![DOI](https://zenodo.org/badge/doi/10.5281/zenodo.10616822.svg)](https://doi.org/10.5281/zenodo.10616822)
+
 #### Swagger API doc
 
 https://eco.odb.ntu.edu.tw/api/swagger/tide
