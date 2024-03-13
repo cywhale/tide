@@ -10,13 +10,18 @@ https://eco.odb.ntu.edu.tw/api/swagger/tide
 
 1. Query tide height and tidal current
 
-* One-point tide height with time-span limitation (<= 30 days, hourly data): e.g. /tide?lon0=125&lat0=15&start=2023-07-25&end=2023-07-26T01:30:00.000
+* One-point tide height with time-span limitation (<= 30 days, hourly data): e.g. https://eco.odb.ntu.edu.tw/api/tide?lon0=125&lat0=15&start=2023-07-25&end=2023-07-26T01:30:00.000
    
-* Get current in bounding-box <= 45x45 in degrees at one time moment(in ISOstring): e.g. /tide?lon0=125&lon1&=135&lat0=15&lat1=30&start=2023-07-25T01:30:00.000
+* Get current in bounding-box <= 45x45 in degrees at one time moment(in ISOstring): e.g. https://eco.odb.ntu.edu.tw/api/tide?lon0=125&lon1=135&lat0=15&lat1=30&start=2023-07-25T01:30:00.000
    
-2. Get harmonic constituents of TPXO9 model
+2. Get harmonic constituents of TPXO9 model (M2, S2, N2, K2, K1, O1, P1, Q1, Mf, Mm, M4, MS4, MN4, 2N2, S1)
 
-* e.g. /tide/const?lon=122.36,122.47&lat=25.02,24.82&constituent=k1,m2,n2,o1,p1,s2&complex=amp,ph,hc&append=z,u,v
+* e.g. https://eco.odb.ntu.edu.tw/api/tide/const?lon=122.36,122.47&lat=25.02,24.82&constituent=k1,m2,n2,o1,p1,s2&complex=amp,ph,hc&append=z,u,v
+
+#### Demo by <a href="https://api.odb.ntu.edu.tw/hub/" target="_blank">Ocean APIverse</a>
+
+[![Clip_for_Tide_API](https://github.com/cywhale/ODB/blob/master/tide/tide_clip01_ogcquery.png)](https://github.com/cywhale/ODB/blob/master/tide/tide_clip01_ogcquery.png)
+Demo: [https://twitter.com/bramasolo/status/1754473128078844021](https://twitter.com/bramasolo/status/1754473128078844021)
 
 #### Attribution
 
