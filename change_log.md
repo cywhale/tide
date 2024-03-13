@@ -32,3 +32,5 @@
     -- small package upgrade/fill_NA trials(15th --> 18th)
 
 #### ver 0.1.0 Add API Readme.md, disclaimer, fastapi lifespan for package upgrade
+
+    -- various package upgrade/test(18->25th), dev files small update

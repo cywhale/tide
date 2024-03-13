@@ -33,8 +33,9 @@ tpxo_model = get_current_model(
     tpxo_model_name, tpxo_model_directory, tpxo_model_format, tpxo_compressed)
 
 ## Global variables
-maxWorkers = 12
-MAX_CLUSTERS = -1 #None if need test
+maxWorkers = 10
+MAX_CLUSTERS = 6000 #-1 #None if need test
+START_CLUSTER = 0
 
 def log_elapsed_time(start_time, work=""):
     et = time.time()
@@ -152,8 +153,8 @@ def replace_na_from_second_dataset(input_file, lonz, latz, bathy_mask, bathy_dat
     print(f"Total clusters to process: {len(clusters)}")
 
     if MAX_CLUSTERS is not None and MAX_CLUSTERS >= 0: #force test
-        clusters = clusters[:MAX_CLUSTERS]
-        print(f"Using only first {MAX_CLUSTERS} clusters for this test run.")
+        clusters = clusters[START_CLUSTER:START_CLUSTER+MAX_CLUSTERS]
+        print(f"Using only {START_CLUSTER} : {START_CLUSTER+MAX_CLUSTERS} clusters for this run.")
 
     with ProcessPoolExecutor(max_workers=maxWorkers) as executor:
         futures_list = []
@@ -229,9 +230,9 @@ def main():
     st = time.time()
     start_time = datetime.fromtimestamp(st)
     print("Fill_NA Main process start: ", start_time)
-    input_file = "../data/tpxo9_fillna14.zarr"
+    input_file = "../data/tpxo9_bak26.zarr"
     output_file = "../data/tpxo9_new.zarr"
-    resave_file = "../data/tpxo9_fillna15.zarr"
+    resave_file = "../data/tpxo9_fillna27.zarr"
     All_NA_CONDITION = False #all NA or any NA in constituents should be recomputed
     #SAVE_SMALL_DATA = False #always False
     RESAVE = False
@@ -240,7 +241,7 @@ def main():
 
     ds = replace_na_from_second_dataset(
             input_file, lonz, latz, bathy_z.mask, bathy_z.data,
-            variables=['u_ph', 'v_amp'], neighborx=2, neighbory=2,
+            variables=['u_amp', 'v_amp'], neighborx=1, neighbory=2,
             All_na_condition=All_NA_CONDITION)
 
     log_elapsed_time(st, "1. Replace NA")
