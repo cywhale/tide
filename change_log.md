@@ -34,3 +34,5 @@
 #### ver 0.1.0 Add API Readme.md, disclaimer, fastapi lifespan for package upgrade
 
     -- various package upgrade/test(18->25th), dev files small update
+
+#### ver 0.1.1 Let constituents oscillation contribute 0 not mask as NA

@@ -60,8 +60,8 @@ def get_tide_series(amp, ph, c, tide_time, format="netcdf", unit="cm", drop_mask
     cph = -1j * ph * np.pi / 180.0
     # calculate constituent oscillation
     hc = (amp * np.exp(cph))[np.newaxis, :]
-    # Create a mask where values are NA or 0
-    mask = np.isnan(hc) | (hc == 0)
+    # Create a mask where values are NA # or 0 #modified v0.1.1 let it contribute 0, not NA
+    mask = np.isnan(hc) # | (hc == 0)
 
     # Convert hc to a masked array
     hc = ma.array(hc, mask=mask)
@@ -127,8 +127,8 @@ def get_tide_map(dz, tide_time, format='netcdf', type=['u', 'v'], drop_dim=False
         cph = -1j * phx * np.pi / 180.0
         # calculate constituent oscillation
         hc = ampx * np.exp(cph)
-        # Create a mask where values are NA or 0
-        mask = np.isnan(hc) | (hc == 0)
+        # Create a mask where values are NA # or 0 #modified v0.1.1 let it contribute 0, not NA
+        mask = np.isnan(hc) # | (hc == 0)
         # Convert hc to a masked array
         hc = ma.array(hc, mask=mask)  # mask=False
 
