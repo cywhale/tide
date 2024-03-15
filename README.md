@@ -4,7 +4,7 @@
 
 #### Swagger API doc
 
-https://eco.odb.ntu.edu.tw/api/swagger/tide
+[ODB Tide API manual/online try-out](https://api.odb.ntu.edu.tw/hub/swagger?node=odb_tide_v1)
 
 #### Usage
 
