@@ -42,3 +42,9 @@ node_modules
 **/*.nc
 **/src.egg-info
 **/*.mat
+**/test*_cwa*.json
+**/test*_cwa*.csv
+**/test*_marea*.json
+**/test*_marea*.csv
+**/test*_result*_cwa*.png
+**/test*_data*.csv
