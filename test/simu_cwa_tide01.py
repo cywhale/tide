@@ -2,9 +2,11 @@ import json
 import requests
 import pandas as pd
 import numpy as np
+from scipy import signal
 import matplotlib.pyplot as plt
 from datetime import datetime, timezone, timedelta
-from scipy import signal
+from timezonefinder import TimezoneFinder
+import pytz
 import time
 import random
 import os, glob
@@ -13,23 +15,54 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Global test counter
-test_sid = 5
-target = 'CWA'
+test_sid = 9
+target = 'NOAA' # 'CWA'
 target_token = os.getenv(f"{target}_TOKEN")
 fetch_mode = 'reuse_all' #'exclude-station-list' #reuse_data_odb # 'reuse_stations_force-update-data' 
 Number_of_Testing = 30
-ext_start_date = '' #'2024-07-04T00:00:00'  # Specify an external start date if needed
+ext_start_date = '' #2024-07-07T00:00:00' #'2024-07-04T00:00:00'  # Specify an external start date if needed
 metadata = None
 test_dir = 'test/'
+
+station_timezone = 'Asia/Taipei'
+now = datetime.now(timezone.utc) - timedelta(1) + timedelta(hours=8)
+local_start_date = datetime.strptime(ext_start_date, '%Y-%m-%dT%H:%M:%S').strftime('%Y-%m-%dT%H:%M:%S') if ext_start_date != '' and ('reuse' in fetch_mode or 'stations' in fetch_mode) else now.strftime('%Y-%m-%dT00:00:00')
+
+if target == 'NOAA':
+    skip_stations = ['8723214', '8775241', '8773767'] # "Aransas, Aransas Pass" station has very weird waveforms that can hardly compared by cross correlation
+    # 8723214: Virginia Key, Biscayne Bay has some empty tide datas, cannnot be compared by correlation
+else:
+    skip_stations = ['']
+
+
+# Find timezone for NOAA 'LST_LDT'
+def find_timezone(lon, lat):
+    tf = TimezoneFinder()
+    tz_str = tf.timezone_at(lng=lon, lat=lat)
+    return tz_str
+
+# Adjust the start date based on the station's time zone
+def get_local_start_date(local_timezone=None, station_lon=None, station_lat=None):
+    if local_timezone is None or not local_timezone:
+        local_timezone = find_timezone(station_lon, station_lat)
+        if not local_timezone:
+            raise ValueError("Timezone not found for given coordinates: ", station_lon, station_lat)
+    local_tz = pytz.timezone(local_timezone)
+    now = datetime.now(local_tz) - timedelta(1)
+    start_date = now.strftime('%Y-%m-%dT00:00:00')
+    return start_date
 
 # Convert UNIX timestamp to UTC datetime
 def unix_to_utc(unix_timestamp):
     return datetime.fromtimestamp(unix_timestamp, timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
 
-# Convert GMT+8 to UTC
-def gmt8_to_utc(gmt8_datetime, tz=timezone.utc):
-    gmt8_dt = datetime.strptime(gmt8_datetime, "%Y-%m-%dT%H:%M:%S%z")
-    utc_dt = gmt8_dt.astimezone(tz) #pytz.timezone('Asia/Tokyo')) # 'US/Pacific'))
+def local_to_utc(local_datetime, local_timezone='Asia/Taipei', tz=timezone.utc, format="%Y-%m-%dT%H:%M:%S%z"):
+    #local_dt = datetime.strptime(local_datetime, format) # "%Y-%m-%d %H:%M"
+    if not local_timezone:
+        return datetime.strptime(local_datetime, '%Y-%m-%dT%H:%M:%S') # If timezone not found, return the local time
+    local_tz = pytz.timezone(local_timezone) # pytz.timezone('Asia/Tokyo')) # 'US/Pacific'))
+    local_dt = local_tz.localize(datetime.strptime(local_datetime, format))    
+    utc_dt = local_dt.astimezone(tz) 
     return utc_dt.strftime('%Y-%m-%dT%H:%M:%S')
 
 # Fetch data from Tide API
@@ -56,25 +89,36 @@ def get_testbench_stations():
     print("Testbench has these stations: ", testbench_stations)        
     return testbench_stations
 
-def get_cwa_stations(start_date):
-    global Number_of_Testing, fetch_mode, test_sid, metadata, target
-    stations_file_path = f"{test_dir}stations_cwa.json"
-    datex = start_date[0:10]  # "%Y-%m-%d"
+def get_stations():
+    global Number_of_Testing, fetch_mode, test_sid, metadata, target, local_start_date, skip_stations
+    stations_file_path = f"{test_dir}stations_{target.lower()}.json"
+    datex = local_start_date[0:10]  # "%Y-%m-%d"
 
     with open(stations_file_path, 'r') as file:
         stations_data = json.load(file)
 
-    stations = stations_data["cwaopendata"]["Resources"]["Resource"]["Data"]["SeaSurfaceObs"]["Location"]
+    if target == "CWA":
+        stations = stations_data["cwaopendata"]["Resources"]["Resource"]["Data"]["SeaSurfaceObs"]["Location"]
+    else:
+        stations = [station for station in stations_data["portsStationList"] if station["waterlevel"]] 
 
     if 'reuse_all' in fetch_mode:
         selected_station_ids = get_testbench_stations()
-        selected_stations = [station for station in stations if station["Station"]["StationID"] in selected_station_ids]
+        if target == "CWA":
+            selected_stations = [station for station in stations if station["Station"]["StationID"] in selected_station_ids and station["Station"]["StationID"] not in skip_stations]
+        else:
+            selected_stations = [station for station in stations if station["stationID"] in selected_station_ids and station["stationID"] not in skip_stations]   
+        
     elif 'stations' in fetch_mode or 'reuse_data' in fetch_mode:
         with open(f'{test_dir}testbench_{datex}_metadata_{target.lower()}_{test_sid}.json', 'r') as meta_file:
             metadata = json.load(meta_file)
         print("Get stations from metadata: ", meta_file)
         selected_station_ids = metadata["selected_stations"]
-        selected_stations = [station for station in stations if station["Station"]["StationID"] in selected_station_ids]
+        if target == "CWA":
+            selected_stations = [station for station in stations if station["Station"]["StationID"] in selected_station_ids and station["Station"]["StationID"] not in skip_stations]
+        else:    
+            selected_stations = [station for station in stations if station["stationID"] in selected_station_ids and station["stationID"] not in skip_stations]
+
     else:
         excluded_stations = get_testbench_stations() if 'exclude-station-list' in fetch_mode else set()
         selected_stations = []
@@ -82,8 +126,11 @@ def get_cwa_stations(start_date):
         retry_limit = 100
         while len(selected_stations) < Number_of_Testing and retry_limit_counter < retry_limit:
             station = random.choice(stations)
-            station_id = station["Station"]["StationID"]
-            if station_id not in excluded_stations and station not in selected_stations:
+            if target == "CWA":
+                station_id = station["Station"]["StationID"]
+            else:
+                station_id = station["stationID"]    
+            if station_id not in excluded_stations and station_id not in skip_stations and station not in selected_stations:
                 selected_stations.append(station)
             retry_limit_counter += 1
 
@@ -101,6 +148,42 @@ def fetch_cwa_data(station_id, start_date_str):
     response = requests.get(base_url, params=params)
     return response.json()
 
+def fetch_noaa_data(station_id, start_date_str):
+    startx = datetime.strptime(start_date_str, '%Y-%m-%dT%H:%M:%S')   
+    end_strx = (startx + timedelta(days=1)).strftime('%Y%m%d')
+    start_strx = startx.strftime('%Y%m%d')
+    print(f"Fetch NOAA {start_strx}-{end_strx} for station {station_id}")
+    base_url = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
+    params = {
+        "product": "water_level",
+        "begin_date": start_strx,
+        "end_date": end_strx,
+        "datum": "MSL",
+        "station": station_id,
+        "time_zone": "LST_LDT",
+        "units": "metric",
+        "format": "json",
+        "application": "NOS.COOPS.TAC.COOPSMAP"
+    }
+    response = requests.get(base_url, params=params)
+    return response.json()
+
+def extract_noaa_heights(noaa_data, local_timezone):
+    # global station_timezone
+    station_id = noaa_data["metadata"]["id"]
+    lon = float(noaa_data["metadata"]["lon"])
+    lat = float(noaa_data["metadata"]["lat"])
+    heights = []
+    for record in noaa_data["data"]:
+        if record["v"] == '' or record["v"] is None:
+            break  # Stop processing the current time series if a missing value is encountered
+        dt_utc = local_to_utc(record["t"], local_timezone=local_timezone, format="%Y-%m-%d %H:%M")
+        height = float(record["v"])
+        heights.append({"station_id": station_id, "longitude": lon, "latitude": lat, "timestamp_utc": dt_utc, "height": height})
+    heights_df = pd.DataFrame(heights)
+    heights_df["timestamp_utc"] = pd.to_datetime(heights_df["timestamp_utc"])
+    return heights_df
+
 def extract_cwa_heights(cwa_data, lon, lat):
     records = cwa_data["Records"]["SeaSurfaceObs"]["Location"][0]["StationObsTimes"]["StationObsTime"]
     station_id = cwa_data["Records"]["SeaSurfaceObs"]["Location"][0]["Station"]["StationID"]
@@ -108,7 +191,7 @@ def extract_cwa_heights(cwa_data, lon, lat):
     for record in records:
         if 'TideHeight' not in record["WeatherElements"] or record["WeatherElements"]["TideHeight"] == 'None':
             continue
-        dt_utc = gmt8_to_utc(record["DateTime"])
+        dt_utc = local_to_utc(record["DateTime"])
         height = float(record["WeatherElements"]["TideHeight"])
         heights.append({"station_id": station_id, "longitude": lon, "latitude": lat, "timestamp_utc": dt_utc, "height": height})
     if not heights:  # Check if heights list is empty
@@ -141,64 +224,66 @@ def calculate_phase_difference(signal1, signal2):
     lag = lags[np.argmax(correlation)]
     return lag
 
-def save_metadata_and_data(selected_stations, start_date, cwa_heights, tide_df, first_station):
-    global test_sid, fetch_mode
-    datex = start_date[0:10] #"%Y-%m-%d"
+def save_metadata_and_data(selected_stations, start_date, target_heights, tide_df, first_station):
+    global test_sid, fetch_mode, target, station_timezone
+    datex = start_date[0:10]
     modex = 'a'
     
     metadatax = {
-        "target": "CWA",
-        "selected_stations": [station["Station"]["StationID"] for station in selected_stations],
+        "target": target,
+        "selected_stations": [station["stationID"] for station in selected_stations],
         "start_date": start_date,
         "end_date": (datetime.strptime(start_date, '%Y-%m-%dT%H:%M:%S') + timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%S'),
-        "timezone": 'GMT+8',
-        "target_data": f'testbench_{datex}_data_cwa_{test_sid}.csv',
+        "timezone": station_timezone,
+        "target_data": f'testbench_{datex}_data_{target.lower()}_{test_sid}.csv',
         "odb_data": f'testbench_{datex}_data_odb_{test_sid}.csv'
     }
 
     if 'reuse' not in fetch_mode and 'stations' not in fetch_mode:
-        with open(f'{test_dir}testbench_{datex}_metadata_cwa_{test_sid}.json', 'w') as meta_file:
+        with open(f'{test_dir}testbench_{datex}_metadata_{target.lower()}_{test_sid}.json', 'w') as meta_file:
             json.dump(metadatax, meta_file, indent=4)
 
     if 'force-update-data' in fetch_mode:
         if first_station:
             modex = 'w'
-        cwa_heights.to_csv(f"{test_dir}{metadatax['target_data']}", mode=modex, header=first_station, index=False)
+        target_heights.to_csv(f"{test_dir}{metadatax['target_data']}", mode=modex, header=first_station, index=False)
     elif 'reuse' not in fetch_mode and 'stations' not in fetch_mode:
-        cwa_heights.to_csv(f"{test_dir}{metadatax['target_data']}", mode=modex, header=not os.path.exists(f"{test_dir}{metadatax['target_data']}"), index=False)
+        target_heights.to_csv(f"{test_dir}{metadatax['target_data']}", mode='a', header=not os.path.exists(f"{test_dir}{metadatax['target_data']}"), index=False)
             
     if 'force-update-data' in fetch_mode:
         if first_station:
             modex = 'w'
         tide_df.to_csv(f"{test_dir}{metadatax['odb_data']}", mode=modex, header=first_station, index=False)
     elif 'reuse' not in fetch_mode and 'stations' not in fetch_mode:
-        tide_df.to_csv(f"{test_dir}{metadatax['odb_data']}", mode=modex, header=not os.path.exists(f"{test_dir}{metadatax['odb_data']}"), index=False)
+        tide_df.to_csv(f"{test_dir}{metadatax['odb_data']}", mode='a', header=not os.path.exists(f"{test_dir}{metadatax['odb_data']}"), index=False)
 
 def extract_data_from_csv(selected_stations):
-    # station_stats = []  
-    cwa_heights = pd.DataFrame()
+    target_heights = pd.DataFrame()
     tide_df = pd.DataFrame()      
     if len(selected_stations) > 0:
         data_files = glob.glob(f'{test_dir}testbench_*_data_{target.lower()}_*.csv')
         for data_file in data_files:
-            new_data = pd.read_csv(data_file)
-            #print("new data:", new_data)
-            #print("all cwa_heights: ", cwa_heights)
-            cwa_heights = pd.concat([cwa_heights, new_data]).drop_duplicates(subset=["station_id", "timestamp_utc"])
+            new_data = pd.read_csv(data_file, dtype={'station_id':'string'})
+            target_heights = pd.concat([target_heights, new_data]).drop_duplicates(subset=["station_id", "timestamp_utc"])
 
         odb_files = glob.glob(f'{test_dir}testbench_*_data_odb_*.csv')
         for odb_file in odb_files:
             new_odb = pd.read_csv(odb_file)
             tide_df = pd.concat([tide_df, new_odb]).drop_duplicates(subset=["longitude", "latitude", "timestamp"])
 
-    return cwa_heights, tide_df
-
-     
-def plot_statistics(stats):
+    return target_heights, tide_df
+    
+def plot_statistics(stats, normalize=False):
     station_ids = [stat["station_id"] for stat in stats]
-    amp_diff_means = [stat["amp_diff_mean"] for stat in stats]
-    amp_diff_stds = [stat["amp_diff_std"] for stat in stats]
+    amp_diff_means = np.array([stat["amp_diff_mean"] for stat in stats])
+    amp_diff_stds = np.array([stat["amp_diff_std"] for stat in stats])
     phase_diff_hours = [stat["phase_diff_hours"] for stat in stats]
+
+    if normalize:
+        # Normalize amplitude differences by average amplitude
+        avg_amplitudes = np.array([np.abs(stat["amp_diff_mean"]) + stat["amp_diff_std"] for stat in stats])
+        amp_diff_means /= avg_amplitudes
+        amp_diff_stds /= avg_amplitudes
 
     plt.figure(figsize=(12, 6))
 
@@ -206,8 +291,8 @@ def plot_statistics(stats):
     plt.errorbar(station_ids, amp_diff_means, yerr=amp_diff_stds, fmt='o', ecolor='r', capsize=5, label='Amplitude Difference')
     plt.xticks(rotation=90)
     plt.xlabel('Station ID')
-    plt.ylabel('Amplitude Difference (m)')
-    plt.title('Amplitude Differences Across Stations')
+    plt.ylabel('Normalized Amplitude Difference' if normalize else 'Amplitude Difference (m)')
+    plt.title('Normalized Amplitude Differences Across Stations' if normalize else 'Amplitude Differences Across Stations')
     plt.legend()
 
     plt.subplot(2, 1, 2)
@@ -221,8 +306,8 @@ def plot_statistics(stats):
     plt.tight_layout()
     plt.show()
 
-def main_batch(selected_stations, start_date):
-    global test_sid, metadata, fetch_mode, target
+def main_batch(selected_stations):
+    global test_sid, metadata, fetch_mode, target, local_start_date, station_timezone
     station_stats = []
     first_station = True
 
@@ -231,62 +316,78 @@ def main_batch(selected_stations, start_date):
         return
 
     if 'reuse_all' in fetch_mode:
-        all_cwa, all_tide = extract_data_from_csv(selected_stations)
+        all_target, all_tide = extract_data_from_csv(selected_stations)
 
     for station in selected_stations:
-        station_id = station["Station"]["StationID"]
-        station_name = station["Station"]["StationName"]
-        lon = float(station["Station"]["StationLongitude"])
-        lat = float(station["Station"]["StationLatitude"])
-        print(f"Testing station: {station_id}, with coord: {lon}, {lat}")
+        if target == 'CWA':
+            station_id = station["Station"]["StationID"]
+            station_name = station["Station"]["StationName"]
+            lon = float(station["Station"]["StationLongitude"])
+            lat = float(station["Station"]["StationLatitude"])
+        else:
+            station_id = station["stationID"]
+            station_name = station["label"]
+            lon = float(station["lng"])
+            lat = float(station["lat"])
+            station_timezone = find_timezone(lon, lat)
+            local_start_date = get_local_start_date(local_timezone=station_timezone)    
+        print(f"Testing {target} stations: {station_id}, with coord: {lon}, {lat}, for start_date: {local_start_date} at timezone: {station_timezone}")
 
         if 'reuse_all' in fetch_mode:
-            cwa_heights = all_cwa[(all_cwa["station_id"] == station_id) & (all_cwa["longitude"] == lon) & (all_cwa["latitude"] == lat)]
+            target_heights = all_target[(all_target["station_id"] == station_id) & (all_target["longitude"] == lon) & (all_target["latitude"] == lat)]
             tide_df = all_tide[(all_tide["longitude"] == lon) & (all_tide["latitude"] == lat)]            
-            if cwa_heights.empty or tide_df.empty:
-                continue            
+            if target_heights.empty or tide_df.empty:
+                continue         
         else:    
-            cwa_data = fetch_cwa_data(station_id, start_date)
             if 'reuse_data' in fetch_mode:
                 print(f"Reuse {target} data from: ", metadata["target_data"])
-                cwa_heights = pd.read_csv(f"{test_dir}{metadata['target_data']}")
-                cwa_heights["timestamp_utc"] = pd.to_datetime(cwa_heights["timestamp_utc"])
-                cwa_heights = cwa_heights[(cwa_heights["station_id"] == station_id)] # & (cwa_heights["longitude"] == lon) & (cwa_heights["latitude"] == lat)]
+                target_heights = pd.read_csv(f"{test_dir}{metadata['target_data']}", dtype={'station_id':'string'})
+                target_heights["timestamp_utc"] = pd.to_datetime(target_heights["timestamp_utc"])
+                target_heights = target_heights[(target_heights["station_id"] == station_id)]                 
             else:
-                cwa_data = fetch_cwa_data(station_id, start_date)
-                if 'SeaSurfaceObs' not in cwa_data['Records'] or not cwa_data['Records']['SeaSurfaceObs']['Location'][0]['StationObsTimes']['StationObsTime']:
-                    continue
-                # print("Get CWA data: ", cwa_data)
-                cwa_heights = extract_cwa_heights(cwa_data, lon, lat)
-                if cwa_heights.empty:
-                    continue
+                if target == 'CWA':
+                    target_data = fetch_cwa_data(station_id, local_start_date)
+                    if 'SeaSurfaceObs' not in target_data['Records'] or not target_data['Records']['SeaSurfaceObs']['Location'][0]['StationObsTimes']['StationObsTime']:
+                        continue
+                    # print("Get CWA data: ", cwa_data)
+                    target_heights = extract_cwa_heights(target_data, lon, lat)
+                    if target_heights.empty:
+                        continue
+                else:
+                    target_data = fetch_noaa_data(station_id, local_start_date)
+                    # print("target_dat in json: ", target_data)
+                    if target_data is None or 'data' not in target_data or not target_data['data']:
+                        continue
+                    
+                    target_heights = extract_noaa_heights(target_data, station_timezone)
+                    if target_heights.empty:
+                        continue                    
 
             if 'reuse' in fetch_mode and 'odb' in fetch_mode:
-                print("Reuse ODB data from: ", metadata["odb_data"])
+                # print("Reuse ODB data from: ", metadata["odb_data"])
                 tide_df = pd.read_csv(f"{test_dir}{metadata['odb_data']}")
                 tide_df["timestamp"] = pd.to_datetime(tide_df["timestamp"])
-                #tide_df = tide_df[(pd.to_numeric(tide_df["longitude"], errors='coerce').round(5) == float(lon)) & (pd.to_numeric(tide_df["latitude"], errors='coerce').round(5) == float(lat))]
+                # tide_df = tide_df[(pd.to_numeric(tide_df["longitude"], errors='coerce').round(5) == float(lon)) & (pd.to_numeric(tide_df["latitude"], errors='coerce').round(5) == float(lat))]
                 tide_df = tide_df[(tide_df["longitude"] == lon) & (tide_df["latitude"] == lat)]
                 if tide_df.empty:
                     print("Warning: ODB reused data is empty for ", station_id, lon, lat)
                     continue           
             else:
-                start_utc = cwa_heights["timestamp_utc"].min().strftime('%Y-%m-%dT%H:%M:%S')
-                end_utc = (cwa_heights["timestamp_utc"].max() + timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%S')
+                start_utc = target_heights["timestamp_utc"].min().strftime('%Y-%m-%dT%H:%M:%S')
+                end_utc = (target_heights["timestamp_utc"].max() + timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%S')
                 tide_data = fetch_tide_data(lon, lat, start_utc, end_utc)
                 if not tide_data:
                     continue
         
-                # Extract heights from Tide API
                 tide_times = pd.to_datetime(tide_data["time"])
                 tide_heights = np.array(tide_data["z"]) / 100  # Convert cm to m
                 tide_df = pd.DataFrame({"timestamp": tide_times, "height": tide_heights})
                 tide_df["longitude"] = lon
-                tide_df["latitude"] = lat
+                tide_df["latitude"] = lat 
         
-        # print("cwa_heights: ", cwa_heights)    
-        # print("Get tide_df: ", tide_df)    
-        comparison_df = filter_and_compare(cwa_heights, tide_df)
+        #print("target_heights: ", target_heights)    
+        #print("Get tide_df: ", tide_df)    
+        comparison_df = filter_and_compare(target_heights, tide_df)
         phase_diff = calculate_phase_difference(comparison_df["height_target"], comparison_df["height_tide"])
         time_lag = phase_diff / 60.0  # Convert from seconds to hours
 
@@ -301,7 +402,7 @@ def main_batch(selected_stations, start_date):
         })
 
         if 'reuse_all' not in fetch_mode:
-            save_metadata_and_data(selected_stations, start_date, cwa_heights, tide_df, first_station)
+            save_metadata_and_data(selected_stations, local_start_date, target_heights, tide_df, first_station)
             first_station = False  # Update flag after the first write
         
         if 'reuse' not in fetch_mode:
@@ -310,10 +411,11 @@ def main_batch(selected_stations, start_date):
     
     return station_stats
 
-now = datetime.now(timezone.utc) - timedelta(1) + timedelta(hours=8)
-start_date = datetime.strptime(ext_start_date, '%Y-%m-%dT%H:%M:%S') if ext_start_date != '' and ('reuse' in fetch_mode or 'stations' in fetch_mode) else now.strftime('%Y-%m-%dT00:00:00')
-print("Testing start_date: ", start_date)
-selected_stations = get_cwa_stations(start_date)
-print("Testing start, select stations: ", [sta["Station"]["StationName"] for sta in selected_stations])
-stats = main_batch(selected_stations, start_date)
-plot_statistics(stats)
+selected_stations = get_stations()
+if target == 'CWA':
+    print("Testing start, select stations: ", [sta["Station"]["StationName"] for sta in selected_stations])
+else:
+    print("Testing start, select stations: ", [sta["label"] for sta in selected_stations])
+     
+stats = main_batch(selected_stations)
+plot_statistics(stats, normalize=False)

@@ -41,3 +41,5 @@
     -- various package upgrade/n2/test(->35th), dev files small update
 
 #### ver 0.1.2 Start validation with observation(CWA)/model(Marea API) data
+
+    -- Add validation with NOAA tide observation data api.tidesandcurrents.noaa.gov/

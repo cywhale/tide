@@ -48,3 +48,6 @@ node_modules
 **/test*_marea*.csv
 **/test*_result*_cwa*.png
 **/test*_data*.csv
+**/test*_noaa*.json
+**/test*_noaa*.csv
+**/test*_result*_noaa*.png
