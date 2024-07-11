@@ -15,12 +15,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Global test counter
-test_sid = 12
+test_sid = 17
 target = 'NOAA' # 'CWA', 'NOAA'
 target_token = os.getenv(f"{target}_TOKEN")
 fetch_mode = 'reuse_all' #'reuse_all' #'exclude-station-list' #reuse_data_odb # 'reuse_stations_force-update-data' 
 Number_of_Testing = 30
-ext_start_date = '2024-07-08T00:00:00' #2024-07-07T00:00:00' #'2024-07-04T00:00:00'  # Specify an external start date if needed
+ext_start_date = '' #2024-07-07T00:00:00' #'2024-07-04T00:00:00'  # Specify an external start date if needed
 metadata = None
 test_dir = 'test/'
 

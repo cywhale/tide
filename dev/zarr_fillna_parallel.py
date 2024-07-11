@@ -34,8 +34,8 @@ tpxo_model = get_current_model(
 
 ## Global variables
 maxWorkers = 10
-MAX_CLUSTERS = 9000 #-1 #None if need test
-START_CLUSTER = 3000
+MAX_CLUSTERS = 9000 #for 1x1, 9000 is max, greater cause crash #-1 #None if need test
+START_CLUSTER = 11000
 
 def log_elapsed_time(start_time, work=""):
     et = time.time()
@@ -230,9 +230,9 @@ def main():
     st = time.time()
     start_time = datetime.fromtimestamp(st)
     print("Fill_NA Main process start: ", start_time)
-    input_file = "../data/tpxo9_bak35.zarr"
+    input_file = "../data/tpxo9_bak37.zarr" #not yet
     output_file = "../data/tpxo9_new.zarr"
-    resave_file = "../data/tpxo9_fillna36.zarr"
+    resave_file = "../data/tpxo9_fillna38.zarr"
     All_NA_CONDITION = False #all NA or any NA in constituents should be recomputed
     #SAVE_SMALL_DATA = False #always False
     RESAVE = False
