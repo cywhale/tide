@@ -45,3 +45,6 @@
     -- Add validation with NOAA tide observation data api.tidesandcurrents.noaa.gov/
     -- Modify testbench (for CWA, NOAA) bugs e.g. local time (NOAA) to UTC
     -- small update testbench, tpxo9.zarr(->36th), dev files
+
+#### ver 0.2.0 Fix get_tide_series u,v unit conversion bug, upgrade pyTMD 2.1.4 breaking change
+

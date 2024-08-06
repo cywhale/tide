@@ -3,8 +3,9 @@ import numpy.ma as ma
 from scipy.interpolate import RectBivariateSpline
 from pyTMD.io import model, GOT, ATLAS
 from pyTMD import predict
-from pyTMD.time import convert_calendar_dates, datetime_to_list
-from pyTMD.load_constituent import load_constituent
+from timescale.time import convert_calendar_dates, datetime_to_list
+# from pyTMD.time import convert_calendar_dates, datetime_to_list after pyTMD 2.1.2
+# from pyTMD.load_constituent import load_constituent #deprecated after pyTMD 2.1.2
 import pyTMD.arguments
 from datetime import timedelta
 
@@ -80,7 +81,7 @@ def get_tide_series(amp, ph, c, tide_time, format="netcdf", unit="cm", drop_mask
 
     if not drop_mask:
         return tide
-    
+
     tide.data[tide.mask] = np.nan
     out = tide.data
     return out
@@ -90,15 +91,23 @@ def get_tide_series(amp, ph, c, tide_time, format="netcdf", unit="cm", drop_mask
 def time_series_for_constituents(t, hc, constituents, deltat=0.0):
     nt = len(t)
     # load the nodal corrections
-    pu, pf, G = pyTMD.arguments(
-        t + 48622.0, constituents, deltat=deltat, corrections='ATLAS')
+    # pu, pf, G = pyTMD.arguments(
+    #     t + 48622.0, constituents, deltat=deltat, corrections='ATLAS') #changed after pyTMD 2.1.2
+    # number of days between MJD and the tide epoch (1992-01-01T00:00:00)
+    _mjd_tide = 48622.0
+    pu, pf, G = pyTMD.arguments.arguments(t + _mjd_tide,
+        constituents,
+        deltat=deltat,
+        corrections='ATLAS'
+    )
     # allocate for output time series
     ht = np.ma.zeros((nt, len(constituents)))
     # for each constituent
     for k, c in enumerate(constituents):
         # if corrections in ('OTIS', 'ATLAS', 'TMD3', 'netcdf'):
         # load parameters for each constituent
-        amp, ph, omega, alpha, species = load_constituent(c)
+        # amp, ph, omega, alpha, species = load_constituent(c) #before pyTMD 2.1.1
+        amp, ph, omega, alpha, species = pyTMD.arguments._constituent_parameters(c)
         th = omega * t * 86400.0 + ph + pu[:, k]
         # elif corrections in ('GOT', 'FES'):
         #   th = G[:, k] * np.pi / 180.0 + pu[:, k]
@@ -159,7 +168,7 @@ def get_tide_map(dz, tide_time, format='netcdf', type=['u', 'v'], drop_dim=False
 
 
 # Note dz is the data from Zarr and tide_time will get its first element
-def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5):
+def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5, normalize=True):
     grid_sz = 1/30
     dsub = dz.sel(lon=slice(x0-grid_sz, x1+grid_sz),
                   lat=slice(y0-grid_sz, y1+grid_sz))
@@ -172,8 +181,8 @@ def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5):
         dsub.coords['lon'].values, dsub.coords['lat'].values)
 
     # Reshape u and v to 2D
-    u0 = gtide['u'][:, :, t] #*0.01
-    v0 = gtide['v'][:, :, t] #*0.01
+    u0 = gtide['u'][:, :, t]
+    v0 = gtide['v'][:, :, t]
 
     # Create a grid of indices for subsetting
     X, Y = np.meshgrid(np.arange(nx), np.arange(ny))
@@ -181,8 +190,12 @@ def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5):
     # Calculate magnitude of the current
     magnitude = np.sqrt(u0**2 + v0**2)
     # Normalize the arrows to create a uniform arrow size across the plot
-    u = u0/magnitude
-    v = v0/magnitude
+    if normalize:
+        u = u0/magnitude
+        v = v0/magnitude
+    else:
+        u = u0
+        v = v0
 
     n = mask_grid
     mask = (X % n == 0) & (Y % n == 0)

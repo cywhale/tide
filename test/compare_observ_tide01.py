@@ -15,11 +15,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Global test counter
-test_sid = 17
+test_sid = 22
 target = 'NOAA' # 'CWA', 'NOAA'
 target_token = os.getenv(f"{target}_TOKEN")
 fetch_mode = 'reuse_all' #'reuse_all' #'exclude-station-list' #reuse_data_odb # 'reuse_stations_force-update-data' 
-Number_of_Testing = 30
+Number_of_Testing = 40
 ext_start_date = '' #2024-07-07T00:00:00' #'2024-07-04T00:00:00'  # Specify an external start date if needed
 metadata = None
 test_dir = 'test/'
@@ -29,7 +29,7 @@ now = datetime.now(timezone.utc) - timedelta(1) + timedelta(hours=8)
 local_start_date = datetime.strptime(ext_start_date, '%Y-%m-%dT%H:%M:%S').strftime('%Y-%m-%dT%H:%M:%S') if ext_start_date != '' and ('reuse' in fetch_mode or 'stations' in fetch_mode) else now.strftime('%Y-%m-%dT00:00:00')
 
 if target == 'NOAA':
-    skip_stations = ['8770822', '8775132', '8770613', '8770520', '8770475', '8773259', '8723214', '8775241', '8773767'] # "Aransas, Aransas Pass" station has very weird waveforms that can hardly compared by cross correlation
+    skip_stations = ['8764314', '8726674', '8735180', '8770822', '8775132', '8770613', '8770520', '8770475', '8773259', '8723214', '8775241', '8773767'] # "Aransas, Aransas Pass" station has very weird waveforms that can hardly compared by cross correlation
     # 8723214: Virginia Key, Biscayne Bay has some empty tide datas, cannnot be compared by correlation
     # 8770822 (Texas Point, Sabine Pass), 8775132 (La Quinta Ch. North), 8770613 (Morgans Point), 8770520 (Rainbow Bridge), 8770475 (Port Arthur), 8773259: Port Lavaca, are bad in waveform cannot be considered as periodic, that cannot use to compare
 else:
@@ -265,6 +265,13 @@ def save_metadata_and_data(selected_stations, start_date, target_heights, tide_d
         target_heights.to_csv(f"{test_dir}{metadatax['target_data']}", mode=modex, header=first_station, index=False)
     elif 'reuse' not in fetch_mode and 'stations' not in fetch_mode:
         target_heights.to_csv(f"{test_dir}{metadatax['target_data']}", mode='a', header=not os.path.exists(f"{test_dir}{metadatax['target_data']}"), index=False)
+
+    if 'force-update-data' in fetch_mode:
+        if first_station:
+            modex = 'w'
+        tide_df.to_csv(f"{test_dir}{metadatax['odb_data']}", mode=modex, header=first_station, index=False)
+    elif 'reuse' not in fetch_mode and 'stations' not in fetch_mode:
+        tide_df.to_csv(f"{test_dir}{metadatax['odb_data']}", mode='a', header=not os.path.exists(f"{test_dir}{metadatax['odb_data']}"), index=False)
            
 
 def extract_data_from_csv(selected_stations):
@@ -411,11 +418,11 @@ def main_batch(selected_stations):
                 tide_df["latitude"] = lat
         
             # if 'reuse_all' not in fetch_mode:
-            if station_id == '9454240':
-                print("Debug target_height: ", target_heights)
-                target_heights.to_csv(f"{test_dir}test_data_{station_id}.csv", mode='w', header=True, index=False)
-                print("Debug tide_df: ", tide_df)           
-                tide_df.to_csv(f"{test_dir}test_data_odb_for_{station_id}.csv", mode='w', header=True, index=False)
+            # if station_id == '9454240':
+            #     print("Debug target_height: ", target_heights)
+            #     target_heights.to_csv(f"{test_dir}test_data_{station_id}.csv", mode='w', header=True, index=False)
+            #     print("Debug tide_df: ", tide_df)           
+            #     tide_df.to_csv(f"{test_dir}test_data_odb_for_{station_id}.csv", mode='w', header=True, index=False)
             comparison_df = filter_and_compare(target_heights, tide_df)
             phase_diff = calculate_phase_difference(comparison_df["height_target"], comparison_df["height_tide"])
             time_lag = phase_diff / 60.0  # Convert from seconds to hours

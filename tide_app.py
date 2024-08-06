@@ -268,14 +268,17 @@ async def get_tide(
             for var in variables:
                 amp_var = f'{var}_amp'
                 ph_var = f'{var}_ph'
+                unit = ""
+                if var == 'z':
+                    unit = 'cm'
 
                 if findNear:
                     ts = get_tide_series(dsub[amp_var].values, dsub[ph_var].values,
-                                         cons, tide_time, format="netcdf", unit="cm", drop_mask=True)
+                                         cons, tide_time, format="netcdf", unit=unit, drop_mask=True)
                 else:
                     ts = get_tide_series(dsub[amp_var].isel(lon=0, lat=0).values,
                                          dsub[ph_var].isel(lon=0, lat=0).values,
-                                         cons, tide_time, format="netcdf", unit="cm", drop_mask=True)
+                                         cons, tide_time, format="netcdf", unit=unit, drop_mask=True)
                 tide[var] = ts
         else:
             # Bounding box
