@@ -48,3 +48,5 @@
 
 #### ver 0.2.0 Fix get_tide_series u,v unit conversion bug, upgrade pyTMD 2.1.4 breaking change
 
+    -- a temporary solution to make xarry internal index error when lon=0 but actually at -4.06e-6 (floating error)
+

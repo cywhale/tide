@@ -11,19 +11,19 @@ matplotlib = "==3.8.4"
 netcdf4 = "==1.7.1"
 numcodecs = "==0.13.0"
 numpy = "==1.26.4"
-polars = "==1.4.1"
-pydantic = "==2.8.2"
-pytmd = "==2.1.4"
+polars = "==1.10.0"
+pydantic = "==2.9.2"
+pytmd = "==2.1.7"
 requests = "==2.32.3"
-scipy = "==1.14.0"
+scipy = "==1.14.1"
 xarray = "==2024.7.0"
-zarr = "==2.18.2"
+zarr = "==2.18.3"
 src = {file = ".", editable = true}
-gunicorn = "==22.0.0"
-uvicorn = "==0.30.5"
-dask = {extras = ["complete"], version = "==2024.7.1"}
-fastapi = {extras = ["standard"], version = "==0.112.0"}
-pandas = {extras = ["pyarrow"], version = "==2.2.2"}
+gunicorn = "==23.0.0"
+uvicorn = "==0.32.0"
+dask = {extras = ["complete"], version = "==2024.10.0"}
+fastapi = {extras = ["standard"], version = "==0.115.2"}
+pandas = {extras = ["pyarrow"], version = "==2.2.3"}
 
 [dev-packages]
 

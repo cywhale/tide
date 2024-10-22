@@ -247,6 +247,7 @@ async def get_tide(
         if lon1 is None or lat1 is None or (lon0 == lon1 and lat0 == lat1) or (abs(lat1 - lat0) < config.gridSz and abs(lon1 - lon0) < config.gridSz):
             # Only one point, no date range limitation
             lon0, lat0 = to_global_lonlat(lon0, lat0)
+
             findNear = False
             if 'nearest' in mode:
                 findNear = True
@@ -258,12 +259,20 @@ async def get_tide(
                 elif tol > 7.5*config.gridSz:
                     tol = 7.5*config.gridSz
 
+            # Handle the edge case for longitude 0
+            # We found nearest 0 point (but > 0) may encounter index error in xarray
+            # The grid in dataset is -4.06e-6 - 0.0333
+            zero_nearest_pt = np.round(0.5*config.gridSz, 3) #0.017            
+            if lon0 >= 0 and lon0 < zero_nearest_pt:  # Consider values very close to 0 as 0
+                lon0 = zero_nearest_pt
+
             if findNear:
                 dsub = config.dz.sel(lon=lon0, lat=lat0, method="nearest", tolerance=tol).sel(constituents=cons)
             else:
                 dsub = config.dz.sel(lon=slice(lon0-0.5*config.gridSz, lon0+0.5*config.gridSz),
                                      lat=slice(lat0-0.5*config.gridSz, lat0+0.5*config.gridSz),
                                      constituents=cons)
+
             tide = {}
             for var in variables:
                 amp_var = f'{var}_amp'
@@ -648,6 +657,11 @@ async def get_tide_const(
         # config.dz.close()
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content=jsonable_encoder({"Error": "Check your input of lon/lat should be in equal length"}))
+
+    # Replace any loni elements that are > 0 and < zero_nearest_pt with zero_nearest_pt
+    zero_nearest_pt = np.round(0.5*config.gridSz, 3) #0.017            
+    loni = np.where((loni > 0) & (loni < zero_nearest_pt), zero_nearest_pt, loni)
+
     onlyOnePt = False
     if len(loni) == 1:
         onlyOnePt = True
