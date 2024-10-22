@@ -15,8 +15,10 @@ import json
 from datetime import datetime, timedelta
 from src.model_utils import get_tide_time, get_tide_series, get_tide_map
 import src.config as config
-from dask.distributed import Client
-client = Client('tcp://localhost:8786')
+# from dask.distributed import Client
+# client = Client('tcp://localhost:8786')
+from src.dask_client_manager import get_dask_client
+client = get_dask_client("tideapi")
 
 
 def generate_custom_openapi():
@@ -54,6 +56,7 @@ async def lifespan(app: FastAPI):
     yield
     # below code to execute when app is shutting down
     config.dz.close()
+    client.close()
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, default_response_class=ORJSONResponse)
@@ -252,9 +255,9 @@ async def get_tide(
             if 'nearest' in mode:
                 findNear = True
 
-            if tol not in [np.nan, np.NaN, None] or findNear:
+            if tol not in [np.nan, None] or findNear:
                 findNear = True
-                if tol in [np.nan, np.NaN, None] or tol <= 0:
+                if tol in [np.nan, None] or tol <= 0:
                     tol = config.gridSz
                 elif tol > 7.5*config.gridSz:
                     tol = 7.5*config.gridSz
@@ -707,9 +710,9 @@ async def get_tide_const(
     if 'nearest' in mode:
         findNear = True
 
-    if tol not in [np.nan, np.NaN, None] or findNear:
+    if tol not in [np.nan, None] or findNear:
         findNear = True
-        if tol in [np.nan, np.NaN, None] or tol <= 0:
+        if tol in [np.nan, None] or tol <= 0:
             tol = config.gridSz
         elif tol > 7.5*config.gridSz:
             tol = 7.5*config.gridSz
