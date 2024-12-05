@@ -24,7 +24,7 @@ def resave_fillna_dataset(method1, method2):
         if not ForceUseExact and (not eq1 or not eq2):
             useNear = True
 
-        if useNear:     
+        if useNear:
             print("Warning: Use nearest method, not exactly match join!!")
             print("Please check the input ds1 file should be a valid old tpxo0.zarr")
             return
@@ -57,7 +57,7 @@ def resave_fillna_dataset(method1, method2):
         # Explicitly set chunk sizes in encoding
         # if useNear:
         #    for var_name in ds1.data_vars:
-        #        ds1[var_name].encoding['chunks'] = (113, 113, 8) #chunk_size    
+        #        ds1[var_name].encoding['chunks'] = (113, 113, 8) #chunk_size
 
         #    # Rechunk ds1 if necessary
         #    ds1 = ds1.chunk(chunk_size)
@@ -65,12 +65,12 @@ def resave_fillna_dataset(method1, method2):
     # Save the corrected dataset
     # if useNear:
     #    ds1.to_zarr('../data/tpxo9.zarr', compute=True)
-    # else:    
+    # else:
     ds1.to_zarr('../data/tpxo9.zarr')
 
 
 if __name__ == "__main__":
-    method1_file = "../data/tpxo9_bak38.zarr" #"tpxo9_method1.zarr" #All_NA_CONDITION set False 
+    method1_file = "../data/tpxo9_bak44.zarr" #"tpxo9_method1.zarr" #All_NA_CONDITION set False
     method2_file = "../data/tpxo9_new.zarr" #"tpxo9_method2.zarr"
     zarr.convenience.consolidate_metadata(method2_file)
     resave_fillna_dataset(method1_file, method2_file)

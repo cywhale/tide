@@ -51,3 +51,5 @@ node_modules
 **/test*_noaa*.json
 **/test*_noaa*.csv
 **/test*_result*_noaa*.png
+**/.python*
+**/TPXO9_atlas_v5

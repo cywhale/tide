@@ -51,4 +51,4 @@
     -- a temporary solution to make xarry internal index error when lon=0 but actually at -4.06e-6 (floating error)
 
 #### ver 0.2.1 Fix shared dask worker leak by unique naming scheme for Dask tasks/major package upgrade (numpy v2)
-
+#### ver 0.2.2 Compare Tide API with CMEMS cmems_mod_glo_phy_anfc_merged-uv_PT1H-i
