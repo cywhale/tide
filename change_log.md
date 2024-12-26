@@ -54,3 +54,4 @@
 #### ver 0.2.2 Compare Tide API with CMEMS cmems_mod_glo_phy_anfc_merged-uv_PT1H-i
 
     -- pacakge upgrade/testing files update (->47th)
+    -- refine the plots that compare Tide API with CMEMS
