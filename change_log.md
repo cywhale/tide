@@ -55,3 +55,5 @@
 
     -- pacakge upgrade/testing files update (->47th)
     -- refine the plots that compare Tide API with CMEMS
+
+#### ver 0.2.3 Fix /api/tide/const one-point not consistent with multi-pts/defaultly use nearest method

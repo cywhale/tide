@@ -182,7 +182,7 @@ async def get_tide(
         description="Allowed modes: list. Optional can be none (default output is list). Multiple/special modes can be separated by comma."),
     tol: Optional[float] = Query(
         None,
-        description="Tolerance for nearest method to locate points. Nearest method can explictly specified in mode as a special mode 'nearest', or by just giving tolerance value. Default tolerance is ±1/30 degree, and maximum is ±0.25 degree."),
+        description="Tolerance for nearest method to locate points by giving tolerance value. Default tolerance is ±1/60 degree, and maximum is ±0.25 degree."),
     append: Optional[str] = Query(
         None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z,u,v"),
     constituent: Optional[str] = Query(
@@ -258,9 +258,11 @@ async def get_tide(
             if tol not in [np.nan, None] or findNear:
                 findNear = True
                 if tol in [np.nan, None] or tol <= 0:
-                    tol = config.gridSz
+                    tol = 0.5*config.gridSz
                 elif tol > 7.5*config.gridSz:
                     tol = 7.5*config.gridSz
+            else:
+                tol = 0.5*config.gridSz
 
             # Handle the edge case for longitude 0
             # We found nearest 0 point (but > 0) may encounter index error in xarray
@@ -269,12 +271,12 @@ async def get_tide(
             if lon0 >= 0 and lon0 < zero_nearest_pt:  # Consider values very close to 0 as 0
                 lon0 = zero_nearest_pt
 
-            if findNear:
-                dsub = config.dz.sel(lon=lon0, lat=lat0, method="nearest", tolerance=tol).sel(constituents=cons)
-            else:
-                dsub = config.dz.sel(lon=slice(lon0-0.5*config.gridSz, lon0+0.5*config.gridSz),
-                                     lat=slice(lat0-0.5*config.gridSz, lat0+0.5*config.gridSz),
-                                     constituents=cons)
+            # if findNear:
+            dsub = config.dz.sel(lon=lon0, lat=lat0, method="nearest", tolerance=tol).sel(constituents=cons)
+            # else:
+            #     dsub = config.dz.sel(lon=slice(lon0-0.5*config.gridSz, lon0+0.5*config.gridSz),
+            #                         lat=slice(lat0-0.5*config.gridSz, lat0+0.5*config.gridSz),
+            #                         constituents=cons)
 
             tide = {}
             for var in variables:
@@ -514,6 +516,9 @@ def get_constituent_vec(
            'latitude': lati.tolist(),
            'grid_lon': dsub['lon'].values.tolist(),
            'grid_lat': dsub['lat'].values.tolist()}
+    # print("Debug dsub: ", dsub)
+    # print("Debug out: ", out)
+    # print("Debug amp", dsub['u_amp'].values)
 
     for TYPE in type:
         amp_all = dsub[TYPE+'_amp'].values
@@ -602,7 +607,7 @@ async def get_tide_const(
         description="Allowed modes: list, object, row (dataframe in wide format; long-format dataframe is also available as a special mode 'long'). Optional can be none (default output is list). Multiple/special modes can be separated by comma."),
     tol: Optional[float] = Query(
         None,
-        description="Tolerance for nearest method to locate points. Nearest method can explictly specified in mode as a special mode 'nearest', or by just giving tolerance value. Default tolerance is ±1/30 degree, and maximum is ±0.25 degree."),
+        description="Tolerance for nearest method to locate points by giving tolerance value. Default tolerance is ±1/60 degree, and maximum is ±0.25 degree."),
     append: Optional[str] = Query(
         None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z,u,v"),
     constituent: Optional[str] = Query(
@@ -713,73 +718,54 @@ async def get_tide_const(
     if tol not in [np.nan, None] or findNear:
         findNear = True
         if tol in [np.nan, None] or tol <= 0:
-            tol = config.gridSz
+            tol = 0.5*config.gridSz
         elif tol > 7.5*config.gridSz:
             tol = 7.5*config.gridSz
+    else:
+        tol = 0.5*config.gridSz
+
 
     #pre-subsetting if bounding box within 45 x 45 degrees
     if not onlyOnePt:
-        min_lon, max_lon = min(loni), max(loni)
-        min_lat, max_lat = min(lati), max(lati)
-        lon_rng = max_lon - min_lon
-        lat_rng = max_lat - min_lat
-        if (lon_rng > config.LON_RANGE_LIMIT and lat_rng > config.LAT_RANGE_LIMIT) or (
-            lon_rng * lat_rng > config.AREA_LIMIT) or np.sign(min_lon) != np.sign(max_lon):
-            # Note if sign is different, do pre-subset may cause error because we must use slice in ds.sel
-            ds = config.dz.sel(constituents=cons)
-        else:
-            #if np.sign(min_lon) != np.sign(max_lon):
-            #    min_lon, max_lon = min(mlon), max(mlon)
-            #    subset1 = config.dz.sel(
-            #            lon=slice(min_lon, 360),
-            #            lat=slice(min_lat, max_lat+1.0*config.gridSz),
-            #            constituents=cons)
-            #    subset2 = config.dz.sel(
-            #            lon=slice(0, max_lon+1.0*config.gridSz),
-            #            lat=slice(min_lat, max_lat+1.0*config.gridSz),
-            #            constituents=cons)
-            #    ds = xr.concat([subset1, subset2], dim='lon')
-            #else:
-            min_lon, max_lon = min(mlon), max(mlon)
-            ds = config.dz.sel(lon=slice(min_lon-0.5*config.gridSz, max_lon+0.5*config.gridSz),
-                               lat=slice(min_lat-0.5*config.gridSz, max_lat+0.5*config.gridSz),
-                               constituents=cons)
-        #vectorized version
+        # min_lon, max_lon = min(loni), max(loni)
+        # min_lat, max_lat = min(lati), max(lati)
+        # lon_rng = max_lon - min_lon
+        # lat_rng = max_lat - min_lat
+        # if (lon_rng > config.LON_RANGE_LIMIT and lat_rng > config.LAT_RANGE_LIMIT) or (
+        #     lon_rng * lat_rng > config.AREA_LIMIT) or np.sign(min_lon) != np.sign(max_lon):
+        #    # Note if sign is different, do pre-subset may cause error because we must use slice in ds.sel
+        #    ds = config.dz.sel(constituents=cons)
+        # else:
+        #    min_lon, max_lon = min(mlon), max(mlon)
+        #    ds = config.dz.sel(lon=slice(min_lon-0.5*config.gridSz, max_lon+0.5*config.gridSz),
+        #                       lat=slice(min_lat-0.5*config.gridSz, max_lat+0.5*config.gridSz),
+        #                       constituents=cons)
+        # vectorized version
         # Create a multi-dimensional coordinate array for vectorized selection
         coords = xr.DataArray(np.arange(len(mlon)),
                     coords={'points_lon': ('points', mlon),
                             'points_lat': ('points', mlat)}, dims='points')
-        if findNear:
-            dsub = ds.sel(lon=coords.points_lon, lat=coords.points_lat, method="nearest", tolerance=tol)
-        else:
-            dsub = ds.sel(lon=coords.points_lon, lat=coords.points_lat, method="nearest", tolerance=0.5*config.gridSz)
-
+        # print("Points Lon Full Precision:", coords['points_lon'].values)
+        # print("Points Lat Full Precision:", coords['points_lat'].values)
+        dsub = config.dz.sel(lon=coords.points_lon, lat=coords.points_lat, 
+                             method="nearest", tolerance=tol
+        ).sel(constituents=cons)
     else:
-        if findNear:
-            dsub = config.dz.sel(lon=mlon[0], lat=mlat[0], method="nearest", tolerance=tol)
-        else:
-            dsub = config.dz.sel(lon=slice(mlon[0]-0.5*config.gridSz, mlon[0]+0.5*config.gridSz),
-                                 lat=slice(mlat[0]-0.5*config.gridSz, mlat[0]+0.5*config.gridSz))
+        coords = xr.DataArray([0],
+            coords={
+                'points_lon': ('points', mlon),
+                'points_lat': ('points', mlat)
+            }, dims='points')
+
+        dsub = config.dz.sel(
+            lon=coords.points_lon,
+            lat=coords.points_lat,
+            method="nearest",
+            tolerance=tol
+        ).sel(constituents=cons)        
+        # print("One point coords: ", mlon, mlat, coords)    
 
     out = get_constituent_vec(dsub, loni, lati, vars=pars, constituent=cons, type=variables)
-    #nested-loop version
-    #out = []
-    #for lon0, lat0 in zip(mlon, mlat):
-    #    if findNear:
-    #        dsub = ds.sel(lon=lon0, lat=lat0, method="nearest", tolerance=tol)
-    #    else:
-    #        dsub = ds.sel(lon=slice(lon0, lon0+1.0*config.gridSz),
-    #                      lat=slice(lat0, lat0+1.0*config.gridSz))
-    #    #results = {}
-    #    #results['longitude'] = lon0
-    #    #results['latitude'] = lat0
-    #    #results['grid_lon'] = dsub["lon"].values[0]
-    #    #results['grid_lat'] = dsub["lat"].values[0]
-    #    constants = get_constituent(dsub, lon0, lat0, vars=pars, constituent=cons, type=variables)
-    #    #for key, value in constants.items():
-    #    #    results[key] = value
-    #    out.append(constants)
-    # print("Test vec version:", out)
 
     if mode is not None and 'object' in mode:
         # Serialize the data to JSON

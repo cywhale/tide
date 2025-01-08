@@ -35,7 +35,7 @@ tpxo_model = get_current_model(
 ## Global variables
 maxWorkers = 10
 MAX_CLUSTERS = 9000 #for 1x1, 9000 is max, greater cause crash #-1 #None if need test
-START_CLUSTER = 11000
+START_CLUSTER = 2267
 
 def log_elapsed_time(start_time, work=""):
     et = time.time()
@@ -44,7 +44,7 @@ def log_elapsed_time(start_time, work=""):
     # Convert seconds to hours, minutes, and seconds
     hours, remainder = divmod(elapsed_time, 3600)
     minutes, seconds = divmod(remainder, 60)
-    print(f'{work} DONE at: {end_time}') 
+    print(f'{work} DONE at: {end_time}')
     print(f'Elapsed time: {int(hours)} hr, {int(minutes)} min, {int(seconds)} sec')
 
 
@@ -60,7 +60,7 @@ def recompute_na_points(coord, lonz, latz, bathy_mask, bathy_data):
 
     results = {}
     for var_type in ['u', 'v']:
-        scale = 1e-4 #tpxo_model.scale 
+        scale = 1e-4 #tpxo_model.scale
         amp, ph, _, _ = ATLAS.extract_constants(
             np.atleast_1d(ilon), np.atleast_1d(ilat),
             tpxo_model.grid_file,
@@ -230,9 +230,9 @@ def main():
     st = time.time()
     start_time = datetime.fromtimestamp(st)
     print("Fill_NA Main process start: ", start_time)
-    input_file = "../data/tpxo9_bak37.zarr" #not yet
+    input_file = "../data/tpxo9_bak50.zarr" #not yet
     output_file = "../data/tpxo9_new.zarr"
-    resave_file = "../data/tpxo9_fillna38.zarr"
+    resave_file = "../data/tpxo9_fillna51.zarr"
     All_NA_CONDITION = False #all NA or any NA in constituents should be recomputed
     #SAVE_SMALL_DATA = False #always False
     RESAVE = False
@@ -241,7 +241,7 @@ def main():
 
     ds = replace_na_from_second_dataset(
             input_file, lonz, latz, bathy_z.mask, bathy_z.data,
-            variables=['u_ph', 'v_ph'], neighborx=1, neighbory=1,
+            variables=['u_amp', 'v_amp'], neighborx=1, neighbory=1,
             All_na_condition=All_NA_CONDITION)
 
     log_elapsed_time(st, "1. Replace NA")
