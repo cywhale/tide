@@ -271,8 +271,24 @@ async def get_tide(
             if lon0 >= 0 and lon0 < zero_nearest_pt:  # Consider values very close to 0 as 0
                 lon0 = zero_nearest_pt
 
-            # if findNear:
-            dsub = config.dz.sel(lon=lon0, lat=lat0, method="nearest", tolerance=tol).sel(constituents=cons)
+            # Create the selection indexers including both spatial and constituent dimensions
+            ds_cons = config.dz.sel(constituents=cons)
+    
+            # Then create a dataset with a single point
+            point_ds = xr.Dataset(
+                coords={
+                    'lon': [lon0],
+                    'lat': [lat0]
+                }
+            )
+    
+            # Use sel to find the nearest point
+            dsub = ds_cons.sel(
+                lon=point_ds.lon,
+                lat=point_ds.lat,
+                method="nearest",
+                tolerance=tol
+            )
             # else:
             #     dsub = config.dz.sel(lon=slice(lon0-0.5*config.gridSz, lon0+0.5*config.gridSz),
             #                         lat=slice(lat0-0.5*config.gridSz, lat0+0.5*config.gridSz),
@@ -286,13 +302,13 @@ async def get_tide(
                 if var == 'z':
                     unit = 'cm'
 
-                if findNear:
-                    ts = get_tide_series(dsub[amp_var].values, dsub[ph_var].values,
-                                         cons, tide_time, format="netcdf", unit=unit, drop_mask=True)
-                else:
-                    ts = get_tide_series(dsub[amp_var].isel(lon=0, lat=0).values,
-                                         dsub[ph_var].isel(lon=0, lat=0).values,
-                                         cons, tide_time, format="netcdf", unit=unit, drop_mask=True)
+                #if findNear:
+                #   ts = get_tide_series(dsub[amp_var].values, dsub[ph_var].values,
+                #                     cons, tide_time, format="netcdf", unit=unit, drop_mask=True)
+                #else:
+                ts = get_tide_series(dsub[amp_var].isel(lon=0, lat=0).values,
+                                     dsub[ph_var].isel(lon=0, lat=0).values,
+                                     cons, tide_time, format="netcdf", unit=unit, drop_mask=True)
                 tide[var] = ts
         else:
             # Bounding box

@@ -58,34 +58,47 @@ def get_tide_time(start_date, end_date):
 
 # calculate complex phase in radians for Euler's
 def get_tide_series(amp, ph, c, tide_time, format="netcdf", unit="cm", drop_mask=False):
-    cph = -1j * ph * np.pi / 180.0
-    # calculate constituent oscillation
-    hc = (amp * np.exp(cph))[np.newaxis, :]
-    # Create a mask where values are NA # or 0 #modified v0.1.1 let it contribute 0, not NA
-    mask = np.isnan(hc) # | (hc == 0)
+    try:
+        cph = -1j * ph * np.pi / 180.0
+        # calculate constituent oscillation
+        hc = (amp * np.exp(cph))[np.newaxis, :]
+        # Create a mask where values are NA # or 0 #modified v0.1.1 let it contribute 0, not NA
+        mask = np.isnan(hc) # | (hc == 0)
 
-    # Convert hc to a masked array
-    hc = ma.array(hc, mask=mask)
+        # Convert hc to a masked array
+        hc = ma.array(hc, mask=mask)
 
-    DELTAT = np.zeros_like(tide_time)
+        DELTAT = np.zeros_like(tide_time)
 
-    # Predict tide
-    tide = predict.time_series(
-        tide_time, hc, c, deltat=DELTAT, corrections=format)
-    minor = predict.infer_minor(
-        tide_time, hc, c, deltat=DELTAT, corrections=format)
-    tide.data[:] += minor.data[:]
-    # convert to centimeters
-    if unit=='cm':
-        tide.data[:] *= 100.0
+        # Predict tide
+        tide = predict.time_series(
+            tide_time, hc, c, deltat=DELTAT, corrections=format)
+        minor = predict.infer_minor(
+            tide_time, hc, c, deltat=DELTAT, corrections=format)
+        tide.data[:] += minor.data[:]
+        # convert to centimeters
+        if unit=='cm':
+            tide.data[:] *= 100.0
 
-    if not drop_mask:
-        return tide
+        if not drop_mask:
+            return tide
 
-    tide.data[tide.mask] = np.nan
-    out = tide.data
-    return out
-
+        tide.data[tide.mask] = np.nan
+        out = tide.data
+        return out
+    
+    except AttributeError as e:
+        # Catch specific error when tide or minor prediction fails
+        raise ValueError(
+            "Error in tide prediction. This may be due to ininappropriate parameters, e.g., insufficient constituents. "
+            f"Details: {str(e)}"
+        ) from e
+    except Exception as e:
+        # General error handling
+        raise ValueError(
+            "An unexpected error occurred during tide prediction. "
+            f"Details: {str(e)}"
+        ) from e
 
 # modified from pyTMD.predict.time_series() to get each constituent, not summer up
 def time_series_for_constituents(t, hc, constituents, deltat=0.0):

@@ -57,3 +57,5 @@
     -- refine the plots that compare Tide API with CMEMS
 
 #### ver 0.2.3 Fix /api/tide/const one-point not consistent with multi-pts/defaultly use nearest method
+
+    -- fix /api/tide one-point use nearest method error/add error handling when given consitituents but too less
