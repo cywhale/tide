@@ -134,7 +134,10 @@ def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1):
     invalid_indices = set()
     for var in variables:
         if var in tide:
-            var_data = tide[var]
+            if var == 'z':
+                var_data = tide[var] * 100.0 # convert to cm
+            else:
+                var_data = tide[var]
 
             # Find indices of NaN, -Inf, Inf, and 0 values
             invalid_indices |= set(np.where(np.isnan(var_data) | np.isinf(var_data) | (var_data == 0) | (np.abs(var_data) > absmax))[0])
@@ -146,6 +149,17 @@ def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1):
     for var in var_rechk:
         # Filter var based on valid indices
         out_dict[var] = [out_dict[var][i] for i in valid_indices]
+
+    # Apply flow_trunc truncation for output_mode="map" and special mode="flow_trunc"
+    if 'map' in mode and 'truncate' in mode:
+        # Truncate longitude and latitude to 5 decimal places
+        out_dict['longitude'] = [round(x, 5) for x in out_dict['longitude']]
+        out_dict['latitude'] = [round(x, 5) for x in out_dict['latitude']]
+
+        # Truncate tide values to 3 decimal places
+        for var in variables:
+            if var in out_dict:
+                out_dict[var] = [round(x, 3) if x is not None else None for x in out_dict[var]]
 
     return out_dict
     # Convert the dictionary to a Polars DataFrame
@@ -179,7 +193,7 @@ async def get_tide(
         5, description="Re-sampling every N points(default 5)"),
     mode: Optional[str] = Query(
         None,
-        description="Allowed modes: list. Optional can be none (default output is list). Multiple/special modes can be separated by comma."),
+        description="Allowed modes: list,truncate. Optional can be none (default output is list). Multiple/special modes can be separated by comma. The mode 'truncate' will output longitude/latitude to 5 decimal places, tide variables to 3 decimal places."),
     tol: Optional[float] = Query(
         None,
         description="Tolerance for nearest method to locate points by giving tolerance value. Default tolerance is ±1/60 degree, and maximum is ±0.25 degree."),
@@ -195,6 +209,7 @@ async def get_tide(
     #### Usage
     * One-point tide height with time-span limitation (<= 30 days, hourly data): e.g. /tide?lon0=125&lat0=15&start=2023-07-25&end=2023-07-26T01:30:00.000
     * Get current in bounding-box <= 45x45 in degrees at one time moment(in ISOstring): e.g. /tide?lon0=125&lon1&=135&lat0=15&lat1=30&start=2023-07-25T01:30:00.000
+    * Note: the unit of z (tide height) is cm, u and v (tidal current) are m/s
     """
 
     if append is None:
@@ -367,7 +382,9 @@ async def get_tide(
 
         #if mode is None or mode != 'row':
         #print(tide)
-        out = tide_to_output(tide, dsub.coords['lon'].values, dsub.coords['lat'].values, dtime, variables, output_mode, absmax=10000.0) #, 'list')
+        out = tide_to_output(tide, dsub.coords['lon'].values, dsub.coords['lat'].values, dtime, variables, 
+                             output_mode + ',truncate' if 'truncate' in mode and output_mode == 'map' else output_mode,  
+                             absmax=10000.0)
         return ORJSONResponse(content=jsonable_encoder(out))
         #else:
         #    out = tide_to_output(tide, dsub.coords['lon'].values, dsub.coords['lat'].values, variables, 'dataframe')
