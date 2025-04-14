@@ -209,7 +209,7 @@ async def get_tide(
     #### Usage
     * One-point tide height with time-span limitation (<= 30 days, hourly data): e.g. /tide?lon0=125&lat0=15&start=2023-07-25&end=2023-07-26T01:30:00.000
     * Get current in bounding-box <= 45x45 in degrees at one time moment(in ISOstring): e.g. /tide?lon0=125&lon1&=135&lat0=15&lat1=30&start=2023-07-25T01:30:00.000
-    * Note: the unit of z (tide height) is cm, u and v (tidal current) are m/s
+    * Note: the unit of z (tide height), u and v (tidal current) are all cm/s
     """
 
     if append is None:
