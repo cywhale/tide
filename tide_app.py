@@ -119,11 +119,11 @@ def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1):
     out_dict = {
         'longitude': longitude_flat.tolist(),
         'latitude': latitude_flat,
-        'time': dtime if mode == 'time' else [dtime[0]]
+        'time': dtime if 'time' in mode else [dtime[0]]
     }
 
     # Initialize a set to store valid indices
-    if mode == 'time':
+    if 'time' in mode:
         valid_indices = set(range(len(dtime)))
         var_rechk = ['time'] + variables
     else:
@@ -134,8 +134,8 @@ def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1):
     invalid_indices = set()
     for var in variables:
         if var in tide:
-            if var == 'z':
-                var_data = tide[var] * 100.0 # convert to cm
+            if var == 'z' and 'time' not in mode:
+                var_data = tide[var] * 100.0 # convert to cm (but time series is already cm)
             else:
                 var_data = tide[var]
 
@@ -151,7 +151,7 @@ def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1):
         out_dict[var] = [out_dict[var][i] for i in valid_indices]
 
     # Apply flow_trunc truncation for output_mode="map" and special mode="flow_trunc"
-    if 'map' in mode and 'truncate' in mode:
+    if 'truncate' in mode: # allow both 'time' and 'map' all has truncate mode
         # Truncate longitude and latitude to 5 decimal places
         out_dict['longitude'] = [round(x, 5) for x in out_dict['longitude']]
         out_dict['latitude'] = [round(x, 5) for x in out_dict['latitude']]
@@ -193,7 +193,7 @@ async def get_tide(
         5, description="Re-sampling every N points(default 5)"),
     mode: Optional[str] = Query(
         None,
-        description="Allowed modes: list,truncate. Optional can be none (default output is list). Multiple/special modes can be separated by comma. The mode 'truncate' will output longitude/latitude to 5 decimal places, tide variables to 3 decimal places."),
+        description="Allowed modes: list, truncate. Optional can be none (default output is list). Multiple/special modes can be separated by comma. The mode 'truncate' will output longitude/latitude to 5 decimal places, tide variables to 3 decimal places."),
     tol: Optional[float] = Query(
         None,
         description="Tolerance for nearest method to locate points by giving tolerance value. Default tolerance is ±1/60 degree, and maximum is ±0.25 degree."),
@@ -282,13 +282,13 @@ async def get_tide(
             # Handle the edge case for longitude 0
             # We found nearest 0 point (but > 0) may encounter index error in xarray
             # The grid in dataset is -4.06e-6 - 0.0333
-            zero_nearest_pt = np.round(0.5*config.gridSz, 3) #0.017            
+            zero_nearest_pt = np.round(0.5*config.gridSz, 3) #0.017
             if lon0 >= 0 and lon0 < zero_nearest_pt:  # Consider values very close to 0 as 0
                 lon0 = zero_nearest_pt
 
             # Create the selection indexers including both spatial and constituent dimensions
             ds_cons = config.dz.sel(constituents=cons)
-    
+
             # Then create a dataset with a single point
             point_ds = xr.Dataset(
                 coords={
@@ -296,7 +296,7 @@ async def get_tide(
                     'lat': [lat0]
                 }
             )
-    
+
             # Use sel to find the nearest point
             dsub = ds_cons.sel(
                 lon=point_ds.lon,
@@ -382,8 +382,10 @@ async def get_tide(
 
         #if mode is None or mode != 'row':
         #print(tide)
-        out = tide_to_output(tide, dsub.coords['lon'].values, dsub.coords['lat'].values, dtime, variables, 
-                             output_mode + ',truncate' if 'truncate' in mode and output_mode == 'map' else output_mode,  
+        out = tide_to_output(tide, dsub.coords['lon'].values, dsub.coords['lat'].values, dtime, variables,
+                             # allow both 'map' and 'time' mode can have truncate mode, 202504
+                             output_mode + ',truncate' if 'truncate' in mode else output_mode,
+                             # output_mode + ',truncate' if 'truncate' in mode and output_mode == 'map' else output_mode,
                              absmax=10000.0)
         return ORJSONResponse(content=jsonable_encoder(out))
         #else:

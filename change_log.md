@@ -62,3 +62,5 @@
 
 #### ver 0.2.4 End of filling NA of tpxo9.zarr
 #### ver 0.2.5 Add a 'truncate' mode: lon/lat/tide to 5/5/3 decimal places. Fix tide-height unit in cm in 'map'. 
+
+    -- fix introduced bug due to previous modification: tide height at time_series has wrong unit scaling and without truncate mode

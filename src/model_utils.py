@@ -86,7 +86,7 @@ def get_tide_series(amp, ph, c, tide_time, format="netcdf", unit="cm", drop_mask
         tide.data[tide.mask] = np.nan
         out = tide.data
         return out
-    
+
     except AttributeError as e:
         # Catch specific error when tide or minor prediction fails
         raise ValueError(
