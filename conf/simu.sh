@@ -29,3 +29,7 @@ pip install -e .
 
 # fill NA
 /home/odbadmin/.pyenv/shims/python -u ./zarr_fillna_parallel.py > tmp.log 2>&1 &
+
+# Compare with NOAA API
+# API example
+https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?product=water_level&begin_date=20251111&end_date=20251113&datum=MSL&station=8411060&format=json&units=metric&time_zone=LST_LDT

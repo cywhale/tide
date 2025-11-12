@@ -66,3 +66,9 @@
     -- fix introduced bug due to previous modification: tide height at time_series has wrong unit scaling and without truncate mode
 
 #### ver 0.2.6 Improve Swagger doc (fix numcodecs==0.15.1 issue zarr-developers/numcodecs/issues/721)
+
+#### ver 0.2.7 Add `/api/tide/forecast` daily summary endpoint and contributor guide
+
+    -- Extracted forecast logic into `src/tide_forecast.py`, calling TPXO9 series + USNO oneday data with caching/robust TZ parsing
+    -- Standardized tide timestamps to second precision and surfaced external API failures via `meta.status`
+    -- Added AGENTS.md contributor guide and documented the new route wiring in FastAPI; requirements.txt already refreshed for package upgrades

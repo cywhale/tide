@@ -18,6 +18,7 @@ import src.config as config
 # from dask.distributed import Client
 # client = Client('tcp://localhost:8786')
 from src.dask_client_manager import get_dask_client
+from src.tide_forecast import forecast_router
 client = get_dask_client("tideapi")
 
 
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, default_response_class=ORJSONResponse)
+app.include_router(forecast_router)
 
 
 @app.get("/api/swagger/tide/openapi.json", include_in_schema=False)
