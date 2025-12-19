@@ -72,3 +72,5 @@
     -- Extracted forecast logic into `src/tide_forecast.py`, calling TPXO9 series + USNO oneday data with caching/robust TZ parsing
     -- Standardized tide timestamps to second precision and surfaced external API failures via `meta.status`
     -- Added AGENTS.md contributor guide and documented the new route wiring in FastAPI; requirements.txt already refreshed for package upgrades
+
+#### ver 0.2.8 Decouple shared Dask service and add reconnect-capable client

@@ -17,7 +17,7 @@ from src.model_utils import get_tide_time, get_tide_series, get_tide_map
 import src.config as config
 # from dask.distributed import Client
 # client = Client('tcp://localhost:8786')
-from src.dask_client_manager import get_dask_client
+from src.dask_client_manager import get_dask_client, close_dask_client
 from src.tide_forecast import forecast_router
 client = get_dask_client("tideapi")
 
@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     yield
     # below code to execute when app is shutting down
     config.dz.close()
-    client.close()
+    close_dask_client("tideapi")
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, default_response_class=ORJSONResponse)
