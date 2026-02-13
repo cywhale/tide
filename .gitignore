@@ -23,6 +23,7 @@ node_modules
 **/tmp
 **/tmp.*
 **/tmp*.*
+**/tmp_*
 **/~$*.docx
 **/.cache
 **/cache
