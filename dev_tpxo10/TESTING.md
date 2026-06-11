@@ -220,10 +220,42 @@ cons-chunks); winner beats baseline on every workload in the production
 open-mode. overview5: no-go. Cold rounds labeled `first-path-access`
 (no `purge` on this box) — binding cold gate moves to the Linux VM.
 
+### S1.7 Round 11 scope corrections + T-C calibration (2026-06-11)
+
+Round 11 (Codex) narrowed the S1.6 freeze: **D5 freezes chunk shape only
+(113,113,15)**; open-mode is PENDING the W8 harness (matrix "dask" cells
+used the local threaded scheduler with single-block `chunks='auto'` —
+not production-representative); matrix latency numbers are exploratory
+(fixed order, W6/W8 reps=2); overview5 no-go is provisional pending a
+second bbox-origin phase (W6b workload added); matrix RSS is
+end-minus-start, not peak. Variant stores now verify provenance commit +
+chunk layout before reuse.
+
+T-C calibration (`scripts/compare_tpxo9_tpxo10.py`, 117,492 common-valid
+z-cells, seed 20260611 → `benchmarks/tc_calibration.json`):
+
+| binding cons | deep P95 | shelf P95 | coastal P95 (report) |
+|---|---|---|---|
+| m2 | 9.90 mm | 22.02 mm | 150.61 mm |
+| s2 | 6.71 mm | 20.59 mm | 99.13 mm |
+| k1 | 5.66 mm | 14.14 mm | 63.42 mm |
+| o1 | 5.00 mm | 14.32 mm | 49.66 mm |
+
+Deep-M2 signed amplitude bias **+0.662 mm** (gate ≤ 5 mm — no systematic
+unit/scale error). Top outliers cluster at Incheon Bay (extreme
+macrotidal, h 2–5 m) and NE Borneo shallows — physically explicable, no
+structured artifacts. Polar stratum deferred to Stage 2 (no |lat|>60°
+cells in region). Currents report-only: legacy store units detected
+cm/s (100×); u-M2 |Δ| P95 = 0.126 m/s. **Frozen thresholds (spec memo
+#7): deep ≤ 30 mm, shelf ≤ 150 mm, bias ≤ 5 mm — observed margins
+3×/7×.**
+
 ### S1 remaining for G1
 
-- §7.5.3 W8 cap decision (production-like Gunicorn, no --reload,
-  concurrency-2 PID-verified) against the signed absolute thresholds
-- T-C tpxo9↔tpxo10 cross-version calibration → threshold freeze
+- §7.5.3 W8 harness (production-like Gunicorn, no --reload,
+  concurrency-2 PID-verified, process-tree peak-RSS sampler) against the
+  signed absolute thresholds — also decides the D5 **open-mode** (direct
+  vs real `distributed` client) and confirms overview5 no-go with the
+  second sampling phase
 - Linux-host cold-cache round (binding evidence; macOS rounds are
   `first-path-access` only)

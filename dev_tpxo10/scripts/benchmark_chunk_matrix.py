@@ -88,9 +88,23 @@ def decompressed_bytes(keys, ds) -> int:
 
 
 def rechunk_variant(canonical: Path, out: Path, cl: int, cc: int):
-    if out.exists():
-        return
     src = xr.open_zarr(canonical, consolidated=True, decode_times=False)
+    if out.exists():
+        # round 11, finding 5: never silently reuse a stale variant —
+        # verify provenance commit and chunk layout, else rebuild
+        try:
+            old = xr.open_zarr(out, consolidated=True, decode_times=False)
+            same = (old.attrs.get("pipeline_git_commit")
+                    == src.attrs.get("pipeline_git_commit")
+                    and old["z_Re"].encoding.get("chunks") == (cl, cl, cc))
+            old.close()
+        except Exception:
+            same = False
+        if same:
+            return
+        import shutil
+        shutil.rmtree(out)
+        print(f"  (stale variant {out.name} rebuilt)")
     comp = Blosc(cname="lz4", clevel=5, shuffle=Blosc.SHUFFLE)
     enc = {}
     for name, var in src.data_vars.items():
@@ -139,7 +153,9 @@ def measure(fn, reps, counter, ds):
         "MiB_decompressed": round(
             decompressed_bytes(counter.keys, ds) / reps / 2**20, 2),
         "dask_tasks": int(np.median(task_counts)) if task_counts else None,
-        "rss_delta_MiB": round((rss1 - rss0) / 2**20, 1),
+        # end-minus-start, NOT peak (round 11, finding 3); binding memory
+        # evidence comes from the W8 process-tree sampler only
+        "rss_end_minus_start_MiB": round((rss1 - rss0) / 2**20, 1),
     }
 
 
@@ -174,9 +190,12 @@ def workloads(ds, schema, rng):
             sel = sel.isel({conc: kidx})
         return sel.to_dataarray()
 
-    def box(dlon, dlat, step=1):
-        jj = slice(j0, j0 + int(dlat * 30), step)
-        ii = slice(i0, i0 + int(dlon * 30), step)
+    def box(dlon, dlat, step=1, phase=0):
+        # phase: bbox-origin offset in cells — the legacy decimation grid
+        # follows the bbox origin (spec §3.1), so sampled workloads must
+        # exercise a second, non-stride-aligned phase (round 11, finding 2)
+        jj = slice(j0 + phase, j0 + phase + int(dlat * 30), step)
+        ii = slice(i0 + phase, i0 + phase + int(dlon * 30), step)
         return ds[zvars + cvars].isel({lat: jj, lon: ii}).to_dataarray()
 
     return {
@@ -186,6 +205,7 @@ def workloads(ds, schema, rng):
         "W4_map_1deg": lambda: box(1, 1),
         "W5_map_10deg": lambda: box(10, 10),
         "W6_map_45deg_s5": lambda: box(45, 45, step=5),
+        "W6b_map_45deg_s5_phase3": lambda: box(45, 45, step=5, phase=3),
         "W7_strip_45x5": lambda: box(45, 5),
         "W8_map_45deg_s1": lambda: box(45, 45),
     }
@@ -216,7 +236,7 @@ def run_cell(label, path, mode, schema, results, cold_label):
           f"{w1['MiB_decompressed']:8.2f}MiB | W6 "
           f"{cell['W6_map_45deg_s5']['ms_median']:9.2f}ms | W8 "
           f"{cell['W8_map_45deg_s1']['ms_median']:9.2f}ms "
-          f"rss+{cell['W8_map_45deg_s1']['rss_delta_MiB']:.0f}MiB")
+          f"rssΔ{cell['W8_map_45deg_s1']['rss_end_minus_start_MiB']:.0f}MiB")
     ds.close()
 
 
@@ -240,8 +260,17 @@ def main() -> int:
 
     cold_label = try_purge()
     print(f"cold-cache method: {cold_label}")
-    results = {"_meta": {"seed": SEED, "cold_label": cold_label,
-                         "decompressed_note": "full-chunk upper bound"}}
+    results = {"_meta": {
+        "seed": SEED, "cold_label": cold_label,
+        "decompressed_note": "full-chunk upper bound",
+        "latency_note": ("EXPLORATORY: fixed ordering, no interleaving, "
+                         "W6/W8 reps=2; binding latency evidence is the W8 "
+                         "harness / §7.5.2 interleaved benchmark"),
+        "dask_note": ("'dask' mode = local threaded scheduler, "
+                      "chunks='auto' (single-block); NOT representative of "
+                      "the production distributed service — open-mode is "
+                      "decided at the W8 harness"),
+    }}
     for cl, cc, path in variants:
         for mode in ("direct", "dask"):
             try_purge()
