@@ -250,12 +250,55 @@ cm/s (100×); u-M2 |Δ| P95 = 0.126 m/s. **Frozen thresholds (spec memo
 #7): deep ≤ 30 mm, shelf ≤ 150 mm, bias ≤ 5 mm — observed margins
 3×/7×.**
 
+### S1.8 §7.5.3 W8 harness — **STOP-AT-G1: memory thresholds failed** (2026-06-11)
+
+Harness: `w8app.py` (production env, real pyTMD 2.2.8 `predict.map` /
+`time_series`, orjson path, X-Worker-PID) + `scripts/w8_harness.py`
+(production gunicorn 2 workers NO --reload; dist modes launch a real
+dask scheduler + 8 GB worker; 50 ms process-tree peak-RSS sampler;
+concurrency-2 distinct-PID asserted). Results
+(`benchmarks/w8_harness.json` + `w8_harness_dist.json`):
+
+| mode | point med | W6 s5 / W6b | W8 single | W8 conc2 | worker peak/Δ GiB | tree Δ GiB | verdict |
+|---|---|---|---|---|---|---|---|
+| direct | **4.27 ms** | 1.01 / 1.00 s | 14.65 s | 15.09 s | 3.71 / 3.52 | ~7.0 | FAIL mem |
+| dask (threaded auto) | 6.44 ms | 0.94 s | 14.63 s | 15.04 s | 4.27 / 4.05 | 7.46 | FAIL mem |
+| dist-auto | 33.11 ms | 1.45 s | 15.21 s | 15.98 s | 3.83 / 3.62 | 6.81 | FAIL mem+wall |
+| dist-native | 32.84 ms | 1.44 s | 15.20 s | 15.98 s | 3.76 / 3.55 | 6.53 | FAIL mem+wall |
+
+Passing in all modes: payload 32.6 MiB (≤100), conc2 ≤30 s, two distinct
+worker PIDs, host headroom ≥0.57 (≥0.25). Failing in all modes:
+gunicorn worker delta (signed ≤1.5 GiB) and peak (≤2 GiB), tree delta
+(≤3 GiB); dist modes additionally fail wall_single (15.2 s > 15 s).
+
+Findings:
+1. **The W8 memory blow-up is open-mode-independent** (~3.5–4 GiB worker
+   delta in every mode) — the cost is the post-read pipeline (complex hc
+   build + pyTMD predict temporaries + list/JSON conversion for 1.82M
+   cells × 3 components), not the Zarr read. A †cap on output cells is
+   the §7.5.3-prescribed remedy; no chunk/open-mode choice can fix it.
+2. **Open-mode evidence** (from the workloads that pass): direct wins
+   points decisively (4.27 vs 6.44 ms threaded, vs 33 ms distributed —
+   scheduler round-trips cost 7.8× on points); maps are within noise
+   (1.01 vs 0.94 s). The distributed client is strictly worse for this
+   workload shape (store is local to the API process). The dask worker
+   RSS stayed ~0 in dist modes — the data path does not benefit from the
+   cluster.
+3. W6/W6b (two sampling phases) identical → overview5 no-go can be
+   finalized.
+4. Caveat: the harness JSON path uses `.tolist()`; the ported production
+   runtime may serialize more efficiently — the cap value must be
+   re-validated on the real runtime at G3 (P-Map45-s1 already requires
+   this).
+
+**Per the G1 kickoff stop condition: work STOPPED; owner re-sign-off
+required.** Scaling: ~2.0 KiB worker-RSS per output cell ⇒ proposed
+`MAX_BBOX_CELLS = 5×10⁵` output cells (post-sample) ⇒ predicted ~1.0 GiB
+delta / ~4 s wall; default `sample=5` 45° maps (73k cells) unaffected;
+`sample=1` capped at ≈23.6°×23.6°.
+
 ### S1 remaining for G1
 
-- §7.5.3 W8 harness (production-like Gunicorn, no --reload,
-  concurrency-2 PID-verified, process-tree peak-RSS sampler) against the
-  signed absolute thresholds — also decides the D5 **open-mode** (direct
-  vs real `distributed` client) and confirms overview5 no-go with the
-  second sampling phase
+- **Owner re-sign-off after the W8 STOP** (cap policy + open-mode freeze)
 - Linux-host cold-cache round (binding evidence; macOS rounds are
   `first-path-access` only)
