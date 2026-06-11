@@ -1,0 +1,27 @@
+[project]
+name = "tide-dev-tpxo10"
+version = "0.1.0"
+description = "TPXO10 -> Zarr conversion environment (spec v0.3.0 D7; pyTMD 3.x lives ONLY here)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pyTMD==3.0.6",
+    "netCDF4==1.7.3",
+    "xarray>=2025.10",
+    "zarr>=2.18,<3",
+    "numcodecs<0.16",
+    "numpy>=2.2",
+    "dask>=2025.11.0",
+    "psutil>=6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"

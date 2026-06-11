@@ -1,0 +1,40 @@
+[project]
+name = "tide-api"
+version = "0.3.0.dev0"
+description = "ODB Tide API (FastAPI) backed by TPXO Zarr stores"
+requires-python = ">=3.11,<3.12"
+# Dependencies frozen to the production requirements.txt versions
+# (spec v0.3.0 Stage 0 / D7: runtime stays on pyTMD 2.2.8 + zarr 2.x).
+dependencies = [
+    "dask[complete]==2025.11.0",
+    "fastapi[standard]==0.121.1",
+    "gunicorn==23.0.0",
+    "matplotlib==3.10.1",
+    "netCDF4==1.7.3",
+    "numcodecs==0.15.1",
+    "numpy==2.3.4",
+    "orjson==3.11.4",
+    "pandas[pyarrow]==2.3.3",
+    "polars==1.35.2",
+    "pydantic==2.12.4",
+    "pyTMD==2.2.8",
+    "Requests==2.32.5",
+    "scipy==1.16.3",
+    "uvicorn==0.38.0",
+    "xarray==2025.10.1",
+    "zarr==2.18.7",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+]
+
+[tool.uv]
+# The app is served as `gunicorn tide_app:app` from the repo root;
+# this project is an environment definition, not an installable package.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
