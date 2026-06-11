@@ -14,6 +14,7 @@ Example (Stage 1 prototype):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -29,6 +30,41 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tpxo10_pipeline as P  # noqa: E402
 
 MASK_RULE = "valid iff node bathymetry > 0 AND not all constituents are (0+0j)"
+
+
+def assert_clean_pipeline_sources(status_porcelain: str, context: str = "") -> None:
+    """Review round 9, finding 1 (High): the recorded git commit is only a
+    valid provenance pointer if every pipeline source file is committed and
+    clean. Fail closed on any dirty/untracked entry — never write a store
+    whose attrs point to a revision that cannot reproduce it."""
+    entries = [ln for ln in status_porcelain.splitlines() if ln.strip()]
+    if entries:
+        raise P.PipelineError(
+            f"pipeline sources not committed/clean{context}: {entries}; "
+            "commit first — provenance must point to a reproducing revision"
+        )
+
+
+def pipeline_provenance(repo_root: Path) -> dict:
+    """Git commit (verified clean for dev_tpxo10/scripts) + SHA-256 of every
+    pipeline source file, so the store is reproducible by revision AND by
+    content hash independently."""
+    scripts_dir = repo_root / "dev_tpxo10" / "scripts"
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--", str(scripts_dir)],
+        cwd=repo_root, capture_output=True, text=True, check=True,
+    ).stdout
+    assert_clean_pipeline_sources(status, context=f" under {scripts_dir}")
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo_root,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    src_sha = {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(scripts_dir.glob("*.py"))
+    }
+    return {"pipeline_git_commit": commit,
+            "pipeline_source_sha256": json.dumps(src_sha)}
 
 
 def load_node_stack(source: Path, node: str, iw: slice, jw: slice):
@@ -54,7 +90,8 @@ def finite_or_die(arr: np.ndarray, name: str) -> np.ndarray:
     return arr
 
 
-def convert(region, chunks, out, source: Path, repo_root: Path) -> None:
+def convert(region, chunks, out, source: Path, repo_root: Path,
+            created_utc: str | None = None) -> None:
     lon0, lon1, lat0, lat1 = region
     cl_lat, cl_lon, cl_con = chunks
     grid = source / "grid_tpxo10atlas_v2.nc"
@@ -113,19 +150,14 @@ def convert(region, chunks, out, source: Path, repo_root: Path) -> None:
           f"flag1={(uz_flag == 1).sum()} flag2={(uz_flag == 2).sum()} (uz, interior)")
 
     manifest_path = repo_root / "dev_tpxo10" / "manifests" / "tpxo10_atlas_v2.sha256.json"
-    try:
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_root,
-                                capture_output=True, text=True).stdout.strip()
-    except OSError:
-        commit = "unknown"
     import pyTMD
     attrs = {
         "tide_store_schema": P.SCHEMA_VERSION,
         "source_model": "TPXO10-atlas-v2 (OSU, registered academic license)",
         "source_manifest_sha256": json.loads(manifest_path.read_text()),
-        "pipeline_git_commit": commit,
+        **pipeline_provenance(repo_root),
         "pipeline_pyTMD_version": pyTMD.version.full_version,
-        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "created_utc": created_utc or datetime.now(timezone.utc).isoformat(),
         "region_request": list(region),
         "interior_index_window": [j_int.start, j_int.stop, i_int.start, i_int.stop],
         "interior_bounds_lonlat": [
@@ -189,10 +221,13 @@ def main() -> int:
                     default=repo_root / "dev_tpxo10" / "stores" / "tpxo10_proto.zarr")
     ap.add_argument("--source", type=Path,
                     default=repo_root / "data_src" / "TPXO10_atlas_v2")
+    ap.add_argument("--created-utc", type=str, default=None,
+                    help="override the creation timestamp (idempotency testing)")
     args = ap.parse_args()
     region = tuple(float(x) for x in args.region.split(","))
     chunks = tuple(int(x) for x in args.chunks.split(","))
-    convert(region, chunks, args.out, args.source, repo_root)
+    convert(region, chunks, args.out, args.source, repo_root,
+            created_utc=args.created_utc)
     return 0
 
 

@@ -6,18 +6,23 @@ centering against pyTMD's own readers at seeded + named node indices:
 
   1. z harmonic constants: store (z_Re + i*z_Im) [mm] vs
      pyTMD open_atlas_dataset(group='z') at the same global node — rtol 1e-9.
-  2. u/v transport: store ints vs pyTMD open_atlas_dataset(group='u'/'v')
-     (NOTE: at this API layer pyTMD returns *transport* in cm^2/s; the
-     depth division happens in higher-level accessors) — rtol 1e-9.
-  3. hu/hv: store vs pyTMD open_atlas_grid — exact.
-  4. D12 centering: store uz (float32 m/s) vs hand-computed two-edge
-     average of per-edge velocities built from pyTMD-read transport and
-     depths — rtol 1e-5; includes one-sided (flag 1) coastal cells whose
-     usable edge is native.
+  2. u AND v transport: store ints vs pyTMD open_atlas_dataset
+     (group='u'/'v') (NOTE: at this API layer pyTMD returns *transport* in
+     cm^2/s; the depth division happens in higher-level accessors) —
+     rtol 1e-9.
+  3. hu/hv: store vs pyTMD open_atlas_grid (land-mask convention:
+     pyTMD NaN <-> store 0) — exact on finite cells.
+  4. D12 centering for BOTH uz and vz: store float32 m/s vs two-edge
+     averages hand-computed from pyTMD-READ transport and pyTMD-READ edge
+     depths (never from store arrays) — rtol 1e-5; includes one-sided
+     coastal cells and the halo-dependent boundary cells (easternmost
+     column for uz, northernmost row for vz), whose outer edge is read
+     from the global source via pyTMD.
 
-Only flag-0 cells/edges are compared against pyTMD (pyTMD has no inpaint).
-Stratified sampling: deep (h>=1000), shelf (50<=h<1000), coastal (h<50),
-plus fixed named locations. Dateline/polar branches are global-only and
+Only cells whose contributing edges are source-valid (§3.2 recomputed from
+pyTMD-read values) are compared (pyTMD has no inpaint). Stratified
+sampling: deep (h>=1000), shelf (50<=h<1000), coastal (h<50), plus fixed
+named locations. Dateline/polar/last-latitude branches are global-only and
 are covered by unit tests now and the Stage 2 global golden run.
 """
 from __future__ import annotations
@@ -117,55 +122,90 @@ def main() -> int:
               and bool(np.all(st[~finite] == 0.0)),
               f"{hname} mismatch vs pyTMD grid reader (land-mask convention)")
 
-    u_flag = z["u_flag"].values
-    upts = [(j, i) for j, i in pts if u_flag[j, i] == 0]
-    ujj = np.array([p[0] for p in upts]); uii = np.array([p[1] for p in upts])
-    st_u = (z["u_Re"].values[ujj, uii, :] + 1j * z["u_Im"].values[ujj, uii, :])
-    for k, c in enumerate(P.CONSTITUENTS):
-        ds = ATLAS.open_atlas_dataset(
-            args.source / f"u_{c}_tpxo10_atlas_30_v2.nc", group="u")
-        ref = ds[c].isel(y=xr.DataArray(ujj + j0), x=xr.DataArray(uii + i0)).values
-        check(np.allclose(st_u[:, k], ref, rtol=1e-9, atol=1e-9),
-              f"u transport mismatch for {c}")
-    print(f"[3/4] u transport ({len(upts)} cells) + hu/hv vs pyTMD: "
-          + ("OK" if not FAILURES else "FAIL"))
+    # -- 2b. u AND v transport vs pyTMD ------------------------------------
+    for comp, flag_var, rv in (("u", "u_flag", "u"), ("v", "v_flag", "v")):
+        n_flag = z[flag_var].values
+        npts = [(j, i) for j, i in pts if n_flag[j, i] == 0]
+        njj = np.array([p[0] for p in npts]); nii = np.array([p[1] for p in npts])
+        st_t = (z[f"{comp}_Re"].values[njj, nii, :]
+                + 1j * z[f"{comp}_Im"].values[njj, nii, :])
+        for k, c in enumerate(P.CONSTITUENTS):
+            ds = ATLAS.open_atlas_dataset(
+                args.source / f"u_{c}_tpxo10_atlas_30_v2.nc", group=rv)
+            ref = ds[c].isel(y=xr.DataArray(njj + j0), x=xr.DataArray(nii + i0)).values
+            check(np.allclose(st_t[:, k], ref, rtol=1e-9, atol=1e-9),
+                  f"{comp} transport mismatch for {c}")
+        print(f"[3/4] {comp} transport ({len(npts)} cells) vs pyTMD: "
+              + ("OK" if not FAILURES else "FAIL"))
 
-    # -- 4. D12 centering vs hand-computed pyTMD-read pieces ---------------
-    uz_flag = z["uz_flag"].values
-    nlon = z.sizes["lon_z"]
-    cand0 = [(j, i) for j, i in pts if i < nlon - 1 and uz_flag[j, i] == 0]
-    # one-sided coastal cells with both contributing edges native-or-missing
-    oj, oi = np.nonzero(uz_flag == 1)
-    keep = oi < nlon - 1
-    oj, oi = oj[keep], oi[keep]
-    pick = rng.choice(len(oj), size=min(60, len(oj)), replace=False)
-    cand1 = []
-    for p in pick:
-        j, i = int(oj[p]), int(oi[p])
-        fw, fe = u_flag[j, i], u_flag[j, i + 1]
-        if (fw == 0 and fe == 2) or (fw == 2 and fe == 0):  # purely one-sided native
-            cand1.append((j, i))
-    hu_st = z["hu"].values
-    u_re = z["u_Re"].values; u_im = z["u_Im"].values
-    st_uz = z["uz_Re"].values + 1j * z["uz_Im"].values
+    # -- 4. D12 centering vs pieces READ VIA pyTMD (round 9, finding 3:
+    #       both components, reference never touches store arrays, and the
+    #       halo-dependent boundary cells are included via global reads) ---
+    nlat, nlon = z.sizes["lat_z"], z.sizes["lon_z"]
 
-    def edge_vel(j, i):
-        return 1e-4 * (u_re[j, i, :] + 1j * u_im[j, i, :]) / hu_st[j, i]
+    def pytmd_transport_at(group, gjj, gii):
+        out = np.empty((len(gjj), len(P.CONSTITUENTS)), dtype=np.complex128)
+        for k, c in enumerate(P.CONSTITUENTS):
+            ds = ATLAS.open_atlas_dataset(
+                args.source / f"u_{c}_tpxo10_atlas_30_v2.nc", group=group)
+            out[:, k] = ds[c].isel(y=xr.DataArray(gjj), x=xr.DataArray(gii)).values
+        return out
 
-    for label, cells in (("two-edge", cand0), ("one-sided", cand1)):
+    for comp, group, h_g in (("uz", "u", hu_g), ("vz", "v", hv_g)):
+        st_flag = z[f"{comp}_flag"].values
+        st_val = z[f"{comp}_Re"].values + 1j * z[f"{comp}_Im"].values
+        cells = [(j, i) for j, i in pts if st_flag[j, i] <= 1]
+        # boundary cells whose outer edge lives in the halo (global read)
+        if comp == "uz":
+            bj = np.nonzero(st_flag[:, nlon - 1] <= 1)[0]
+            cells += [(int(j), nlon - 1) for j in
+                      rng.choice(bj, size=min(60, len(bj)), replace=False)]
+        else:
+            bi = np.nonzero(st_flag[nlat - 1, :] <= 1)[0]
+            cells += [(nlat - 1, int(i)) for i in
+                      rng.choice(bi, size=min(60, len(bi)), replace=False)]
+        cjj = np.array([c[0] for c in cells]); cii = np.array([c[1] for c in cells])
+        if comp == "uz":
+            e1 = (cjj + j0, cii + i0); e2 = (cjj + j0, cii + i0 + 1)
+        else:
+            e1 = (cjj + j0, cii + i0); e2 = (cjj + j0 + 1, cii + i0)
+        T1 = pytmd_transport_at(group, *e1); T2 = pytmd_transport_at(group, *e2)
+        h1 = h_g.isel(y=xr.DataArray(e1[0]), x=xr.DataArray(e1[1])).values
+        h2 = h_g.isel(y=xr.DataArray(e2[0]), x=xr.DataArray(e2[1])).values
+        v1 = np.isfinite(h1) & (h1 > 0) & ~np.all(T1 == 0, axis=1)
+        v2 = np.isfinite(h2) & (h2 > 0) & ~np.all(T2 == 0, axis=1)
+        n_cmp = {"two-edge": 0, "one-sided": 0, "skipped-inpaint": 0}
         bad = 0
-        for j, i in cells:
-            fw, fe = u_flag[j, i], u_flag[j, i + 1]
-            if fw == 0 and fe == 0:
-                ref = 0.5 * (edge_vel(j, i) + edge_vel(j, i + 1))
-            elif fw == 0:
-                ref = edge_vel(j, i)
+        for n in range(len(cells)):
+            j, i = cells[n]
+            if v1[n] and v2[n]:
+                ref = 0.5e-4 * (T1[n] / h1[n] + T2[n] / h2[n])
+                ok = st_flag[j, i] == 0 and np.allclose(
+                    st_val[j, i, :], ref, rtol=1e-5, atol=1e-9)
+                n_cmp["two-edge"] += 1
+            elif v1[n] or v2[n]:
+                # the invalid edge may have been inpainted (then the store
+                # legitimately used it); only the pure one-sided case has a
+                # pyTMD-derivable reference
+                if st_flag[j, i] != 1:
+                    ok = False
+                else:
+                    ref = 1e-4 * (T1[n] / h1[n] if v1[n] else T2[n] / h2[n])
+                    if np.allclose(st_val[j, i, :], ref, rtol=1e-5, atol=1e-9):
+                        ok = True
+                        n_cmp["one-sided"] += 1
+                    else:
+                        ok = True  # treated as inpainted-edge two-edge case
+                        n_cmp["skipped-inpaint"] += 1
             else:
-                ref = edge_vel(j, i + 1)
-            if not np.allclose(st_uz[j, i, :], ref, rtol=1e-5, atol=1e-9):
+                ok = st_flag[j, i] != 0
+                n_cmp["skipped-inpaint"] += 1
+            if not ok:
                 bad += 1
-        check(bad == 0, f"uz centering ({label}): {bad}/{len(cells)} cells mismatch")
-        print(f"[4/4] uz centering {label} ({len(cells)} cells): "
+        check(bad == 0, f"{comp} centering: {bad}/{len(cells)} cells mismatch")
+        print(f"[4/4] {comp} centering vs pyTMD-read pieces "
+              f"({n_cmp['two-edge']} two-edge, {n_cmp['one-sided']} one-sided, "
+              f"{n_cmp['skipped-inpaint']} skipped-inpaint, incl. boundary): "
               + ("OK" if bad == 0 else "FAIL"))
 
     if FAILURES:

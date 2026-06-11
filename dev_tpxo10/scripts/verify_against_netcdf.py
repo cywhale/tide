@@ -6,11 +6,12 @@ Per §3.0 layer semantics:
   flag==1 : source cell invalid per §3.2 (inpaint only fills invalid cells)
   flag==2 : stored value exactly 0 and source cell invalid
 Plus: coordinates and hz/hu/hv full-scan exact; flags equal a deterministic
-recompute (validity + distance band) on the haloed window; derived uz/vz
-match an independent reimplementation of the D12 centering rule from the
-stored truth layers (rtol <= 1e-6 float32 budget; the easternmost column /
-northernmost row need the halo edge and are excluded here — covered by
-T-D1 golden checks instead, count reported).
+recompute on the haloed window; truth layers equal a FULL deterministic
+reproduction (source halo + recomputed flags + recomputed inpaint, byte
+equality on every interior cell of every flag class); derived uz/vz match
+an independent reimplementation of the D12 centering rule computed on the
+haloed expected truth — full interior coverage including the easternmost
+column and northernmost row (round 9, finding 2: no exclusions).
 """
 from __future__ import annotations
 
@@ -66,16 +67,21 @@ def main() -> int:
     interior = (slice(H, H + nlat), slice(H, H + nlon))
 
     grid = args.source / "grid_tpxo10atlas_v2.nc"
+    axes = {}
     with netCDF4.Dataset(grid) as g:
         for name in ("lon_z", "lat_z", "lon_u", "lat_u", "lon_v", "lat_v"):
             w = i_int if name.startswith("lon") else j_int
             check(np.array_equal(z[name].values, np.asarray(g[name][w])),
                   f"coord {name} differs from source window")
+            axes[name] = np.asarray(g[name][iw if name.startswith("lon") else jw])
         h_haloed = {n: np.asarray(g[hv][iw, jw]).T.astype(np.float32)
                     for n, hv in (("z", "hz"), ("u", "hu"), ("v", "hv"))}
     print("[1/5] coordinates: " + ("OK" if not FAILURES else "FAIL"))
 
-    truth_haloed = {}
+    # truth layers: full deterministic reproduction (round 9, finding 2 —
+    # source halo + recompute of flags AND inpaint => byte-equality on ALL
+    # interior cells, every flag class)
+    expected_haloed = {}
     for node in ("z", "u", "v"):
         h = h_haloed[node]
         check(np.array_equal(z[f"h{node}"].values, h[interior]),
@@ -92,63 +98,65 @@ def main() -> int:
                 s_im[..., k] = np.asarray(ds[ivar][iw, jw]).T
 
         valid = P.compute_validity(h, s_re, s_im)
-        flag_re = P.classify_flags(h, valid)[interior]
+        flag_h = P.classify_flags(h, valid)
         flag = z[f"{node}_flag"].values
-        check(np.array_equal(flag, flag_re), f"{node}_flag != deterministic recompute")
+        check(np.array_equal(flag, flag_h[interior]),
+              f"{node}_flag != deterministic recompute")
+
+        exp_re, exp_im = s_re.copy(), s_im.copy()
+        P.inpaint_fill_inplace(axes[f"lon_{node}"], axes[f"lat_{node}"],
+                               exp_re, exp_im, valid, flag_h, context=node)
+        inv = flag_h == P.FLAG_INVALID
+        exp_re[inv], exp_im[inv] = 0, 0
 
         st_re = z[f"{node}_Re"].values
         st_im = z[f"{node}_Im"].values
-        src_re, src_im = s_re[interior], s_im[interior]
-        v_int = valid[interior]
+        check(np.array_equal(st_re, exp_re[interior])
+              and np.array_equal(st_im, exp_im[interior]),
+              f"{node}: truth layer != full deterministic reproduction")
+        # explicit layer semantics (§3.0), redundant with the above but kept
+        # as the contract-readable form:
         f0, f1, f2 = flag == 0, flag == 1, flag == 2
+        v_int = valid[interior]
+        src_re, src_im = s_re[interior], s_im[interior]
         check(np.array_equal(st_re[f0], src_re[f0]) and np.array_equal(st_im[f0], src_im[f0]),
               f"{node}: flag0 cells not bit-exact vs source")
-        check(bool(np.all(v_int[f0])), f"{node}: some flag0 cells not source-valid")
         check(not np.any(v_int[f1]), f"{node}: inpaint overwrote a valid cell")
-        check(not np.any(v_int[f2]), f"{node}: flag2 cell is source-valid")
         check(bool(np.all(st_re[f2] == 0)) and bool(np.all(st_im[f2] == 0)),
               f"{node}: flag2 cells not stored as 0")
-        truth_haloed[node] = (s_re, s_im, h, valid)
+        expected_haloed[node] = (exp_re, exp_im, flag_h, h)
         print(f"[2/5] {node} truth layer (flag0={int(f0.sum())} "
-              f"flag1={int(f1.sum())} flag2={int(f2.sum())}): "
+              f"flag1={int(f1.sum())} flag2={int(f2.sum())}, full reproduction): "
               + ("OK" if not FAILURES else "FAIL"))
 
-    # derived layer: independent recompute from STORED truth (interior-only
-    # edges; the last column/row needs halo and is excluded -> reported)
+    # derived layer: independent centering recompute on the HALOED expected
+    # truth — full interior coverage including the easternmost column and
+    # northernmost row (round 9, finding 2: no exclusions)
     for comp, flag_name, e_node in (("uz", "uz_flag", "u"), ("vz", "vz_flag", "v")):
-        st_val = (z[f"{comp}_Re"].values + 1j * z[f"{comp}_Im"].values)
-        st_flag = z[flag_name].values
-        n_re = z[f"{e_node}_Re"].values.astype(np.float64)
-        n_im = z[f"{e_node}_Im"].values.astype(np.float64)
-        n_fl = z[f"{e_node}_flag"].values
-        n_h = z[f"h{e_node}"].values.astype(np.float64)
+        e_re, e_im, e_fl, e_h = expected_haloed[e_node]
         with np.errstate(divide="ignore", invalid="ignore"):
-            evel = 1e-4 * (n_re + 1j * n_im) / n_h[..., None]
-        evel[n_fl > 1] = 0.0
+            evel = 1e-4 * (e_re.astype(np.float64) + 1j * e_im.astype(np.float64)) \
+                / e_h.astype(np.float64)[..., None]
+        evel[e_fl > 1] = 0.0
         if comp == "uz":
             ref, rflag = independent_center_u(
                 evel[:, :-1, :], evel[:, 1:, :],
-                np.repeat(n_fl[:, :-1, None], evel.shape[-1], -1),
-                np.repeat(n_fl[:, 1:, None], evel.shape[-1], -1))
-            sl = (slice(None), slice(0, nlon - 1))
-            excluded = nlat  # easternmost column cell count
+                np.repeat(e_fl[:, :-1, None], evel.shape[-1], -1),
+                np.repeat(e_fl[:, 1:, None], evel.shape[-1], -1))
         else:
             ref, rflag = independent_center_u(
                 evel[:-1, :, :], evel[1:, :, :],
-                np.repeat(n_fl[:-1, :, None], evel.shape[-1], -1),
-                np.repeat(n_fl[1:, :, None], evel.shape[-1], -1))
-            sl = (slice(0, nlat - 1), slice(None))
-            excluded = nlon
-        got = st_val[sl]
-        want = ref.astype(np.complex64)
+                np.repeat(e_fl[:-1, :, None], evel.shape[-1], -1),
+                np.repeat(e_fl[1:, :, None], evel.shape[-1], -1))
+        got = z[f"{comp}_Re"].values + 1j * z[f"{comp}_Im"].values
+        want = ref[interior].astype(np.complex64)
         check(np.allclose(got, want, rtol=1e-6, atol=1e-9),
               f"{comp}: derived values mismatch independent recompute "
               f"(max|d|={np.abs(got - want).max():.3e})")
-        check(np.array_equal(st_flag[sl[0], sl[1]], rflag[..., 0]),
+        check(np.array_equal(z[flag_name].values, rflag[interior][..., 0]),
               f"{comp}: flags mismatch independent recompute")
-        print(f"[3/5] {comp} derived layer: "
-              + ("OK" if not FAILURES else "FAIL")
-              + f" (excluded halo-dependent cells: {excluded}, covered by T-D1)")
+        print(f"[3/5] {comp} derived layer (full scan incl. boundary "
+              f"column/row): " + ("OK" if not FAILURES else "FAIL"))
 
     check(z.attrs.get("tide_store_schema") == P.SCHEMA_VERSION, "schema attr missing")
     check(z.attrs.get("quantization_rule") == P.QUANTIZATION_VERSION,
