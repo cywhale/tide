@@ -6,7 +6,13 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from inspect_source import DELTA, check_node_offsets, expected_files  # noqa: E402
+from inspect_source import (  # noqa: E402
+    DELTA,
+    check_node_offsets,
+    constituent_from_filename,
+    expected_files,
+    parse_con,
+)
 
 
 def _toy_grid(nx=10800, ny=5401, delta=DELTA):
@@ -53,3 +59,23 @@ def test_node_offsets_detect_nonuniform_spacing():
     lat_z2[2700] += 0.01  # the historical tpxo9 lat-corruption shape
     errs = check_node_offsets(lon_z, lat_z2, lon_u, lat_u, lon_v, lat_v)
     assert any("lat_z spacing" in e for e in errs)
+
+
+def test_node_offsets_detect_tiny_offset_at_high_longitude():
+    """Round 8 finding 1 regression: with NumPy's default rtol, a 1e-4 deg
+    u-node misalignment near lon=360 would pass (tolerance there would be
+    ~3.6e-3 deg). With rtol=0.0 it must fail."""
+    lon_z, lat_z, lon_u, lat_u, lon_v, lat_v = _toy_grid()
+    lon_u2 = lon_u.copy()
+    lon_u2[-1] += 1e-4  # last column, lon ~ 359.97 deg
+    errs = check_node_offsets(lon_z, lat_z, lon_u2, lat_u, lon_v, lat_v)
+    assert any("western edge" in e for e in errs)
+
+
+def test_parse_con_and_filename_constituent():
+    con = np.array([b"m", b"2", b" ", b" "], dtype="S1")
+    assert parse_con(con) == "m2"
+    con4 = np.array([b"2", b"n", b"2", b" "], dtype="S1")
+    assert parse_con(con4) == "2n2"
+    assert constituent_from_filename("h_m2_tpxo10_atlas_30_v2.nc") == "m2"
+    assert constituent_from_filename("u_2n2_tpxo10_atlas_30_v2.nc") == "2n2"

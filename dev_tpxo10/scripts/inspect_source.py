@@ -121,22 +121,61 @@ def check_node_offsets(
     delta: float = DELTA,
     atol: float = 1e-6,
 ) -> list[str]:
-    """D12 node-offset convention checks. Pure function for unit testing."""
+    """D12 node-offset convention checks. Pure function for unit testing.
+
+    All comparisons use rtol=0.0 (review round 8, finding 1): NumPy's
+    default relative tolerance scales with magnitude, so near 360 deg it
+    would silently admit ~0.0036 deg of longitude error. Absolute-only
+    tolerance keeps the check uniform across the grid.
+    """
     errors = []
-    if not np.allclose(np.diff(lon_z), delta, atol=atol):
+    if not np.allclose(np.diff(lon_z), delta, rtol=0.0, atol=atol):
         errors.append("lon_z spacing is not uniformly delta")
-    if not np.allclose(np.diff(lat_z), delta, atol=atol):
+    if not np.allclose(np.diff(lat_z), delta, rtol=0.0, atol=atol):
         errors.append("lat_z spacing is not uniformly delta")
-    if not np.allclose(lon_u, lon_z - delta / 2.0, atol=atol):
+    if not np.allclose(lon_u, lon_z - delta / 2.0, rtol=0.0, atol=atol):
         errors.append("lon_u != lon_z - delta/2 (u not on western edge)")
-    if not np.allclose(lat_u, lat_z, atol=atol):
+    if not np.allclose(lat_u, lat_z, rtol=0.0, atol=atol):
         errors.append("lat_u != lat_z")
-    if not np.allclose(lon_v, lon_z, atol=atol):
+    if not np.allclose(lon_v, lon_z, rtol=0.0, atol=atol):
         errors.append("lon_v != lon_z")
-    if not np.allclose(lat_v, lat_z - delta / 2.0, atol=atol):
+    if not np.allclose(lat_v, lat_z - delta / 2.0, rtol=0.0, atol=atol):
         errors.append("lat_v != lat_z - delta/2 (v not on southern edge)")
-    if not np.isclose(len(lon_z) * delta, 360.0, atol=atol):
+    if not np.isclose(len(lon_z) * delta, 360.0, rtol=0.0, atol=atol):
         errors.append("longitude span nx*delta != 360 (grid not periodic)")
+    return errors
+
+
+def parse_con(con_var: np.ndarray) -> str:
+    """Decode the |S1 'con' variable into a constituent name, e.g. 'm2'."""
+    raw = b"".join(x if isinstance(x, bytes) else bytes(x) for x in np.asarray(con_var).ravel())
+    return raw.decode("ascii").strip().lower()
+
+
+def constituent_from_filename(fname: str) -> str:
+    return fname.split("_", 2)[1].lower()
+
+
+def check_semantic_identity(
+    path: Path, grid_coords: dict[str, np.ndarray]
+) -> list[str]:
+    """Review round 8, finding 2: a swapped or coordinate-shifted file must
+    not pass G0. Verifies (a) the in-file `con` matches the filename's
+    constituent, (b) the file's coordinate arrays are *bit-exact* equal to
+    the grid file's (same source doubles; any difference is corruption)."""
+    errors = []
+    expected_con = constituent_from_filename(path.name)
+    coord_names = ("lon_z", "lat_z") if path.name.startswith("h_") else (
+        "lon_u", "lat_u", "lon_v", "lat_v"
+    )
+    with netCDF4.Dataset(path) as ds:
+        actual_con = parse_con(ds["con"][:])
+        if actual_con != expected_con:
+            errors.append(f"{path.name}: con={actual_con!r} != filename {expected_con!r}")
+        for name in coord_names:
+            file_coord = np.asarray(ds[name][:].filled(np.nan))
+            if not np.array_equal(file_coord, grid_coords[name]):
+                errors.append(f"{path.name}: coordinate {name} differs from grid file")
     return errors
 
 
@@ -169,6 +208,12 @@ def main() -> int:
     print(f"[1/4] inventory: {'OK 31 files' if not errs else 'FAIL'}")
 
     if not failures:
+        with netCDF4.Dataset(args.source / GRID_FILE) as g:
+            grid_coords = {
+                name: np.asarray(g[name][:].filled(np.nan))
+                for name in ("lon_z", "lat_z", "lon_u", "lat_u", "lon_v", "lat_v")
+            }
+
         n_err = 0
         for fname in expected_files():
             if fname == GRID_FILE:
@@ -178,19 +223,23 @@ def main() -> int:
             else:
                 spec = U_VARS
             errs = check_file_schema(args.source / fname, spec)
+            if fname != GRID_FILE:
+                errs += check_semantic_identity(args.source / fname, grid_coords)
             failures += errs
             n_err += len(errs)
-        print(f"[2/4] schema (31 files): {'OK' if n_err == 0 else 'FAIL'}")
+        print(
+            f"[2/4] schema + identity (31 files: con matches filename, coords"
+            f" bit-equal grid): {'OK' if n_err == 0 else 'FAIL'}"
+        )
 
-        with netCDF4.Dataset(args.source / GRID_FILE) as g:
-            errs = check_node_offsets(
-                g["lon_z"][:].filled(np.nan),
-                g["lat_z"][:].filled(np.nan),
-                g["lon_u"][:].filled(np.nan),
-                g["lat_u"][:].filled(np.nan),
-                g["lon_v"][:].filled(np.nan),
-                g["lat_v"][:].filled(np.nan),
-            )
+        errs = check_node_offsets(
+            grid_coords["lon_z"],
+            grid_coords["lat_z"],
+            grid_coords["lon_u"],
+            grid_coords["lat_u"],
+            grid_coords["lon_v"],
+            grid_coords["lat_v"],
+        )
         failures += errs
         print(f"[3/4] D12 node offsets: {'OK (u=west edge, v=south edge, periodic lon)' if not errs else 'FAIL'}")
 
