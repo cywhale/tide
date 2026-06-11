@@ -93,8 +93,72 @@ uv run python scripts/inspect_source.py --no-hash
 PASS inspect_source
 ```
 
-## Stage 1 — Gate G1 (pending)
+## Stage 1 — Gate G1 (in progress)
 
-Blocked on G1 kickoff confirmation per spec status note (round-6
-amendments: §3.0 quantization rule, §7.1 no-clamp default + edge-depth
-survey) and §7.5.3 threshold freeze, before the converter writes data.
+G1 kickoff confirmed by owner 2026-06-11 (recorded in spec §4 Stage 1
+block) with two STOP conditions: clamp needed, or any W8 threshold fails.
+
+### S1.1 Edge-depth / velocity-outlier survey — no-clamp PASS
+
+```
+cd ~/proj/tide/dev_tpxo10 && uv run python scripts/survey_edge_depth.py
+```
+
+Region 104–151°E / −1–46°N, §3.2-valid nodes: u-nodes n=1,402,333,
+min positive hu = 1.57 m (P0.1 = 5.0 m, zero cells < 1 m); v-nodes
+n=1,397,975, min hv = 1.50 m. Max per-constituent speed amplitude
+|1e-4·U/h| = 1.291 m/s (u, M2), 1.174 m/s (v, M2); P99.99 = 0.602 m/s.
+Top outliers all in known strong-current channels (Surigao Strait,
+Sulu archipelago, San Bernardino). `PASS no-clamp policy (<= 5 m/s)` —
+**STOP condition NOT triggered; unclamped `U/h` division stands.**
+
+### S1.2 Prototype conversion (default chunks 113×113×15)
+
+```
+uv run python scripts/convert_to_zarr.py   # region 104,151,-1,46
+```
+
+Output `stores/tpxo10_proto.zarr`, 474 MB, interior 1409×1410, halo 32.
+Fill counts (interior): **z = 0** (TPXO10's all-node coastline definition
+holds — no z holes in this region), u = 77, v = 56 (vs ~204,969 problem
+points in the TPXO9-era conversion). uz flags: 1,397,363 native /
+11,122 derived / 578,205 invalid.
+
+### S1.3 T-B NetCDF↔Zarr full regional scan — PASS
+
+```
+uv run python scripts/verify_against_netcdf.py
+```
+
+Coordinates + hz/hu/hv exact; flags equal deterministic recompute;
+flag-0 truth layers bit-exact (tolerance 0): z 1,408,771 / u 1,402,333 /
+v 1,397,975 cells; flag-1 cells confirmed source-invalid; flag-2 stored
+as 0. uz/vz match an independent centering reimplementation (rtol 1e-6;
+easternmost column / northernmost row excluded — halo-dependent, covered
+by golden checks). Provenance attrs verified.
+
+### S1.4 T-D1 golden checks vs pyTMD 3.0.6 readers — PASS
+
+```
+uv run python scripts/golden_check.py   # seed 20260611
+```
+
+246 flag-0 z-cells (deep/shelf/coastal strata + 6 named locations incl.
+Taiwan Strait, Surigao). z hc rtol 1e-9 OK; u transport rtol 1e-9 OK
+(note: pyTMD 3.0.6 `open_atlas_dataset(group='u')` returns *transport*
+in cm²/s at this layer — depth division happens in higher-level
+accessors); hu/hv equivalence OK (pyTMD masks land to NaN, store keeps
+raw 0 — finite cells exact); D12 centering OK for 235 two-edge and 60
+one-sided coastal cells (rtol 1e-5). Pipeline unit tests: 18 (toy-grid
+quantization ties/overflow-abort/byte-identity, validity, fill band,
+inpaint determinism, no-clamp edge velocity, centering incl. periodic
+wrap + inpainted-edge precedence + halo≡global toy proof).
+
+### S1 remaining for G1
+
+- §7.5.1 chunk/open-mode matrix (blocking instrumentation) → D5 freeze
+- §7.5.3 W8 cap decision (production-like Gunicorn, no --reload,
+  concurrency-2 PID-verified) against the signed absolute thresholds
+- T-C tpxo9↔tpxo10 cross-version calibration → threshold freeze
+- decision memos into the spec (mask rule, inpaint params incl. observed
+  fill counts, chunk winner, overview5 no-go default)
