@@ -143,15 +143,42 @@ def main() -> int:
     #       halo-dependent boundary cells are included via global reads) ---
     nlat, nlon = z.sizes["lat_z"], z.sizes["lon_z"]
 
-    def pytmd_transport_at(group, gjj, gii):
+    def open_group_datasets(group):
+        return [ATLAS.open_atlas_dataset(
+            args.source / f"u_{c}_tpxo10_atlas_30_v2.nc", group=group)
+            for c in P.CONSTITUENTS]
+
+    def pytmd_transport_at(dss, gjj, gii):
         out = np.empty((len(gjj), len(P.CONSTITUENTS)), dtype=np.complex128)
-        for k, c in enumerate(P.CONSTITUENTS):
-            ds = ATLAS.open_atlas_dataset(
-                args.source / f"u_{c}_tpxo10_atlas_30_v2.nc", group=group)
+        for k, (ds, c) in enumerate(zip(dss, P.CONSTITUENTS)):
             out[:, k] = ds[c].isel(y=xr.DataArray(gjj), x=xr.DataArray(gii)).values
         return out
 
+    def edge_flag_recompute(dss, h_g, gj, gi, dmax=P.DMAX_FILL_CELLS):
+        """Independent recompute of a single edge's flag from pyTMD-read
+        pieces only (round 10, finding 1): §3.2 validity at the cell, then
+        the fill-band distance rule on a local validity patch."""
+        r = dmax + 1
+        ys = slice(max(gj - r, 0), gj + r + 1)
+        xs = slice(max(gi - r, 0), gi + r + 1)
+        h = h_g.isel(y=ys, x=xs).values
+        T = np.stack([ds[c].isel(y=ys, x=xs).values
+                      for ds, c in zip(dss, P.CONSTITUENTS)], axis=-1)
+        valid = np.isfinite(h) & (h > 0) & ~np.all(T == 0, axis=-1)
+        cj, ci = gj - ys.start, gi - xs.start
+        if valid[cj, ci]:
+            return P.FLAG_SOURCE
+        hc = h[cj, ci]
+        if not (np.isfinite(hc) and hc > 0):
+            return P.FLAG_INVALID
+        jj2, ii2 = np.nonzero(valid)
+        if len(jj2) == 0:
+            return P.FLAG_INVALID
+        dmin = np.min(np.hypot(jj2 - cj, ii2 - ci))
+        return P.FLAG_FILLED if dmin <= dmax else P.FLAG_INVALID
+
     for comp, group, h_g in (("uz", "u", hu_g), ("vz", "v", hv_g)):
+        dss = open_group_datasets(group)
         st_flag = z[f"{comp}_flag"].values
         st_val = z[f"{comp}_Re"].values + 1j * z[f"{comp}_Im"].values
         cells = [(j, i) for j, i in pts if st_flag[j, i] <= 1]
@@ -169,7 +196,7 @@ def main() -> int:
             e1 = (cjj + j0, cii + i0); e2 = (cjj + j0, cii + i0 + 1)
         else:
             e1 = (cjj + j0, cii + i0); e2 = (cjj + j0 + 1, cii + i0)
-        T1 = pytmd_transport_at(group, *e1); T2 = pytmd_transport_at(group, *e2)
+        T1 = pytmd_transport_at(dss, *e1); T2 = pytmd_transport_at(dss, *e2)
         h1 = h_g.isel(y=xr.DataArray(e1[0]), x=xr.DataArray(e1[1])).values
         h2 = h_g.isel(y=xr.DataArray(e2[0]), x=xr.DataArray(e2[1])).values
         v1 = np.isfinite(h1) & (h1 > 0) & ~np.all(T1 == 0, axis=1)
@@ -184,9 +211,6 @@ def main() -> int:
                     st_val[j, i, :], ref, rtol=1e-5, atol=1e-9)
                 n_cmp["two-edge"] += 1
             elif v1[n] or v2[n]:
-                # the invalid edge may have been inpainted (then the store
-                # legitimately used it); only the pure one-sided case has a
-                # pyTMD-derivable reference
                 if st_flag[j, i] != 1:
                     ok = False
                 else:
@@ -195,17 +219,47 @@ def main() -> int:
                         ok = True
                         n_cmp["one-sided"] += 1
                     else:
-                        ok = True  # treated as inpainted-edge two-edge case
-                        n_cmp["skipped-inpaint"] += 1
+                        # only an INPAINTED other edge (independently
+                        # recomputed flag == FLAG_FILLED) justifies a skip;
+                        # anything else is a real centering error
+                        # (round 10, finding 1 — no fail-open)
+                        og = e2 if v1[n] else e1
+                        fl = edge_flag_recompute(dss, h_g, int(og[0][n]), int(og[1][n]))
+                        if fl == P.FLAG_FILLED:
+                            ok = True
+                            n_cmp["skipped-inpaint"] += 1
+                        else:
+                            ok = False
             else:
                 ok = st_flag[j, i] != 0
                 n_cmp["skipped-inpaint"] += 1
             if not ok:
                 bad += 1
         check(bad == 0, f"{comp} centering: {bad}/{len(cells)} cells mismatch")
+
+        # invalid branch (round 10, finding 2): flag==2 cells must have both
+        # source edges invalid per pyTMD-read pieces and store exactly 0
+        zj, zi = np.nonzero(st_flag == 2)
+        zpick = rng.choice(len(zj), size=min(40, len(zj)), replace=False)
+        zjj = zj[zpick].astype(int); zii = zi[zpick].astype(int)
+        if comp == "uz":
+            z1 = (zjj + j0, zii + i0); z2 = (zjj + j0, zii + i0 + 1)
+        else:
+            z1 = (zjj + j0, zii + i0); z2 = (zjj + j0 + 1, zii + i0)
+        Tz1 = pytmd_transport_at(dss, *z1); Tz2 = pytmd_transport_at(dss, *z2)
+        hz1 = h_g.isel(y=xr.DataArray(z1[0]), x=xr.DataArray(z1[1])).values
+        hz2 = h_g.isel(y=xr.DataArray(z2[0]), x=xr.DataArray(z2[1])).values
+        inv1 = ~(np.isfinite(hz1) & (hz1 > 0) & ~np.all(Tz1 == 0, axis=1))
+        inv2 = ~(np.isfinite(hz2) & (hz2 > 0) & ~np.all(Tz2 == 0, axis=1))
+        check(bool(np.all(inv1)) and bool(np.all(inv2)),
+              f"{comp}: flag2 cell has a source-valid edge")
+        check(bool(np.all(st_val[zjj, zii, :] == 0)),
+              f"{comp}: flag2 cell value not exactly zero")
+        n_cmp["invalid"] = len(zjj)
         print(f"[4/4] {comp} centering vs pyTMD-read pieces "
               f"({n_cmp['two-edge']} two-edge, {n_cmp['one-sided']} one-sided, "
-              f"{n_cmp['skipped-inpaint']} skipped-inpaint, incl. boundary): "
+              f"{n_cmp['skipped-inpaint']} skipped-inpaint, "
+              f"{n_cmp['invalid']} invalid-zero, incl. boundary): "
               + ("OK" if bad == 0 else "FAIL"))
 
     if FAILURES:

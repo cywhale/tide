@@ -133,9 +133,11 @@ uv run python scripts/verify_against_netcdf.py
 Coordinates + hz/hu/hv exact; flags equal deterministic recompute;
 flag-0 truth layers bit-exact (tolerance 0): z 1,408,771 / u 1,402,333 /
 v 1,397,975 cells; flag-1 cells confirmed source-invalid; flag-2 stored
-as 0. uz/vz match an independent centering reimplementation (rtol 1e-6;
-easternmost column / northernmost row excluded — halo-dependent, covered
-by golden checks). Provenance attrs verified.
+as 0. uz/vz match an independent centering reimplementation (rtol 1e-6).
+*(Historical note: this first T-B run excluded the halo-dependent
+easternmost column / northernmost row; superseded by S1.5 — the gate now
+performs a full deterministic reproduction with no exclusions.)*
+Provenance attrs verified.
 
 ### S1.4 T-D1 golden checks vs pyTMD 3.0.6 readers — PASS
 

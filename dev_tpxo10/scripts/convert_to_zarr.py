@@ -45,23 +45,40 @@ def assert_clean_pipeline_sources(status_porcelain: str, context: str = "") -> N
         )
 
 
+# Everything that can change conversion output (round 10, finding 3):
+# scripts, env pins (pyproject/uv.lock/.python-version) and the source
+# manifest are all in scope for the clean check and the content hashes.
+PROVENANCE_PATHS = [
+    "dev_tpxo10/scripts",
+    "dev_tpxo10/pyproject.toml",
+    "dev_tpxo10/uv.lock",
+    "dev_tpxo10/.python-version",
+    "dev_tpxo10/manifests",
+]
+
+
 def pipeline_provenance(repo_root: Path) -> dict:
-    """Git commit (verified clean for dev_tpxo10/scripts) + SHA-256 of every
-    pipeline source file, so the store is reproducible by revision AND by
-    content hash independently."""
-    scripts_dir = repo_root / "dev_tpxo10" / "scripts"
+    """Git commit (verified clean for the full PROVENANCE_PATHS scope) +
+    SHA-256 of every in-scope file keyed by repo-relative path, so the
+    store is reproducible by revision AND by content hash independently
+    (and T-B can verify hash <-> commit-blob correspondence)."""
     status = subprocess.run(
-        ["git", "status", "--porcelain", "--", str(scripts_dir)],
+        ["git", "status", "--porcelain", "--", *PROVENANCE_PATHS],
         cwd=repo_root, capture_output=True, text=True, check=True,
     ).stdout
-    assert_clean_pipeline_sources(status, context=f" under {scripts_dir}")
+    assert_clean_pipeline_sources(status, context=f" in {PROVENANCE_PATHS}")
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo_root,
         capture_output=True, text=True, check=True,
     ).stdout.strip()
+    files: list[Path] = []
+    for rel in PROVENANCE_PATHS:
+        p = repo_root / rel
+        files += sorted(p.rglob("*")) if p.is_dir() else [p]
     src_sha = {
-        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in sorted(scripts_dir.glob("*.py"))
+        f.relative_to(repo_root).as_posix():
+            hashlib.sha256(f.read_bytes()).hexdigest()
+        for f in files if f.is_file() and "__pycache__" not in f.parts
     }
     return {"pipeline_git_commit": commit,
             "pipeline_source_sha256": json.dumps(src_sha)}

@@ -161,7 +161,25 @@ def main() -> int:
     check(z.attrs.get("tide_store_schema") == P.SCHEMA_VERSION, "schema attr missing")
     check(z.attrs.get("quantization_rule") == P.QUANTIZATION_VERSION,
           "quantization attr missing")
-    print("[4/5] provenance attrs: " + ("OK" if not FAILURES else "FAIL"))
+    # round 10, finding 3: the recorded content hashes must correspond to
+    # the recorded commit's blobs — proving the commit reproduces the
+    # pipeline inputs, not merely that a commit was recorded
+    import hashlib
+    import json as _json
+    import subprocess
+    commit = z.attrs.get("pipeline_git_commit", "")
+    src_sha = _json.loads(z.attrs.get("pipeline_source_sha256", "{}"))
+    check(bool(commit) and bool(src_sha), "provenance commit/hashes missing")
+    for relpath, sha in src_sha.items():
+        blob = subprocess.run(
+            ["git", "show", f"{commit}:{relpath}"],
+            cwd=repo_root, capture_output=True,
+        )
+        check(blob.returncode == 0
+              and hashlib.sha256(blob.stdout).hexdigest() == sha,
+              f"provenance hash mismatch vs commit blob: {relpath}")
+    print(f"[4/5] provenance attrs + {len(src_sha)} hash<->commit-blob checks: "
+          + ("OK" if not FAILURES else "FAIL"))
 
     if FAILURES:
         print("FAIL verify_against_netcdf")
