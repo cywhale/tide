@@ -154,6 +154,38 @@ quantization ties/overflow-abort/byte-identity, validity, fill band,
 inpaint determinism, no-clamp edge velocity, centering incl. periodic
 wrap + inpainted-edge precedence + halo≡global toy proof).
 
+### S1.5 Round 9 review fixes + canonical prototype rebuild (2026-06-11)
+
+Codex Stage 1 core review (independently re-ran all gates, re-converted
+with 25/25 arrays identical, recomputed both halo boundaries) required
+four fixes, all applied at commit `c359983`:
+
+1. Provenance fail-closed: converter aborts on dirty/untracked pipeline
+   sources and records per-file SHA-256 of all 6 pipeline source files.
+2. T-B is now a FULL deterministic reproduction (source halo + recomputed
+   flags + recomputed inpaint, byte equality across every flag class) and
+   the derived-layer scan covers the easternmost uz column / northernmost
+   vz row — no exclusions.
+3. T-D1 covers v transport + vz centering; centering references built
+   exclusively from pyTMD-read transport and edge depths; boundary cells
+   included via global reads. Spec corrected: `open_atlas_dataset`
+   (group='u'/'v') returns transport (cm²/s) at this layer.
+4. T-A additions: transpose round-trip, provenance fixtures, two-run
+   byte-identity (1° region, fixed timestamp) — `27 passed` total; the
+   byte-identity test also failed-closed correctly while round-9 edits
+   were uncommitted, passing only on the clean tree.
+
+Canonical prototype rebuilt at `c359983` (attr `pipeline_git_commit` =
+`c3599839...` verified). Re-run results:
+
+```
+verify_against_netcdf.py : PASS (full scan, truth layers byte-equal full
+  reproduction; uz/vz full scan incl. boundary column/row)
+golden_check.py          : PASS (z hc; u 239 + v 238 transport cells;
+  uz 295 two-edge + 10 one-sided; vz 290 two-edge + 10 one-sided;
+  0 skipped-inpaint; boundary cells included)
+```
+
 ### S1 remaining for G1
 
 - §7.5.1 chunk/open-mode matrix (blocking instrumentation) → D5 freeze
