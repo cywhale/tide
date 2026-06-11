@@ -188,11 +188,42 @@ golden_check.py          : PASS (z hc; u 239 + v 238 transport cells;
   0 skipped-inpaint; boundary cells included)
 ```
 
+### S1.6 Round 10 fixes + §7.5.1 chunk/open-mode matrix (2026-06-11)
+
+Round 10 fixes (commit `ebfc9b0`): fail-closed one-sided golden branch
+(independent edge-flag recompute from pyTMD-read pieces), invalid-branch
+sampling (40 flag-2 cells per component: both edges source-invalid, store
+exactly 0), provenance scope extended to pyproject/uv.lock/.python-version/
+manifests with repo-relative keys, T-B verifies every recorded hash
+against the recorded commit's blobs (`git show`). The provenance guard
+fail-closed twice during this round on genuinely dirty trees — working
+as designed. Canonical store rebuilt; T-B PASS incl. 11 hash↔blob checks;
+golden PASS (uz 295/10/0/40, vz 289/11/0/40 two-edge/one-sided/skipped/
+invalid-zero).
+
+Matrix (`scripts/benchmark_chunk_matrix.py`, seed 20260611, 6 rechunk
+variants × direct/dask × W1–W8 + tpxo9 baseline; full results in
+`benchmarks/chunk_matrix.json`; decompressed = full-chunk upper bound):
+
+| cell (dask mode) | W1 pt ms/MiB | W5 10° ms | W6 45°s5 ms | W8 45°s1 ms |
+|---|---|---|---|---|
+| tpxo10 113×113×15 | **3.93 / 4.38** | **13.0** | **137** | **217** |
+| tpxo10 113×113×5 | 4.42 / 4.38 | 19.2 | 237 | 342 |
+| tpxo10 225×225×15 | 5.22 / 17.4 | — | 101 | 195 |
+| tpxo10 450×450×15 | 10.4 / 69.5 | — | 114 | 168 |
+| tpxo9 baseline 113×113×8 | 4.49 / 9.35 | 33.5 | 301 | 362 |
+
+Decision (spec Stage 1 decision memo #4–5): **chunks (113,113,15),
+open-mode dask-'auto'**; D5 ceiling admits only spatial 113 (0.47× vs
+1.86×/7.4×); cons=15 dominates (W3 proves arbitrary subsets span all
+cons-chunks); winner beats baseline on every workload in the production
+open-mode. overview5: no-go. Cold rounds labeled `first-path-access`
+(no `purge` on this box) — binding cold gate moves to the Linux VM.
+
 ### S1 remaining for G1
 
-- §7.5.1 chunk/open-mode matrix (blocking instrumentation) → D5 freeze
 - §7.5.3 W8 cap decision (production-like Gunicorn, no --reload,
   concurrency-2 PID-verified) against the signed absolute thresholds
 - T-C tpxo9↔tpxo10 cross-version calibration → threshold freeze
-- decision memos into the spec (mask rule, inpaint params incl. observed
-  fill counts, chunk winner, overview5 no-go default)
+- Linux-host cold-cache round (binding evidence; macOS rounds are
+  `first-path-access` only)
