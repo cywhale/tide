@@ -297,8 +297,47 @@ required.** Scaling: ~2.0 KiB worker-RSS per output cell ⇒ proposed
 delta / ~4 s wall; default `sample=5` 45° maps (73k cells) unaffected;
 `sample=1` capped at ≈23.6°×23.6°.
 
+### S1.9 W8 harness v2 — corrected measurements + cap sweep (2026-06-11)
+
+Round 12 fixes applied: true recursive process-tree sampling (per-PID
+first-seen baseline + peak; gunicorn workers identified by X-Worker-PID
+headers), `/bench/map` reproduces the production serialization verbatim
+(`tide_to_output` copy + `jsonable_encoder` + ORJSONResponse,
+`absmax=10000.0`), legacy schema mode, cap sweep with a fresh service
+per candidate. T-C now enforces the frozen thresholds (gate re-run:
+PASS). Results (`benchmarks/w8_harness_v2.json`):
+
+**Full 45° W8 (sample=1), production-faithful serialization:**
+
+| schema/mode | W8 single | payload | worker peak/Δ GiB | tree Δ | verdict |
+|---|---|---|---|---|---|
+| tpxo10/direct | 14.97 s | **120.0 MiB** | 3.92 / 3.55 | 7.23 | FAIL mem+payload |
+| legacy(tpxo9)/direct | 16.16 s | 120.5 MiB | **4.83 / 4.36** | 8.68 | FAIL mem+payload+wall |
+
+The faithful serialization raises payload 32.6 → 120 MiB (now ALSO over
+the 100 MiB threshold) and confirms the memory failure. **The legacy
+store is empirically WORSE on the identical workload** — the exposure
+pre-dates this migration (production today carries it); the new store
+reduces it (~19% lower peak) but cannot fix it. A cap is required either
+way. W6/W6b two phases identical (0.99/0.98 s) — overview5 no-go final.
+
+**Cap sweep (tpxo10/direct, fresh service per candidate, single + conc2):**
+
+| output cells | bbox | W8 s | payload MiB | worker peak/Δ GiB | tree Δ | margins vs budget | verdict |
+|---|---|---|---|---|---|---|---|
+| 250,000 | 16.7° | 1.97 | 17.1 | 0.71 / 0.53 | 0.99 | ≥65% | PASS |
+| 400,000 | 21.1° | 3.16 | 28.3 | 1.05 / 0.86 | 1.61 | ≥43% | PASS |
+| 500,000 | 23.6° | 4.01 | 35.5 | 1.14 / 0.95 | 2.07 | ≥31% | PASS |
+| 600,000 | 25.8° | 4.86 | 42.0 | 1.38 / 1.19 | 2.26 | ≥21% | PASS |
+| 750,000 | 28.9° | 6.10 | 51.9 | 1.52 / 1.33 | 2.73 | ≥9% | PASS |
+
+All five candidates pass; margins shrink monotonically. 500,000 is the
+largest candidate retaining ≥31% headroom on every signed metric
+(600k drops to 21% on worker delta; 750k to 9% on tree delta).
+
 ### S1 remaining for G1
 
-- **Owner re-sign-off after the W8 STOP** (cap policy + open-mode freeze)
+- **Owner re-sign-off after the W8 STOP**: cap value (measured
+  candidates above) + D5 open-mode freeze (direct; reviewer-endorsed)
 - Linux-host cold-cache round (binding evidence; macOS rounds are
   `first-path-access` only)
