@@ -114,8 +114,8 @@ def main() -> int:
         ph = old["z_ph"].isel(lat=slice(j0, j1), lon=slice(i0, i1),
                               constituents=ko).values[jj, ii]
         hc_old = amp * np.exp(-1j * np.deg2rad(ph))          # meters
-        hc_new = 1e-3 * (new["z_Re"].values[jj, ii, kn]
-                         + 1j * new["z_Im"].values[jj, ii, kn])
+        hc_new = 1e-3 * (new["z_Re"].isel(constituents=kn).values[jj, ii]
+                         + 1j * new["z_Im"].isel(constituents=kn).values[jj, ii])
         d_mm = 1e3 * np.abs(hc_new - hc_old)
         entry = {}
         for s, mask in strata.items():
@@ -144,8 +144,8 @@ def main() -> int:
                                constituents=ko).values[jj, ii]
     uo_ph = old["u_ph"].isel(lat=slice(j0, j1), lon=slice(i0, i1),
                              constituents=ko).values[jj, ii]
-    un = (new["uz_Re"].values[jj, ii, kn]
-          + 1j * new["uz_Im"].values[jj, ii, kn]).astype(np.complex128)
+    un = (new["uz_Re"].isel(constituents=kn).values[jj, ii]
+          + 1j * new["uz_Im"].isel(constituents=kn).values[jj, ii]).astype(np.complex128)
     ok = np.isfinite(uo_amp) & (np.abs(un) > 1e-6) & (uo_amp > 0)
     ratio = np.median(uo_amp[ok] / np.abs(un[ok]))
     scale = 10 ** round(np.log10(ratio))  # detect decade (1=m/s, 100=cm/s)
