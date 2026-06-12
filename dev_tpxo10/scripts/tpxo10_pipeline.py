@@ -215,6 +215,22 @@ def center_v(ev: np.ndarray, v_flag: np.ndarray, last_row_one_sided: bool = Fals
     return val, flag
 
 
+def lat_tiles(ny: int = NY, tile: int = 226, halo: int = HALO_CELLS):
+    """Stage 2 latitude-band tiling (full-longitude rows; the periodic
+    longitude direction needs no halo because `center_u(wrap=True)`
+    handles it on whole rows). Returns a list of
+    (j0, j1, jh0, jh1, top) tuples: interior rows [j0, j1), haloed read
+    window [jh0, jh1) clamped to the global grid, and `top` marking the
+    tile containing the last (northern-boundary) row, whose vz centering
+    is one-sided (D12: latitude is non-periodic)."""
+    out = []
+    for j0 in range(0, ny, tile):
+        j1 = min(j0 + tile, ny)
+        jh0, jh1 = max(0, j0 - halo), min(ny, j1 + halo)
+        out.append((j0, j1, jh0, jh1, j1 == ny))
+    return out
+
+
 def collapse_constituent_flags(flag_3d: np.ndarray, context: str = "") -> np.ndarray:
     """uz/vz flags are per-node (2D) in the §3.1 schema. Edge usability is
     constituent-independent (validity is an all-constituent property), so

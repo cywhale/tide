@@ -148,24 +148,27 @@
  },
  "sweep/tpxo10/500000": {
   "W8_single": {
-   "s_median": 4.01,
-   "payload_MiB": 35.5
+   "s_median": 4.23,
+   "payload_MiB": 35.5,
+   "cells_actual": 500556
   },
   "W8_conc2": {
-   "wall_s_max": 4.31,
+   "wall_s_max": 4.46,
    "n_distinct_pids": 2
   },
+  "n_workers_observed": 2,
   "memory": {
-   "gunicorn_peak_GiB": 1.14,
-   "gunicorn_delta_GiB": 0.95,
+   "gunicorn_peak_GiB": 1.32,
+   "gunicorn_delta_GiB": 1.13,
    "dask_peak_GiB": 0.0,
    "dask_delta_GiB": 0.0,
    "tree_peak_GiB": 2.54,
    "tree_delta_GiB": 2.07,
-   "min_host_headroom_frac": 0.713,
+   "min_host_headroom_frac": 0.7,
    "n_dask_pids_sampled": 0
   },
   "cells_target": 500000,
+  "cells_actual": 500556,
   "bbox": {
    "lon0": 105.0,
    "lon1": 128.5702,

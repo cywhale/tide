@@ -184,6 +184,18 @@ def test_collapse_constituent_flags_asserts_agreement():
         P.collapse_constituent_flags(f)
 
 
+def test_lat_tiles_cover_globe_without_overlap():
+    tiles = P.lat_tiles(ny=5401, tile=226, halo=32)
+    assert tiles[0][0] == 0 and tiles[-1][1] == 5401
+    for (a, b) in zip(tiles, tiles[1:]):
+        assert a[1] == b[0]                      # contiguous, no overlap
+    assert sum(t[1] - t[0] for t in tiles) == 5401
+    assert [t[4] for t in tiles] == [False] * (len(tiles) - 1) + [True]
+    for j0, j1, jh0, jh1, _ in tiles:
+        assert jh0 == max(0, j0 - 32) and jh1 == min(5401, j1 + 32)
+        assert jh0 >= 0 and jh1 <= 5401          # clamped at global edges
+
+
 # ---------- window helpers ----------
 
 def test_haloed_window_rejects_global_overflow():

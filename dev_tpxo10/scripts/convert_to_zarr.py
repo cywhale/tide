@@ -166,35 +166,14 @@ def convert(region, chunks, out, source: Path, repo_root: Path,
     print(f"[3/6] derived uz/vz: flag0={(uz_flag == 0).sum()} "
           f"flag1={(uz_flag == 1).sum()} flag2={(uz_flag == 2).sum()} (uz, interior)")
 
-    manifest_path = repo_root / "dev_tpxo10" / "manifests" / "tpxo10_atlas_v2.sha256.json"
-    import pyTMD
-    attrs = {
-        "tide_store_schema": P.SCHEMA_VERSION,
-        "source_model": "TPXO10-atlas-v2 (OSU, registered academic license)",
-        "source_manifest_sha256": json.loads(manifest_path.read_text()),
-        **pipeline_provenance(repo_root),
-        "pipeline_pyTMD_version": pyTMD.version.full_version,
-        "created_utc": created_utc or datetime.now(timezone.utc).isoformat(),
+    attrs = base_attrs(repo_root, created_utc, {
         "region_request": list(region),
         "interior_index_window": [j_int.start, j_int.stop, i_int.start, i_int.stop],
         "interior_bounds_lonlat": [
             float(axes["lon_z"][i_int][0]), float(axes["lon_z"][i_int][-1]),
             float(axes["lat_z"][j_int][0]), float(axes["lat_z"][j_int][-1]),
         ],
-        "halo_cells": P.HALO_CELLS,
-        "mask_rule": MASK_RULE,
-        "inpaint_method": "pyTMD.interpolate.inpaint (Garcia 2010 DCT-PLS impl)",
-        "inpaint_params": json.dumps(P.INPAINT_PARAMS),
-        "inpaint_band_dmax_cells": P.DMAX_FILL_CELLS,
-        "quantization_rule": P.QUANTIZATION_VERSION,
-        "depth_clamp": "none (G1 sign-off: h<=0 invalid, positive depth divides as-is)",
-        "flag_semantics": "0=source(bit-exact) 1=derived(inpaint/one-sided/inpainted-edge) 2=invalid(0)",
-        "unit_conversions": (
-            "z: hc[m]=1e-3*(z_Re+1j*z_Im); "
-            "u: U[m^2/s]=1e-4*(u_Re+1j*u_Im), u[m/s]=U/hu (per edge); "
-            "uz/vz: velocity m/s (D12 centering), no runtime conversion"
-        ),
-    }
+    })
 
     cz = {"lat_z": axes["lat_z"][j_int], "lon_z": axes["lon_z"][i_int],
           "lat_u": axes["lat_u"][j_int], "lon_u": axes["lon_u"][i_int],
@@ -228,23 +207,180 @@ def convert(region, chunks, out, source: Path, repo_root: Path,
     print(f"[6/6] PASS convert_to_zarr region={region}")
 
 
+def base_attrs(repo_root: Path, created_utc, extra: dict) -> dict:
+    manifest_path = repo_root / "dev_tpxo10" / "manifests" / "tpxo10_atlas_v2.sha256.json"
+    import pyTMD
+    return {
+        "tide_store_schema": P.SCHEMA_VERSION,
+        "source_model": "TPXO10-atlas-v2 (OSU, registered academic license)",
+        "source_manifest_sha256": json.loads(manifest_path.read_text()),
+        **pipeline_provenance(repo_root),
+        "pipeline_pyTMD_version": pyTMD.version.full_version,
+        "created_utc": created_utc or datetime.now(timezone.utc).isoformat(),
+        "halo_cells": P.HALO_CELLS,
+        "mask_rule": MASK_RULE,
+        "inpaint_method": "pyTMD.interpolate.inpaint (Garcia 2010 DCT-PLS impl)",
+        "inpaint_params": json.dumps(P.INPAINT_PARAMS),
+        "inpaint_band_dmax_cells": P.DMAX_FILL_CELLS,
+        "quantization_rule": P.QUANTIZATION_VERSION,
+        "depth_clamp": "none (G1 sign-off: h<=0 invalid, positive depth divides as-is)",
+        "flag_semantics": "0=source(bit-exact) 1=derived(inpaint/one-sided/inpainted-edge) 2=invalid(0)",
+        "unit_conversions": (
+            "z: hc[m]=1e-3*(z_Re+1j*z_Im); "
+            "u: U[m^2/s]=1e-4*(u_Re+1j*u_Im), u[m/s]=U/hu (per edge); "
+            "uz/vz: velocity m/s (D12 centering), no runtime conversion"
+        ),
+        **extra,
+    }
+
+
+def convert_full(chunks, out: Path, source: Path, repo_root: Path,
+                 created_utc: str | None = None, tile_lat: int = 226,
+                 max_tiles: int | None = None) -> None:
+    """Stage 2 global streaming conversion: latitude-band tiles with
+    full-longitude rows. Longitude is handled periodically by
+    `center_u(wrap=True)` on whole rows (no lon halo); the latitude halo
+    clamps at the true global boundaries, and only the top tile's last
+    row centers vz one-sided (D12). Each tile is computed in memory and
+    written as a Zarr slab — global peak memory stays bounded
+    (~tile_lat+2*halo rows of working set)."""
+    import zarr
+    from numcodecs import Blosc as _B
+
+    cl_lat, cl_lon, cl_con = chunks
+    grid = source / "grid_tpxo10atlas_v2.nc"
+    with netCDF4.Dataset(grid) as g:
+        axes = {n: np.asarray(g[n][:]) for n in
+                ("lon_z", "lat_z", "lon_u", "lat_u", "lon_v", "lat_v")}
+    ncons = len(P.CONSTITUENTS)
+    NY, NX = P.NY, P.NX
+
+    attrs = base_attrs(repo_root, created_utc, {
+        "region_request": "FULL GLOBE",
+        "interior_index_window": [0, NY, 0, NX],
+        "interior_bounds_lonlat": [
+            float(axes["lon_z"][0]), float(axes["lon_z"][-1]),
+            float(axes["lat_z"][0]), float(axes["lat_z"][-1])],
+        "tile_lat_rows": tile_lat,
+    })
+
+    comp = _B(cname="lz4", clevel=5, shuffle=_B.SHUFFLE)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    grp = zarr.open_group(str(out), mode="w")
+    grp.attrs.update(attrs)
+
+    def create(name, shape, dtype, dims, ch):
+        a = grp.create_dataset(name, shape=shape, chunks=ch, dtype=dtype,
+                               compressor=comp, fill_value=0)
+        a.attrs["_ARRAY_DIMENSIONS"] = dims
+        return a
+
+    dims = {"z": ("lat_z", "lon_z"), "u": ("lat_u", "lon_u"),
+            "v": ("lat_v", "lon_v")}
+    for name, ax in axes.items():
+        c = create(name, ax.shape, "f8", [name], ax.shape)
+        c[:] = ax
+    cons_arr = create("constituents", (ncons,), "<U3", ["constituents"], (ncons,))
+    cons_arr[:] = np.array(P.CONSTITUENTS, dtype="<U3")
+    for node in ("z", "u", "v"):
+        d2, d3 = dims[node], dims[node] + ("constituents",)
+        for comp_name in ("Re", "Im"):
+            create(f"{node}_{comp_name}", (NY, NX, ncons), "i4", list(d3),
+                   (cl_lat, cl_lon, cl_con))
+        create(f"{node}_flag", (NY, NX), "u1", list(d2), (cl_lat, cl_lon))
+        create(f"h{node}", (NY, NX), "f4", list(d2), (cl_lat, cl_lon))
+    for name in ("uz_Re", "uz_Im", "vz_Re", "vz_Im"):
+        create(name, (NY, NX, ncons), "f4",
+               ["lat_z", "lon_z", "constituents"], (cl_lat, cl_lon, cl_con))
+    for name in ("uz_flag", "vz_flag"):
+        create(name, (NY, NX), "u1", ["lat_z", "lon_z"], (cl_lat, cl_lon))
+
+    fills = {"z": 0, "u": 0, "v": 0}
+    tiles = P.lat_tiles(NY, tile_lat)
+    if max_tiles:
+        tiles = tiles[:max_tiles]
+        print(f"WARNING: --max-tiles={max_tiles} smoke run — NOT a canonical store")
+    for t_i, (j0, j1, jh0, jh1, top) in enumerate(tiles):
+        jw = slice(jh0, jh1)
+        H0, nrow = j0 - jh0, j1 - j0
+        interior = slice(H0, H0 + nrow)
+        with netCDF4.Dataset(grid) as g:
+            h_haloed = {n: np.asarray(g[hv][:, jw]).T.astype(np.float32)
+                        for n, hv in (("z", "hz"), ("u", "hu"), ("v", "hv"))}
+        haloed = {}
+        for node in ("z", "u", "v"):
+            re, im = load_node_stack(source, node, slice(0, NX), jw)
+            h = h_haloed[node]
+            valid = P.compute_validity(h, re, im)
+            flag = P.classify_flags(h, valid)
+            P.inpaint_fill_inplace(axes[f"lon_{node}"], axes[f"lat_{node}"][jw],
+                                   re, im, valid, flag,
+                                   context=f"{node}/tile{j0}")
+            inv = flag == P.FLAG_INVALID
+            re[inv], im[inv] = 0, 0
+            grp[f"{node}_Re"][j0:j1] = re[interior]
+            grp[f"{node}_Im"][j0:j1] = im[interior]
+            grp[f"{node}_flag"][j0:j1] = flag[interior]
+            grp[f"h{node}"][j0:j1] = h[interior]
+            fills[node] += int((flag[interior] == P.FLAG_FILLED).sum())
+            if node == "z":
+                del re, im
+            else:
+                haloed[node] = (re, im, flag, h)
+
+        re_u, im_u, fl_u, hu = haloed["u"]
+        re_v, im_v, fl_v, hv = haloed["v"]
+        eu = P.edge_velocity(re_u, im_u, hu, fl_u)
+        uz_c, uz_f3 = P.center_u(eu, fl_u, wrap=True)
+        del eu
+        ev = P.edge_velocity(re_v, im_v, hv, fl_v)
+        vz_c, vz_f3 = P.center_v(ev, fl_v, last_row_one_sided=top)
+        del ev, haloed
+        grp["uz_Re"][j0:j1] = finite_or_die(uz_c[interior].real, "uz_Re").astype(np.float32)
+        grp["uz_Im"][j0:j1] = finite_or_die(uz_c[interior].imag, "uz_Im").astype(np.float32)
+        grp["vz_Re"][j0:j1] = finite_or_die(vz_c[interior].real, "vz_Re").astype(np.float32)
+        grp["vz_Im"][j0:j1] = finite_or_die(vz_c[interior].imag, "vz_Im").astype(np.float32)
+        grp["uz_flag"][j0:j1] = P.collapse_constituent_flags(uz_f3[interior], "uz")
+        grp["vz_flag"][j0:j1] = P.collapse_constituent_flags(vz_f3[interior], "vz")
+        del uz_c, vz_c
+        print(f"[tile {t_i + 1}/{len(tiles)}] rows {j0}:{j1} "
+              f"(halo {jh0}:{jh1}{', top one-sided' if top else ''}) written")
+
+    zarr.consolidate_metadata(str(out))
+    print(f"fill counts (global interior): {fills}")
+    print(f"PASS convert_to_zarr --full -> {out}")
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--region", type=str, default="104,151,-1,46",
                     help="lon0,lon1,lat0,lat1 (Stage 1 output region)")
+    ap.add_argument("--full", action="store_true",
+                    help="Stage 2: full-globe streaming conversion")
     ap.add_argument("--chunks", type=str, default="113,113,15")
-    ap.add_argument("--out", type=Path,
-                    default=repo_root / "dev_tpxo10" / "stores" / "tpxo10_proto.zarr")
+    ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--source", type=Path,
                     default=repo_root / "data_src" / "TPXO10_atlas_v2")
     ap.add_argument("--created-utc", type=str, default=None,
                     help="override the creation timestamp (idempotency testing)")
+    ap.add_argument("--tile-lat", type=int, default=226,
+                    help="latitude rows per streaming tile (--full mode)")
+    ap.add_argument("--max-tiles", type=int, default=None,
+                    help="smoke-testing only: stop after N tiles (non-canonical)")
     args = ap.parse_args()
-    region = tuple(float(x) for x in args.region.split(","))
     chunks = tuple(int(x) for x in args.chunks.split(","))
-    convert(region, chunks, args.out, args.source, repo_root,
-            created_utc=args.created_utc)
+    stores = repo_root / "dev_tpxo10" / "stores"
+    if args.full:
+        out = args.out or stores / "tpxo10_global.zarr"
+        convert_full(chunks, out, args.source, repo_root,
+                     created_utc=args.created_utc, tile_lat=args.tile_lat,
+                     max_tiles=args.max_tiles)
+    else:
+        out = args.out or stores / "tpxo10_proto.zarr"
+        region = tuple(float(x) for x in args.region.split(","))
+        convert(region, chunks, out, args.source, repo_root,
+                created_utc=args.created_utc)
     return 0
 
 
