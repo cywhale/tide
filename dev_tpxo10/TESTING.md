@@ -466,5 +466,17 @@ Gate results (after fix; `b9k9k9e7t` + coverage reruns):
 - **Idempotency**: PASS — 2-tile rebuild, 18 arrays byte-identical over
   rows 0:452.
 
-Remaining for G2: T-B FULL scan (24/24 tiles); owner/reviewer sign-off
-of the coverage-gate amendment.
+### S2.2 T-B FULL scan — PASS (2026-06-12)
+
+`verify_against_netcdf.py --store stores/tpxo10_global.zarr` (no
+--sample-tiles): all 24/24 tiles reproduce byte-exactly (truth layers,
+flags, derived wrap-centering rtol 1e-6); reproduced fill counts
+{z:356, u:618, v:595} match the store; coordinates full-scan exact;
+provenance 13 hash↔commit-blob checks OK.
+`PASS verify_against_netcdf (tolerance 0 on source layer)`
+
+**Gate G2 status: all technical gates GREEN.** Sole remaining item:
+owner/reviewer sign-off of the coverage-gate amendment (S2.1 — strict
+zero-violation criterion → all-violations-machine-explained, given the
+TPXO10 coastline reclassification and the 4 isolated-no-data contract
+cells; 0 unexplained).
