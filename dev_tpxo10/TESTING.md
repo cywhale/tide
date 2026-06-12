@@ -247,7 +247,7 @@ macrotidal, h 2–5 m) and NE Borneo shallows — physically explicable, no
 structured artifacts. Polar stratum deferred to Stage 2 (no |lat|>60°
 cells in region). Currents report-only: legacy store units detected
 cm/s (100×); u-M2 |Δ| P95 = 0.126 m/s. **Frozen thresholds (spec memo
-#7): deep ≤ 30 mm, shelf ≤ 150 mm, bias ≤ 5 mm — observed margins
+#10): deep ≤ 30 mm, shelf ≤ 150 mm, bias ≤ 5 mm — observed margins
 3×/7×.**
 
 ### S1.8 §7.5.3 W8 harness — **STOP-AT-G1: memory thresholds failed** (2026-06-11)
@@ -335,9 +335,41 @@ All five candidates pass; margins shrink monotonically. 500,000 is the
 largest candidate retaining ≥31% headroom on every signed metric
 (600k drops to 21% on worker delta; 750k to 9% on tree delta).
 
-### S1 remaining for G1
+### S1.10 Round 13 closure — cap signed, dist re-measured, **G1 CLOSED** (2026-06-12)
 
-- **Owner re-sign-off after the W8 STOP**: cap value (measured
-  candidates above) + D5 open-mode freeze (direct; reviewer-endorsed)
-- Linux-host cold-cache round (binding evidence; macOS rounds are
-  `first-path-access` only)
+Round 13 fixes: every single/concurrent response PID joins the worker
+set (fail if <2 observed — `n_workers_observed` in JSON);
+`cells_actual` recorded via the `X-Grid-Cells` header (500k candidate =
+500,556 actual cells). Reviewer independently reproduced the 500k sweep
+point with both workers measured (peaks 1.31/1.18 GiB, tree Δ 2.11 GiB,
+min margin ~25%).
+
+Dist modes re-run with the corrected recursive sampler
+(`w8_harness_v2.json`): the dask cluster genuinely carries 3.38–3.54 GiB
+across 6 sampled PIDs (the old 0.03 GiB reading was a launcher-PID
+artifact, exactly as round 12 finding 1 said); gunicorn workers reach
+5.0–5.26 GiB (data shipped to the cluster AND copied back); points
+31.6–31.7 ms; W8 17.0–17.4 s. Distributed is strictly worse than direct
+on every axis — the D5 open-mode decision (direct) now rests on
+corrected measurements.
+
+**Owner + reviewer sign-off (2026-06-12): `MAX_BBOX_CELLS = 500_000`**
+(spec memo #7 — counted on the post-sample output grid, enforced before
+any `.compute()`/`.values`/prediction, HTTP 400 with actual cells +
+limit + raise-`sample` suggestion, env-overrideable, production default
+500,000, re-validated at G3); **D5 open-mode frozen: direct** (memo #8);
+**overview5 no-go final** (memo #9).
+
+### Gate G1 verdict: **CLOSED** (2026-06-12)
+
+All spec §4 G1 items green: T-B (S1.3/S1.5 full reproduction), T-D1
+(S1.4/S1.5), T-C calibrated + thresholds frozen + gate enforced
+(S1.7/r12), §7.5.1 matrix with blocking instrumentation + D5
+read-amplification ceiling (S1.6/S1.7), §7.5.3 cap decision with
+pre-frozen thresholds and owner sign-off (S1.8–S1.10), overview5
+decision recorded (final no-go). The conversion contract is now fully
+frozen; Stage 2 (global conversion) may start.
+
+Carried forward to G3 (not G1 items): Linux-host cold-cache round
+(macOS rounds are `first-path-access` only); cap re-validation on the
+fully ported runtime (P-Map45-s1).

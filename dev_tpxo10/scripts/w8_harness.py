@@ -135,6 +135,18 @@ def get(url):
     return time.perf_counter() - t0, len(body), int(pid) if pid else None
 
 
+def get_map(url):
+    """Map request also returning the pre-filter grid cell count reported
+    by the app (round 13, finding 3: record cells_actual, not target)."""
+    t0 = time.perf_counter()
+    with urllib.request.urlopen(url, timeout=300) as r:
+        body = r.read()
+        pid = r.headers.get("X-Worker-PID")
+        cells = r.headers.get("X-Grid-Cells")
+    return (time.perf_counter() - t0, len(body),
+            int(pid) if pid else None, int(cells) if cells else None)
+
+
 def eval_thresholds(r, has_dask):
     fails = []
     m = r["memory"]
@@ -148,6 +160,7 @@ def eval_thresholds(r, has_dask):
     if r["W8_single"]["s_median"] > THRESH["wall_single"]: fails.append("wall_single")
     if r["W8_conc2"]["wall_s_max"] > THRESH["wall_conc2"]: fails.append("wall_conc2")
     if r["W8_conc2"]["n_distinct_pids"] < 2: fails.append("distinct_worker_pids")
+    if r.get("n_workers_observed", 2) < 2: fails.append("fewer_than_two_workers_observed")
     return fails
 
 
@@ -225,17 +238,24 @@ def measure_w8(svc: Service, bench: dict, n_single=3, n_conc=2):
     r = {}
     q = "&".join(f"{k}={v}" for k, v in bench.items())
 
-    w8 = [get(f"{BASE}/bench/map?{q}&sample=1") for _ in range(n_single)]
+    # every observed response PID joins the worker set (round 13, finding
+    # 1: warmup alone under-collected; per-worker stats must cover BOTH)
+    w8 = []
+    for _ in range(n_single):
+        dt, nbytes, pid, cells = get_map(f"{BASE}/bench/map?{q}&sample=1")
+        svc.worker_pids.add(pid)
+        w8.append((dt, nbytes, cells))
     r["W8_single"] = {
         "s_median": round(float(np.median([x[0] for x in w8])), 2),
-        "payload_MiB": round(w8[0][1] / 2**20, 1)}
+        "payload_MiB": round(w8[0][1] / 2**20, 1),
+        "cells_actual": w8[0][2]}
 
     conc_pids, conc_walls = set(), []
     for _ in range(n_conc):
         out = [None, None]
 
         def hit(slot):
-            _, _, pid = get(f"{BASE}/bench/map?{q}&sample=1")
+            _, _, pid, _ = get_map(f"{BASE}/bench/map?{q}&sample=1")
             out[slot] = pid
 
         th = [threading.Thread(target=hit, args=(s,)) for s in (0, 1)]
@@ -243,8 +263,10 @@ def measure_w8(svc: Service, bench: dict, n_single=3, n_conc=2):
         [t.start() for t in th]; [t.join() for t in th]
         conc_walls.append(time.perf_counter() - t0)
         conc_pids |= set(out)
+    svc.worker_pids |= conc_pids
     r["W8_conc2"] = {"wall_s_max": round(max(conc_walls), 2),
                      "n_distinct_pids": len(conc_pids)}
+    r["n_workers_observed"] = len(svc.worker_pids)
 
     sampler.stop(); sampler.join()
     g_peak, g_delta = sampler.stats("gunicorn", pid_filter=svc.worker_pids)
@@ -305,6 +327,7 @@ def run_sweep(cells_list: list[int], schema: str, results: dict):
         with Service("direct", schema) as svc:
             r = measure_w8(svc, bench, n_single=2, n_conc=1)
             r["cells_target"] = cells
+            r["cells_actual"] = r["W8_single"].get("cells_actual")
             r["bbox"] = bench
             r["failures"] = eval_thresholds(r, False)
             results[f"sweep/{schema}/{cells}"] = r

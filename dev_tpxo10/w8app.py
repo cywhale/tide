@@ -181,4 +181,5 @@ def bench_map(lon0: float, lon1: float, lat0: float, lat1: float,
                          ["z", "u", "v"], "map", absmax=10000.0)
     resp = ORJSONResponse(content=jsonable_encoder(out))
     resp.headers["X-Worker-PID"] = str(os.getpid())
+    resp.headers["X-Grid-Cells"] = str(len(lat_vals) * len(lon_vals))
     return resp
