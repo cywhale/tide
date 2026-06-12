@@ -159,7 +159,23 @@ def main() -> int:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(results, indent=1))
-    print(f"[4/4] PASS compare_tpxo9_tpxo10 (calibration) -> {args.out}")
+
+    # frozen-threshold enforcement (round 12, finding 5; thresholds frozen
+    # in the spec Stage 1 decision memo #7)
+    failures = []
+    for c in BINDING:
+        if results[c]["deep"]["P95"] > 30.0:
+            failures.append(f"{c} deep P95 {results[c]['deep']['P95']}mm > 30mm")
+        if results[c]["shelf"]["P95"] > 150.0:
+            failures.append(f"{c} shelf P95 {results[c]['shelf']['P95']}mm > 150mm")
+    if abs(results["m2"]["deep_amp_bias_mm"]) > 5.0:
+        failures.append(f"deep M2 bias {results['m2']['deep_amp_bias_mm']}mm > 5mm")
+    if failures:
+        print("FAIL compare_tpxo9_tpxo10 (frozen thresholds):")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+    print(f"[4/4] PASS compare_tpxo9_tpxo10 (frozen-threshold gate) -> {args.out}")
     return 0
 
 
