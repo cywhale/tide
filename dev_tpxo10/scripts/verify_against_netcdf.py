@@ -179,7 +179,7 @@ def main() -> int:
                          "included); omit for the full scan required at G2")
     args = ap.parse_args()
 
-    z = xr.open_zarr(args.store, consolidated=True, decode_times=False)
+    z = xr.open_zarr(args.store, consolidated=True, decode_times=False, mask_and_scale=False)
     j0, j1, i0, i1 = z.attrs["interior_index_window"]
     if [j0, j1, i0, i1] == [0, P.NY, 0, P.NX]:
         verify_global(z, args.source, repo_root, args.sample_tiles)

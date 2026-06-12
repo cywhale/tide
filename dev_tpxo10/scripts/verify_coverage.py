@@ -33,8 +33,8 @@ def main() -> int:
     ap.add_argument("--old", type=Path, default=repo_root / "data" / "tpxo9.zarr")
     args = ap.parse_args()
 
-    new = xr.open_zarr(args.store, consolidated=True, decode_times=False)
-    old = xr.open_zarr(args.old, consolidated=True, decode_times=False)
+    new = xr.open_zarr(args.store, consolidated=True, decode_times=False, mask_and_scale=False)
+    old = xr.open_zarr(args.old, consolidated=True, decode_times=False, mask_and_scale=False)
     NY, NX = P.NY, P.NX
     failures = []
 

@@ -51,8 +51,8 @@ def main() -> int:
     args = ap.parse_args()
     rng = np.random.default_rng(SEED)
 
-    new = xr.open_zarr(args.new, consolidated=True, decode_times=False)
-    old = xr.open_zarr(args.old, consolidated=True, decode_times=False)
+    new = xr.open_zarr(args.new, consolidated=True, decode_times=False, mask_and_scale=False)
+    old = xr.open_zarr(args.old, consolidated=True, decode_times=False, mask_and_scale=False)
     j0, j1, i0, i1 = new.attrs["interior_index_window"]
 
     # grid identity assertion (rtol=0)

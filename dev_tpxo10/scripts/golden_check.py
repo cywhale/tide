@@ -80,7 +80,7 @@ def main() -> int:
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
 
-    z = xr.open_zarr(args.store, consolidated=True, decode_times=False)
+    z = xr.open_zarr(args.store, consolidated=True, decode_times=False, mask_and_scale=False)
     j0, j1, i0, i1 = z.attrs["interior_index_window"]
     is_global = [j0, j1, i0, i1] == [0, P.NY, 0, P.NX]
     if is_global:

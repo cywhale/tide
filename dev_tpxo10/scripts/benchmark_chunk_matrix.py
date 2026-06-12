@@ -88,12 +88,12 @@ def decompressed_bytes(keys, ds) -> int:
 
 
 def rechunk_variant(canonical: Path, out: Path, cl: int, cc: int):
-    src = xr.open_zarr(canonical, consolidated=True, decode_times=False)
+    src = xr.open_zarr(canonical, consolidated=True, decode_times=False, mask_and_scale=False)
     if out.exists():
         # round 11, finding 5: never silently reuse a stale variant —
         # verify provenance commit and chunk layout, else rebuild
         try:
-            old = xr.open_zarr(out, consolidated=True, decode_times=False)
+            old = xr.open_zarr(out, consolidated=True, decode_times=False, mask_and_scale=False)
             same = (old.attrs.get("pipeline_git_commit")
                     == src.attrs.get("pipeline_git_commit")
                     and old["z_Re"].encoding.get("chunks") == (cl, cl, cc))
@@ -126,7 +126,7 @@ def try_purge() -> str:
 def open_store(path, mode, counter):
     chunks = "auto" if mode == "dask" else None
     return xr.open_zarr(counter, consolidated=True, decode_times=False,
-                        chunks=chunks)
+                        chunks=chunks, mask_and_scale=False)
 
 
 def measure(fn, reps, counter, ds):

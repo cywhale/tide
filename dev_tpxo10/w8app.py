@@ -44,7 +44,7 @@ def open_store():
         STATE["client"] = Client(os.environ["TIDE_BENCH_SCHED"])
     chunks = (None if mode == "direct"
               else ({} if mode == "dist-native" else "auto"))
-    ds = xr.open_zarr(path, consolidated=True, decode_times=False, chunks=chunks)
+    ds = xr.open_zarr(path, consolidated=True, decode_times=False, chunks=chunks, mask_and_scale=False)
     STATE.update(ds=ds, schema=schema, mode=mode,
                  cons=[str(c) for c in ds["constituents"].values])
 
