@@ -10,7 +10,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "dev_tpxo10" / "scripts"))
 
 import tpxo10_pipeline as P  # noqa: E402
-from convert_to_zarr import assert_clean_pipeline_sources, convert  # noqa: E402
+from convert_to_zarr import (  # noqa: E402
+    assert_clean_pipeline_sources,
+    assert_complete,
+    convert,
+    validate_smoke_args,
+)
 
 SOURCE = REPO_ROOT / "data_src" / "TPXO10_atlas_v2"
 
@@ -42,6 +47,25 @@ def test_assert_clean_rejects_modified_and_untracked():
         assert_clean_pipeline_sources(" M dev_tpxo10/scripts/tpxo10_pipeline.py")
     with pytest.raises(P.PipelineError, match="not committed/clean"):
         assert_clean_pipeline_sources("?? dev_tpxo10/scripts/new_helper.py")
+
+
+# ---------- canonical-publication guards (round 15, finding 1) ----------
+
+def test_smoke_mode_requires_explicit_out():
+    validate_smoke_args(None, None)                  # normal full run: ok
+    validate_smoke_args(2, Path("/tmp/x.zarr"))      # smoke with --out: ok
+    with pytest.raises(P.PipelineError, match="explicit --out"):
+        validate_smoke_args(1, None)                 # smoke on default: NO
+
+
+def test_assert_complete_guards_partial_stores():
+    assert_complete([0, 1, 2], 3)
+    with pytest.raises(P.PipelineError, match="incomplete"):
+        assert_complete([0, 2], 3)                   # missing tile
+    with pytest.raises(P.PipelineError, match="incomplete"):
+        assert_complete([0, 1, 1], 3)                # duplicate, missing 2
+    with pytest.raises(P.PipelineError, match="incomplete"):
+        assert_complete([], 3)
 
 
 # ---------- two-run byte-identity (§7.1 / G2 idempotency) ----------

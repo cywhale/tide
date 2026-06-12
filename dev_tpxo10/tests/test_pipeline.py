@@ -184,6 +184,83 @@ def test_collapse_constituent_flags_asserts_agreement():
         P.collapse_constituent_flags(f)
 
 
+def _full_chain(h, re, im, jh0, jh1, top, dmax, lon_ax, lat_ax):
+    """The convert_full per-tile computation chain on a haloed row window
+    (mirrors convert_to_zarr.convert_full's tile body)."""
+    hw = h[jh0:jh1]
+    rew, imw = re[jh0:jh1].copy(), im[jh0:jh1].copy()
+    valid = P.compute_validity(hw, rew, imw)
+    flag = P.classify_flags(hw, valid, dmax=dmax)
+    P.inpaint_fill_inplace(lon_ax, lat_ax[jh0:jh1], rew, imw, valid, flag)
+    inv = flag == P.FLAG_INVALID
+    rew[inv], imw[inv] = 0, 0
+    evel = P.edge_velocity(rew, imw, hw, flag)
+    uz, uzf = P.center_u(evel, flag, wrap=True)
+    vz, vzf = P.center_v(evel, flag, last_row_one_sided=top)
+    return rew, imw, flag, uz, uzf, vz, vzf
+
+
+def _synthetic_globe(ny=24, nx=36, ncons=2, seed=11):
+    """Periodic-lon toy globe with: an all-land Antarctic band, a land
+    strip crossing the dateline (one-sided wrap centering), coastal
+    notch holes with UNIQUE nearest donors (no inpaint tie-break
+    ambiguity) — one ON a tile seam row, one on the last (polar) row."""
+    rng = np.random.default_rng(seed)
+    h = np.full((ny, nx), 50.0, dtype=np.float32)
+    re = rng.integers(-900, 900, size=(ny, nx, ncons)).astype(np.int32)
+    im = rng.integers(-900, 900, size=(ny, nx, ncons)).astype(np.int32)
+    re[re == 0] = 7
+    im[im == 0] = -7
+    h[0:2, :] = 0.0                       # antarctic land band
+    h[:, 34] = 0.0                        # dateline-adjacent land column
+    h[10:14, 8:12] = 0.0                  # inland lake/land block
+    # notch holes: land on three sides, unique ocean donor on the fourth
+    for (j, i) in [(7, 20), (ny - 1, 5)]:  # seam row (tile=7), polar row
+        h[j, i] = 30.0
+        re[j, i, :], im[j, i, :] = 0, 0    # all-zero hc -> fillable
+        if j < ny - 1:
+            h[j + 1, i] = 0.0
+        h[j, i - 1] = 0.0
+        if j > 0:
+            h[j - 1, i] = 0.0              # unique donor at (j, i+1)
+    return h, re, im
+
+
+def test_tiled_pipeline_bitwise_matches_monolithic_globe():
+    """Round 15, finding 2: tile seams, dateline periodic centering, the
+    one-sided polar row and a seam-crossing fill band must all be
+    bit-identical between the tiled (convert_full) decomposition and a
+    monolithic computation."""
+    ny, nx, dmax, halo, tile = 24, 36, 2, 4, 7
+    h, re, im = _synthetic_globe(ny=ny, nx=nx)
+    lon_ax = np.arange(nx, dtype=float)
+    lat_ax = np.arange(ny, dtype=float)
+
+    mono = _full_chain(h, re, im, 0, ny, True, dmax, lon_ax, lat_ax)
+    m_re, m_im, m_flag, m_uz, m_uzf, m_vz, m_vzf = mono
+    # sanity: the synthetic scenario actually exercises every branch
+    assert m_flag[7, 20] == P.FLAG_FILLED          # seam-row fill
+    assert m_flag[ny - 1, 5] == P.FLAG_FILLED      # polar-row fill
+    # dateline: land at lon 34 makes col 34 one-sided, while col 35 (last)
+    # wraps to edge 0 with BOTH edges valid -> the periodic path is hit
+    assert (m_uzf[5, 34, 0] == P.FLAG_FILLED)
+    assert (m_uzf[5, 35, 0] == P.FLAG_SOURCE)
+    assert (m_vzf[ny - 1, :, 0] <= P.FLAG_FILLED).any()  # one-sided polar row
+
+    for (j0, j1, jh0, jh1, top) in P.lat_tiles(ny=ny, tile=tile, halo=halo):
+        sl = slice(j0 - jh0, j0 - jh0 + (j1 - j0))
+        t_re, t_im, t_flag, t_uz, t_uzf, t_vz, t_vzf = _full_chain(
+            h, re, im, jh0, jh1, top, dmax, lon_ax, lat_ax)
+        gsl = slice(j0, j1)
+        assert np.array_equal(t_re[sl], m_re[gsl])
+        assert np.array_equal(t_im[sl], m_im[gsl])
+        assert np.array_equal(t_flag[sl], m_flag[gsl])
+        assert np.array_equal(t_uz[sl], m_uz[gsl])
+        assert np.array_equal(t_uzf[sl], m_uzf[gsl])
+        assert np.array_equal(t_vz[sl], m_vz[gsl])
+        assert np.array_equal(t_vzf[sl], m_vzf[gsl])
+
+
 def test_lat_tiles_cover_globe_without_overlap():
     tiles = P.lat_tiles(ny=5401, tile=226, halo=32)
     assert tiles[0][0] == 0 and tiles[-1][1] == 5401

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -234,6 +235,25 @@ def base_attrs(repo_root: Path, created_utc, extra: dict) -> dict:
     }
 
 
+def validate_smoke_args(max_tiles: int | None, out_arg: Path | None) -> None:
+    """Round 15, finding 1: a --max-tiles smoke run must never be able to
+    masquerade as (or overwrite) the canonical store — it requires an
+    explicit, non-default --out."""
+    if max_tiles is not None and out_arg is None:
+        raise P.PipelineError(
+            "--max-tiles is a smoke mode and requires an explicit --out "
+            "(never the canonical default path)")
+
+
+def assert_complete(tiles_done: list, n_expected: int) -> None:
+    """Publication guard: refuse to mark a store canonical unless every
+    tile reported done (round 15, finding 1)."""
+    if len(tiles_done) != n_expected or sorted(tiles_done) != list(range(n_expected)):
+        raise P.PipelineError(
+            f"store incomplete: {len(tiles_done)}/{n_expected} tiles "
+            f"written ({tiles_done}); refusing to publish as canonical")
+
+
 def convert_full(chunks, out: Path, source: Path, repo_root: Path,
                  created_utc: str | None = None, tile_lat: int = 226,
                  max_tiles: int | None = None) -> None:
@@ -262,16 +282,28 @@ def convert_full(chunks, out: Path, source: Path, repo_root: Path,
             float(axes["lon_z"][0]), float(axes["lon_z"][-1]),
             float(axes["lat_z"][0]), float(axes["lat_z"][-1])],
         "tile_lat_rows": tile_lat,
+        # round 15, finding 1: a store is publishable only after every
+        # tile is written AND the integrity guard passes; until then it
+        # lives at <out>.partial with canonical=false
+        "conversion_status": "in_progress",
+        "canonical": False,
     })
 
+    if out.exists():
+        raise P.PipelineError(f"{out} already exists; refusing to overwrite "
+                              "a published store — remove it explicitly first")
+    partial = out.with_name(out.name + ".partial")
+    if partial.exists():
+        raise P.PipelineError(f"{partial} exists (interrupted run?); remove "
+                              "it explicitly — no silent resume")
     comp = _B(cname="lz4", clevel=5, shuffle=_B.SHUFFLE)
     out.parent.mkdir(parents=True, exist_ok=True)
-    grp = zarr.open_group(str(out), mode="w")
+    grp = zarr.open_group(str(partial), mode="w")
     grp.attrs.update(attrs)
 
-    def create(name, shape, dtype, dims, ch):
+    def create(name, shape, dtype, dims, ch, fill=0):
         a = grp.create_dataset(name, shape=shape, chunks=ch, dtype=dtype,
-                               compressor=comp, fill_value=0)
+                               compressor=comp, fill_value=fill)
         a.attrs["_ARRAY_DIMENSIONS"] = dims
         return a
 
@@ -287,13 +319,17 @@ def convert_full(chunks, out: Path, source: Path, repo_root: Path,
         for comp_name in ("Re", "Im"):
             create(f"{node}_{comp_name}", (NY, NX, ncons), "i4", list(d3),
                    (cl_lat, cl_lon, cl_con))
-        create(f"{node}_flag", (NY, NX), "u1", list(d2), (cl_lat, cl_lon))
+        # flag fill = 2 (FLAG_INVALID): an unwritten region reads as
+        # invalid, never as source-valid (round 15, finding 1)
+        create(f"{node}_flag", (NY, NX), "u1", list(d2), (cl_lat, cl_lon),
+               fill=P.FLAG_INVALID)
         create(f"h{node}", (NY, NX), "f4", list(d2), (cl_lat, cl_lon))
     for name in ("uz_Re", "uz_Im", "vz_Re", "vz_Im"):
         create(name, (NY, NX, ncons), "f4",
                ["lat_z", "lon_z", "constituents"], (cl_lat, cl_lon, cl_con))
     for name in ("uz_flag", "vz_flag"):
-        create(name, (NY, NX), "u1", ["lat_z", "lon_z"], (cl_lat, cl_lon))
+        create(name, (NY, NX), "u1", ["lat_z", "lon_z"], (cl_lat, cl_lon),
+               fill=P.FLAG_INVALID)
 
     fills = {"z": 0, "u": 0, "v": 0}
     tiles = P.lat_tiles(NY, tile_lat)
@@ -343,12 +379,23 @@ def convert_full(chunks, out: Path, source: Path, repo_root: Path,
         grp["uz_flag"][j0:j1] = P.collapse_constituent_flags(uz_f3[interior], "uz")
         grp["vz_flag"][j0:j1] = P.collapse_constituent_flags(vz_f3[interior], "vz")
         del uz_c, vz_c
+        tiles_done = list(grp.attrs.get("tiles_written", [])) + [t_i]
+        grp.attrs["tiles_written"] = tiles_done
         print(f"[tile {t_i + 1}/{len(tiles)}] rows {j0}:{j1} "
               f"(halo {jh0}:{jh1}{', top one-sided' if top else ''}) written")
 
-    zarr.consolidate_metadata(str(out))
-    print(f"fill counts (global interior): {fills}")
-    print(f"PASS convert_to_zarr --full -> {out}")
+    print(f"fill counts ({'partial' if max_tiles else 'global'} interior): {fills}")
+    if max_tiles:
+        grp.attrs["conversion_status"] = "smoke-partial"
+        zarr.consolidate_metadata(str(partial))
+        print(f"SMOKE RUN (non-canonical, {len(tiles)} tiles) -> {partial}")
+        return
+    assert_complete(list(grp.attrs["tiles_written"]), len(tiles))
+    grp.attrs["conversion_status"] = "complete"
+    grp.attrs["canonical"] = True
+    zarr.consolidate_metadata(str(partial))
+    os.rename(partial, out)  # atomic publication
+    print(f"PASS convert_to_zarr --full (canonical, atomic publish) -> {out}")
 
 
 def main() -> int:
@@ -372,6 +419,7 @@ def main() -> int:
     chunks = tuple(int(x) for x in args.chunks.split(","))
     stores = repo_root / "dev_tpxo10" / "stores"
     if args.full:
+        validate_smoke_args(args.max_tiles, args.out)
         out = args.out or stores / "tpxo10_global.zarr"
         convert_full(chunks, out, args.source, repo_root,
                      created_utc=args.created_utc, tile_lat=args.tile_lat,

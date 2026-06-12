@@ -373,3 +373,47 @@ frozen; Stage 2 (global conversion) may start.
 Carried forward to G3 (not G1 items): Linux-host cold-cache round
 (macOS rounds are `first-path-access` only); cap re-validation on the
 fully ported runtime (P-Map45-s1).
+
+## Stage 2 — Gate G2 (in progress)
+
+### S2.0 Global streaming converter + round 15 publication hardening (2026-06-12)
+
+Converter: `convert_to_zarr.py --full` — latitude-band streaming tiles
+(tile_lat=226 + halo 32, full-longitude rows; periodic wrap via
+`center_u(wrap=True)`; lat halo clamps at the true global boundaries;
+top tile centers vz one-sided; per-tile Zarr slab writes; ~2.2 GiB RSS
+observed during the run).
+
+Single-tile smoke (2026-06-12, pre-round-15 evidence, re-recorded here
+per round 15 finding 2): `--full --max-tiles 1 --out stores/smoke_global.zarr`
+-> `[tile 1/1] rows 0:226 (halo 0:258) written`, fills {z:0,u:0,v:0}
+(Antarctic land band), store removed afterwards. Test suite at that
+point: `28 passed`.
+
+Round 15 publication hardening (finding 1 — an interrupted run could
+previously masquerade as a complete store):
+- writes go to `<out>.partial`; attrs start `conversion_status=
+  in_progress`, `canonical=false`; refuses to overwrite an existing
+  published store or to silently resume an existing partial
+- ALL flag arrays now have `fill_value=2` (unwritten regions read as
+  invalid, never source-valid)
+- per-tile `tiles_written` ledger; `assert_complete` guard; only then
+  `conversion_status=complete`, `canonical=true`, consolidate and
+  ATOMIC `os.rename` to the final path
+- `--max-tiles` requires an explicit non-default `--out`, marks the
+  store `smoke-partial`, never prints PASS, never publishes
+  (`validate_smoke_args` + unit tests)
+
+Round 15 finding 2 — integration equality test added
+(`test_tiled_pipeline_bitwise_matches_monolithic_globe`): synthetic
+periodic globe where the tiled decomposition must be BIT-IDENTICAL to a
+monolithic computation across tile seams, including a seam-row fill
+cell with unique donor, a polar-row fill cell, a dateline land strip
+(col 34 one-sided; col 35 wraps to edge 0 with both edges valid) and
+the one-sided northern row. Publication guards unit-tested
+(`validate_smoke_args`, `assert_complete`). Suite: `31 passed`.
+
+**Store status**: the in-flight global run (started before round 15)
+is a **G2 candidate for verification tooling only** — per round 15 it
+is NOT canonical; the canonical store will be rebuilt with the
+round-15 pipeline revision after the candidate-based gate dry-runs.
