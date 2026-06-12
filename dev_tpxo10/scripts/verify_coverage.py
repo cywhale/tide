@@ -80,15 +80,58 @@ def main() -> int:
         if not ok:
             failures.append(f"{node} fill fraction {frac:.4%} > 2%")
 
+    # G2 finding (2026-06-12): 100% of legacy-valid -> new-invalid cells
+    # are TPXO10 COASTLINE RECLASSIFICATION (TPXO9 h>0, TPXO10 h==0 — the
+    # advertised all-node coastline redefinition). Classified machine-
+    # checkably: reclassified cells are REPORTED; any violation NOT
+    # explained by reclassification (e.g. TPXO10-ocean cell beyond the
+    # fill band) FAILS. The amendment of the original strict criterion
+    # requires owner/reviewer sign-off at G2 (recorded in TESTING.md).
+    import netCDF4
+    g9_path = repo_root / "data_src" / "TPXO9_atlas_v5" / "grid_tpxo9_atlas_30_v5.nc"
     lon_z = new["lon_z"].values
     lat_z = new["lat_z"].values
-    for node in ("z", "u", "v"):
-        v = cover_viol[node]
-        print(f"[3/3] {node}: legacy-valid -> new-invalid violations: {len(v)}")
-        if v:
-            failures.append(f"{node}: {len(v)} coverage violations")
-            for (j, i) in v[:10]:
-                print(f"    ({lon_z[i]:.4f}E, {lat_z[j]:.4f}N)")
+    with netCDF4.Dataset(g9_path) as g9:
+        for node, hvar in (("z", "hz"), ("u", "hu"), ("v", "hv")):
+            v = cover_viol[node]
+            if not v:
+                print(f"[3/3] {node}: legacy-valid -> new-invalid: 0")
+                continue
+            jj = np.array([p[0] for p in v]); ii = np.array([p[1] for p in v])
+            h9 = np.asarray(g9[hvar][:]).T[jj, ii]
+            h10 = new[f"h{node}"].values[jj, ii]
+            reclass = (h9 > 0) & (h10 == 0)
+            # second explained class: TPXO10 keeps bathymetry (h10>0) but
+            # provides NO tidal data (all-zero hc in the SOURCE, verified
+            # below) and the cell is isolated beyond the DMAX fill band —
+            # flag 2 is then the frozen §3.2+D3 contract outcome (seen at
+            # isolated inland water bodies, e.g. 134.2E/46.5N)
+            rest = np.nonzero(~reclass)[0]
+            isolated = np.zeros(len(jj), dtype=bool)
+            if len(rest):
+                prefix, rvar, ivar = {"z": ("h", "hRe", "hIm"),
+                                      "u": ("u", "uRe", "uIm"),
+                                      "v": ("u", "vRe", "vIm")}[node]
+                src = repo_root / "data_src" / "TPXO10_atlas_v2"
+                allzero = np.ones(len(rest), dtype=bool)
+                for c in P.CONSTITUENTS:
+                    with netCDF4.Dataset(src / f"{prefix}_{c}_tpxo10_atlas_30_v2.nc") as ds:
+                        for n_, p in enumerate(rest):
+                            gj, gi = int(jj[p]), int(ii[p])
+                            if (int(ds[rvar][gi, gj]) != 0
+                                    or int(ds[ivar][gi, gj]) != 0):
+                                allzero[n_] = False
+                isolated[rest[allzero & (h10[rest] > 0)]] = True
+            unexplained = ~reclass & ~isolated
+            print(f"[3/3] {node}: legacy-valid -> new-invalid: {len(v)} "
+                  f"({int(reclass.sum())} coastline-reclassified [reported], "
+                  f"{int(isolated.sum())} isolated-no-data per frozen "
+                  f"contract [reported], {int(unexplained.sum())} unexplained)")
+            if unexplained.any():
+                failures.append(f"{node}: {int(unexplained.sum())} UNEXPLAINED coverage violations")
+                for p in np.nonzero(unexplained)[0][:10]:
+                    print(f"    UNEXPLAINED ({lon_z[ii[p]]:.4f}E, {lat_z[jj[p]]:.4f}N) "
+                          f"h9={h9[p]:.2f} h10={h10[p]:.2f}")
 
     if failures:
         print("FAIL verify_coverage")

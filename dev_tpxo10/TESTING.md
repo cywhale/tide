@@ -417,3 +417,54 @@ the one-sided northern row. Publication guards unit-tested
 is a **G2 candidate for verification tooling only** — per round 15 it
 is NOT canonical; the canonical store will be rebuilt with the
 round-15 pipeline revision after the candidate-based gate dry-runs.
+
+### S2.1 Canonical global store + G2 gate chain (2026-06-12)
+
+Canonical `stores/tpxo10_global.zarr` built at commit `31f2491d` via the
+round-15 atomic path (24/24 tiles, 37 min, 12 GB, `canonical=true`,
+`conversion_status=complete`); fill counts z=356 / u=618 / v=595 —
+IDENTICAL to the pre-round-15 candidate run (cross-revision determinism
+evidence). The candidate is retained at `tpxo10_global_candidate.zarr`.
+
+**G2 root-cause find**: xarray's default CF decoding reinterpreted the
+round-15 structural zarr fill_values as `_FillValue` sentinels
+(int32→float64, fill-equal cells → NaN), producing every first-run gate
+failure (probe: 113 NaN == 113 fill cells; raw lat/lon maxdiff 0.0).
+Fix: `mask_and_scale=False` at all 10 store-open sites + a binding
+raw-read contract in spec §3.1 (the Stage 3 adapter MUST open raw).
+
+Gate results (after fix; `b9k9k9e7t` + coverage reruns):
+
+- **T-B global (sampled 6 tiles incl. top)**: PASS — full deterministic
+  reproduction per tile (truth byte-equality, derived wrap-centering
+  rtol 1e-6, flags exact), coordinates full-scan exact, provenance 13
+  hash↔commit-blob checks OK. Full 24-tile scan pending (required for
+  G2 sign-off).
+- **Coverage**: PASS — zero NaN; fill fractions 0.0009–0.0016% (≤2%);
+  legacy-valid→new-invalid cells 100% machine-classified:
+  z 6,470 / u 66,224 / v 167,747 **coastline-reclassified** (TPXO9 h>0,
+  TPXO10 h=0 — the advertised all-node coastline redefinition; legacy
+  amp at these cells tiny: z P50 1.0 cm, max 9 cm; u/v extremes up to
+  73/156 cm/s are legacy-fillna artifacts) + 4 **isolated-no-data**
+  cells (134.2°E/46.5°N inland water body: TPXO10 h≈1.3 m, source hc
+  all-zero verified, beyond DMAX — flag 2 is the frozen §3.2+D3
+  outcome); **0 unexplained**. ⚠ The original strict criterion is
+  amended to "all violations machine-explained" — owner/reviewer
+  sign-off requested (runtime note: at reclassified cells the new API
+  returns no value where legacy served extrapolated values).
+- **T-C global (polar stratum BINDING)**: PASS frozen thresholds —
+  119,871 cells (deep 69,405 / shelf 33,594 / coastal 16,872 / polar
+  61,247); binding deep P95 max 26.42 mm (K1) ≤ 30; shelf max 97.41 mm
+  (M2) ≤ 150; deep-M2 bias −0.739 mm ≤ 5. Global values sit higher than
+  the Stage 1 region (more polar/Atlantic change) but inside the frozen
+  gates → `benchmarks/tc_global.json`.
+- **T-D1 golden global**: PASS — 250 cells + 10 named (Arctic, Weddell,
+  0/360 wrap pair); z hc, u 248 + v 245 transport cells rtol 1e-9;
+  uz 306 two-edge + 4 one-sided, vz 240 two-edge + 69 one-sided
+  (incl. the periodic easternmost column and the one-sided last
+  latitude row), 40+40 invalid-zero cells; 0 skipped.
+- **Idempotency**: PASS — 2-tile rebuild, 18 arrays byte-identical over
+  rows 0:452.
+
+Remaining for G2: T-B FULL scan (24/24 tiles); owner/reviewer sign-off
+of the coverage-gate amendment.
