@@ -49,6 +49,124 @@ def independent_center_u(eu_w, eu_e, f_w, f_e):
     return out, flag
 
 
+def independent_center_u_wrap(evel, flags):
+    """Global (periodic) variant of the independent centering recompute."""
+    e_east = np.roll(evel, -1, axis=1)
+    f_east = np.roll(flags, -1, axis=1)
+    nc = evel.shape[-1]
+    return independent_center_u(
+        evel, e_east,
+        np.repeat(flags[..., None], nc, -1),
+        np.repeat(f_east[..., None], nc, -1))
+
+
+def verify_global(z, source: Path, repo_root: Path, sample_tiles: int | None) -> int:
+    """G2 global T-B: tiled deterministic reproduction (same lat_tiles
+    decomposition as the converter — inpaint donor selection is
+    tile-window-deterministic), periodic-wrap derived recompute, top-row
+    one-sided, canonical-publication attrs. sample_tiles=None => full
+    scan (required once before G2 sign-off)."""
+    import netCDF4 as nc4
+    NY, NX = P.NY, P.NX
+    tile_lat = int(z.attrs["tile_lat_rows"])
+    check(z.attrs.get("canonical") is True
+          and z.attrs.get("conversion_status") == "complete",
+          "store is not a published canonical store")
+    tiles = P.lat_tiles(NY, tile_lat)
+    check(sorted(z.attrs.get("tiles_written", [])) == list(range(len(tiles))),
+          "tiles_written ledger incomplete")
+
+    grid = source / "grid_tpxo10atlas_v2.nc"
+    with nc4.Dataset(grid) as g:
+        axes = {n: np.asarray(g[n][:]) for n in
+                ("lon_z", "lat_z", "lon_u", "lat_u", "lon_v", "lat_v")}
+        for name, ax in axes.items():
+            check(np.array_equal(z[name].values, ax), f"coord {name} differs")
+    print("[1/5] coordinates (full global): " + ("OK" if not FAILURES else "FAIL"))
+
+    pick = list(range(len(tiles)))
+    if sample_tiles:
+        rng = np.random.default_rng(20260611)
+        pick = sorted(set(rng.choice(len(tiles) - 1, size=sample_tiles - 1,
+                                     replace=False).tolist()) | {len(tiles) - 1})
+        print(f"    sampled tiles: {pick} (top tile always included)")
+
+    ncons = len(P.CONSTITUENTS)
+    fill_totals = {"z": 0, "u": 0, "v": 0}
+    for t_i in pick:
+        j0, j1, jh0, jh1, top = tiles[t_i]
+        jw = slice(jh0, jh1)
+        H0, nrow = j0 - jh0, j1 - j0
+        interior = slice(H0, H0 + nrow)
+        with nc4.Dataset(grid) as g:
+            h_haloed = {n: np.asarray(g[hv][:, jw]).T.astype(np.float32)
+                        for n, hv in (("z", "hz"), ("u", "hu"), ("v", "hv"))}
+        expected = {}
+        for node in ("z", "u", "v"):
+            h = h_haloed[node]
+            check(np.array_equal(z[f"h{node}"].values[j0:j1], h[interior]),
+                  f"tile{t_i} h{node} differs")
+            prefix, rvar, ivar = {"z": ("h", "hRe", "hIm"),
+                                  "u": ("u", "uRe", "uIm"),
+                                  "v": ("u", "vRe", "vIm")}[node]
+            s_re = np.empty(h.shape + (ncons,), dtype=np.int32)
+            s_im = np.empty_like(s_re)
+            for k, c in enumerate(P.CONSTITUENTS):
+                with nc4.Dataset(source / f"{prefix}_{c}_tpxo10_atlas_30_v2.nc") as ds:
+                    s_re[..., k] = np.asarray(ds[rvar][:, jw]).T
+                    s_im[..., k] = np.asarray(ds[ivar][:, jw]).T
+            valid = P.compute_validity(h, s_re, s_im)
+            flag_h = P.classify_flags(h, valid)
+            P.inpaint_fill_inplace(axes[f"lon_{node}"], axes[f"lat_{node}"][jw],
+                                   s_re, s_im, valid, flag_h, context=f"t{t_i}/{node}")
+            inv = flag_h == P.FLAG_INVALID
+            s_re[inv], s_im[inv] = 0, 0
+            check(np.array_equal(z[f"{node}_flag"].values[j0:j1], flag_h[interior]),
+                  f"tile{t_i} {node}_flag != reproduction")
+            check(np.array_equal(z[f"{node}_Re"].values[j0:j1], s_re[interior])
+                  and np.array_equal(z[f"{node}_Im"].values[j0:j1], s_im[interior]),
+                  f"tile{t_i} {node} truth != full reproduction")
+            fill_totals[node] += int((flag_h[interior] == P.FLAG_FILLED).sum())
+            expected[node] = (s_re, s_im, flag_h, h)
+
+        for comp, e_node in (("uz", "u"), ("vz", "v")):
+            e_re, e_im, e_fl, e_h = expected[e_node]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                evel = 1e-4 * (e_re.astype(np.float64) + 1j * e_im.astype(np.float64)) \
+                    / e_h.astype(np.float64)[..., None]
+            evel[e_fl > 1] = 0.0
+            if comp == "uz":
+                ref, rflag = independent_center_u_wrap(evel, e_fl)
+                got = (z["uz_Re"].values[j0:j1] + 1j * z["uz_Im"].values[j0:j1])
+                want = ref[interior].astype(np.complex64)
+                fwant = rflag[interior][..., 0]
+            else:
+                nc_ = evel.shape[-1]
+                ref, rflag = independent_center_u(
+                    evel[:-1], evel[1:],
+                    np.repeat(e_fl[:-1, :, None], nc_, -1),
+                    np.repeat(e_fl[1:, :, None], nc_, -1))
+                if top:  # one-sided last global row (independent recompute)
+                    usable = (e_fl[-1:, :] <= 1)[..., None].repeat(nc_, -1)
+                    last = np.where(usable, evel[-1:], 0.0)
+                    lastf = np.where(usable, 1, 2).astype(np.uint8)
+                    ref = np.concatenate([ref, last], axis=0)
+                    rflag = np.concatenate([rflag, lastf], axis=0)
+                got = (z["vz_Re"].values[j0:j1] + 1j * z["vz_Im"].values[j0:j1])
+                want = ref[interior].astype(np.complex64)
+                fwant = rflag[interior][..., 0]
+            check(np.allclose(got, want, rtol=1e-6, atol=1e-9),
+                  f"tile{t_i} {comp} derived mismatch")
+            check(np.array_equal(z[f"{comp}_flag"].values[j0:j1], fwant),
+                  f"tile{t_i} {comp} flags mismatch")
+        print(f"[2/5] tile {t_i} ({j0}:{j1}{', top' if top else ''}): "
+              + ("OK" if not FAILURES else "FAIL"))
+
+    scope = "FULL SCAN" if not sample_tiles else f"{len(pick)}/{len(tiles)} tiles"
+    print(f"[3/5] truth + derived reproduction ({scope}); fills seen {fill_totals}")
+    return 0
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     ap = argparse.ArgumentParser(description=__doc__)
@@ -56,10 +174,16 @@ def main() -> int:
                     default=repo_root / "dev_tpxo10" / "stores" / "tpxo10_proto.zarr")
     ap.add_argument("--source", type=Path,
                     default=repo_root / "data_src" / "TPXO10_atlas_v2")
+    ap.add_argument("--sample-tiles", type=int, default=None,
+                    help="global mode: verify N sampled tiles (top always "
+                         "included); omit for the full scan required at G2")
     args = ap.parse_args()
 
     z = xr.open_zarr(args.store, consolidated=True, decode_times=False)
     j0, j1, i0, i1 = z.attrs["interior_index_window"]
+    if [j0, j1, i0, i1] == [0, P.NY, 0, P.NX]:
+        verify_global(z, args.source, repo_root, args.sample_tiles)
+        return finish(z, repo_root)
     j_int, i_int = slice(j0, j1), slice(i0, i1)
     jw, iw = P.haloed_window(j_int, i_int)
     H = P.HALO_CELLS
@@ -158,6 +282,10 @@ def main() -> int:
         print(f"[3/5] {comp} derived layer (full scan incl. boundary "
               f"column/row): " + ("OK" if not FAILURES else "FAIL"))
 
+    return finish(z, repo_root)
+
+
+def finish(z, repo_root: Path) -> int:
     check(z.attrs.get("tide_store_schema") == P.SCHEMA_VERSION, "schema attr missing")
     check(z.attrs.get("quantization_rule") == P.QUANTIZATION_VERSION,
           "quantization attr missing")
@@ -186,7 +314,7 @@ def main() -> int:
         for f in FAILURES:
             print(f"  - {f}")
         return 1
-    print("[5/5] PASS verify_against_netcdf (full regional scan, tolerance 0 on source layer)")
+    print("[5/5] PASS verify_against_netcdf (tolerance 0 on source layer)")
     return 0
 
 

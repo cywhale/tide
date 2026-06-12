@@ -71,19 +71,23 @@ def main() -> int:
     common = (z_flag == 0) & np.isfinite(old_amp0)
     jj_all, ii_all = np.nonzero(common)
     h_at = hz[common]
+    is_global = (j1 - j0) == P.NY and (i1 - i0) == P.NX
+    lat_at = new["lat_z"].values[jj_all]
 
-    # strata: 50% uniform / 25% shelf / 25% coastal; polar deferred
-    n_uni, n_shelf, n_coast = N_SAMPLE // 2, N_SAMPLE // 4, N_SAMPLE // 4
     idx_all = np.arange(len(jj_all))
-    pools = {
-        "uniform": idx_all,
-        "shelf": idx_all[(h_at >= 50) & (h_at < 200)],
-        "coastal": idx_all[h_at < 50],
-    }
-    picks = []
-    for name, n in (("uniform", n_uni), ("shelf", n_shelf), ("coastal", n_coast)):
-        pool = pools[name]
-        picks.append(rng.choice(pool, size=min(n, len(pool)), replace=False))
+    if is_global:
+        # §7.3 global strata: 50% uniform / 25% shelf-coastal / 25% polar
+        # (polar is BINDING at G2: its samples flow into the deep/shelf
+        # gates and are additionally reported as their own stratum)
+        alloc = (("uniform", idx_all, N_SAMPLE // 2),
+                 ("shallow", idx_all[h_at < 200], N_SAMPLE // 4),
+                 ("polar", idx_all[np.abs(lat_at) > 60], N_SAMPLE // 4))
+    else:
+        alloc = (("uniform", idx_all, N_SAMPLE // 2),
+                 ("shelf", idx_all[(h_at >= 50) & (h_at < 200)], N_SAMPLE // 4),
+                 ("coastal", idx_all[h_at < 50], N_SAMPLE // 4))
+    picks = [rng.choice(pool, size=min(n, len(pool)), replace=False)
+             for _, pool, n in alloc]
     sel = np.unique(np.concatenate(picks))
     jj, ii = jj_all[sel], ii_all[sel]
     h_sel = hz[jj, ii]
@@ -92,9 +96,11 @@ def main() -> int:
         "shelf": (h_sel >= 50) & (h_sel < 1000),
         "coastal": h_sel < 50,
     }
-    print(f"[1/4] sampled {len(jj)} common-valid z-cells "
-          f"(deep {int(strata['deep'].sum())}, shelf {int(strata['shelf'].sum())}, "
-          f"coastal {int(strata['coastal'].sum())}; polar stratum DEFERRED to Stage 2)")
+    if is_global:
+        strata["polar"] = np.abs(new["lat_z"].values[jj]) > 60
+    print(f"[1/4] sampled {len(jj)} common-valid z-cells: " + ", ".join(
+        f"{s} {int(m.sum())}" for s, m in strata.items())
+        + ("" if is_global else "; polar stratum DEFERRED to Stage 2"))
 
     results = {"_meta": {"seed": SEED, "n": int(len(jj)),
                          "polar_stratum": "deferred to Stage 2 global store",

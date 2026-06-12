@@ -82,6 +82,16 @@ def main() -> int:
 
     z = xr.open_zarr(args.store, consolidated=True, decode_times=False)
     j0, j1, i0, i1 = z.attrs["interior_index_window"]
+    is_global = [j0, j1, i0, i1] == [0, P.NY, 0, P.NX]
+    if is_global:
+        # Stage 2 global-only branches (deferred from Stage 1): polar
+        # cells, the 0/360 wrap pair, and the last-latitude row
+        NAMED.update({
+            "arctic_ocean": (200.0, 78.0),
+            "wrap_west_of_meridian": (359.95, 56.0),
+            "wrap_east_of_meridian": (0.05, 56.0),
+            "weddell_sea": (315.0, -70.0),
+        })
     hz = z["hz"].values
     z_flag = z["z_flag"].values
 
@@ -192,15 +202,22 @@ def main() -> int:
             cells += [(nlat - 1, int(i)) for i in
                       rng.choice(bi, size=min(60, len(bi)), replace=False)]
         cjj = np.array([c[0] for c in cells]); cii = np.array([c[1] for c in cells])
+        oob2 = np.zeros(len(cjj), dtype=bool)
         if comp == "uz":
-            e1 = (cjj + j0, cii + i0); e2 = (cjj + j0, cii + i0 + 1)
+            e1 = (cjj + j0, cii + i0)
+            # periodic east edge: the global easternmost column wraps to 0
+            e2 = (cjj + j0, (cii + i0 + 1) % P.NX)
         else:
-            e1 = (cjj + j0, cii + i0); e2 = (cjj + j0 + 1, cii + i0)
+            e1 = (cjj + j0, cii + i0)
+            r2 = cjj + j0 + 1
+            oob2 = r2 >= P.NY  # north of the last global row: no edge
+            e2 = (np.minimum(r2, P.NY - 1), cii + i0)
         T1 = pytmd_transport_at(dss, *e1); T2 = pytmd_transport_at(dss, *e2)
         h1 = h_g.isel(y=xr.DataArray(e1[0]), x=xr.DataArray(e1[1])).values
         h2 = h_g.isel(y=xr.DataArray(e2[0]), x=xr.DataArray(e2[1])).values
         v1 = np.isfinite(h1) & (h1 > 0) & ~np.all(T1 == 0, axis=1)
         v2 = np.isfinite(h2) & (h2 > 0) & ~np.all(T2 == 0, axis=1)
+        v2[oob2] = False  # D12: latitude is non-periodic (one-sided row)
         n_cmp = {"two-edge": 0, "one-sided": 0, "skipped-inpaint": 0}
         bad = 0
         for n in range(len(cells)):
