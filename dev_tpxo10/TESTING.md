@@ -493,18 +493,23 @@ provenance 13 hash↔commit-blob checks OK.
 
 `git-filter-repo --path dev_tpxo10/stores/ --invert-paths` removed the
 25,785 `tpxo10_global.zarr.partial` chunk objects cbe773c had swept in.
-`.git` shrank 3.4 GiB → 150 MiB; no store path remains in any history;
-all pipeline-source blobs are unchanged (converter diff dfce18a↔HEAD is
-empty). filter-repo renumbers commits, so old `31f2491` → `dfce18a`
-(tree + blobs byte-identical, only the commit object changed) and gc'd
-the originals. The canonical store had recorded the now-defunct commit
-string `31f2491d…`, so its provenance pointer was dangling.
+`.git` shrank 3.4 GiB → 150 MiB; no store path remains in the rewritten
+history. filter-repo also removed `origin` and rewrote local `main`, so
+the first rewritten feature branch no longer had the correct GitHub
+ancestry even though its file tree was unchanged.
 
-**Remediation**: the canonical store is REBUILT at the new live HEAD
-(deterministic — candidate vs canonical fills were already identical),
-re-publishing a valid provenance pointer; the stale store is kept as
-`tpxo10_global_stale31f.zarr` until the rebuild re-passes the G2 chain.
-gitignore hardened so a `.partial` can never be committed again.
+Final repository repair: restore and fetch `origin`, verify the rewritten
+local-main tree is byte-identical to `origin/main=bc9e9d4`, then rebase all
+24 TPXO10 feature commits onto that real remote base. The feature branch
+now has `bc9e9d4` as its merge-base with `origin/main`, contains zero
+tracked store paths, and is suitable for a normal PR. All pipeline-source
+content remains unchanged.
+
+The old canonical store records the now-defunct `31f2491d…` commit, so it
+is retained only as `tpxo10_global_stale31f.zarr`. A canonical store must
+be rebuilt once from the repaired branch and must pass the full G2 chain
+before replacing that fallback. Gitignore is hardened so a `.partial`
+store cannot be committed again.
 
 **Gate G2 status: all technical gates GREEN.** Sole remaining item:
 owner/reviewer sign-off of the coverage-gate amendment (S2.1 — strict
