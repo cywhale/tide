@@ -103,7 +103,9 @@ def main() -> int:
         + ("" if is_global else "; polar stratum DEFERRED to Stage 2"))
 
     results = {"_meta": {"seed": SEED, "n": int(len(jj)),
-                         "polar_stratum": "deferred to Stage 2 global store",
+                         "polar_stratum": ("binding_at_G2 (|lat|>60, global store)"
+                                           if is_global else
+                                           "deferred to Stage 2 global store"),
                          "units": "mm |Δhc| (complex vector difference)"}}
     lon_z, lat_z = new["lon_z"].values, new["lat_z"].values
     pct = [50, 75, 90, 95, 99]

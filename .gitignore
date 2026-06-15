@@ -62,3 +62,7 @@ data_src/
 !dev_tpxo10/uv.lock
 !.python-version
 !dev_tpxo10/.python-version
+
+# zarr stores (the .partial suffix escapes **/*.zarr — round 16)
+dev_tpxo10/stores/
+**/*.zarr.partial

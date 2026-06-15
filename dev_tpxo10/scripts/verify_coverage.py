@@ -25,6 +25,35 @@ import tpxo10_pipeline as P  # noqa: E402
 BAND = 452  # rows per streamed band
 
 
+def recompute_flag_class(src: Path, node: str, gj: int, gi: int, R: int) -> int:
+    """Independently recompute the frozen §3.2+D3 flag class for one
+    global (gj, gi) node from the SOURCE, over a local (2R+1)^2 window.
+    Returns FLAG_SOURCE / FLAG_FILLED / FLAG_INVALID. Used to self-verify
+    the isolated-no-data coverage class (round 16, finding 3)."""
+    import netCDF4
+    prefix, rvar, ivar, hvar = {
+        "z": ("h", "hRe", "hIm", "hz"),
+        "u": ("u", "uRe", "uIm", "hu"),
+        "v": ("u", "vRe", "vIm", "hv"),
+    }[node]
+    NY, NX = P.NY, P.NX
+    j0, j1 = max(gj - R, 0), min(gj + R + 1, NY)
+    i0, i1 = max(gi - R, 0), min(gi + R + 1, NX)
+    grid = src / "grid_tpxo10atlas_v2.nc"
+    with netCDF4.Dataset(grid) as g:
+        h = np.asarray(g[hvar][i0:i1, j0:j1]).T.astype(np.float64)
+    ncons = len(P.CONSTITUENTS)
+    re = np.empty(h.shape + (ncons,), dtype=np.int32)
+    im = np.empty_like(re)
+    for k, c in enumerate(P.CONSTITUENTS):
+        with netCDF4.Dataset(src / f"{prefix}_{c}_tpxo10_atlas_30_v2.nc") as ds:
+            re[..., k] = np.asarray(ds[rvar][i0:i1, j0:j1]).T
+            im[..., k] = np.asarray(ds[ivar][i0:i1, j0:j1]).T
+    valid = P.compute_validity(h, re, im)
+    flag = P.classify_flags(h, valid, dmax=P.DMAX_FILL_CELLS)
+    return int(flag[gj - j0, gi - i0])
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     ap = argparse.ArgumentParser(description=__doc__)
@@ -55,9 +84,12 @@ def main() -> int:
             fill_counts[node] += int((flag == P.FLAG_FILLED).sum())
             ocean_counts[node] += int((flag <= P.FLAG_FILLED).sum())
 
-            amp0 = old[f"{node}_amp"].isel(
-                lat=slice(j0, j1), constituents=0).values
-            old_valid = np.isfinite(amp0)
+            # legacy-valid = finite in ANY constituent (round 16, finding 2:
+            # the first-constituent-only test missed 81 u-cells whose M2 was
+            # invalid but other constituents valid — 3 of them reclassified
+            # coastline that the gate would otherwise silently drop)
+            amp_all = old[f"{node}_amp"].isel(lat=slice(j0, j1)).values
+            old_valid = np.isfinite(amp_all).any(axis=-1)
             bad = old_valid & (flag == P.FLAG_INVALID)
             if bad.any():
                 jj, ii = np.nonzero(bad)
@@ -101,27 +133,21 @@ def main() -> int:
             h9 = np.asarray(g9[hvar][:]).T[jj, ii]
             h10 = new[f"h{node}"].values[jj, ii]
             reclass = (h9 > 0) & (h10 == 0)
-            # second explained class: TPXO10 keeps bathymetry (h10>0) but
-            # provides NO tidal data (all-zero hc in the SOURCE, verified
-            # below) and the cell is isolated beyond the DMAX fill band —
-            # flag 2 is then the frozen §3.2+D3 contract outcome (seen at
-            # isolated inland water bodies, e.g. 134.2E/46.5N)
+            # second explained class: a flag-2 cell whose bathymetry is
+            # kept (h10>0) is contract-correct ONLY if the FROZEN §3.2+D3
+            # rule independently yields flag 2 — i.e. it is source-invalid
+            # AND further than DMAX_FILL_CELLS from any source-valid node.
+            # Recompute that rule here from the source (round 16, finding 3:
+            # the gate must self-verify, not infer from T-B).
             rest = np.nonzero(~reclass)[0]
             isolated = np.zeros(len(jj), dtype=bool)
             if len(rest):
-                prefix, rvar, ivar = {"z": ("h", "hRe", "hIm"),
-                                      "u": ("u", "uRe", "uIm"),
-                                      "v": ("u", "vRe", "vIm")}[node]
                 src = repo_root / "data_src" / "TPXO10_atlas_v2"
-                allzero = np.ones(len(rest), dtype=bool)
-                for c in P.CONSTITUENTS:
-                    with netCDF4.Dataset(src / f"{prefix}_{c}_tpxo10_atlas_30_v2.nc") as ds:
-                        for n_, p in enumerate(rest):
-                            gj, gi = int(jj[p]), int(ii[p])
-                            if (int(ds[rvar][gi, gj]) != 0
-                                    or int(ds[ivar][gi, gj]) != 0):
-                                allzero[n_] = False
-                isolated[rest[allzero & (h10[rest] > 0)]] = True
+                R = P.DMAX_FILL_CELLS + 1
+                for p in rest:
+                    gj, gi = int(jj[p]), int(ii[p])
+                    cls = recompute_flag_class(src, node, gj, gi, R)
+                    isolated[p] = (h10[p] > 0) and (cls == P.FLAG_INVALID)
             unexplained = ~reclass & ~isolated
             print(f"[3/3] {node}: legacy-valid -> new-invalid: {len(v)} "
                   f"({int(reclass.sum())} coastline-reclassified [reported], "
