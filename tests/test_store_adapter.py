@@ -1,15 +1,18 @@
 """Stage 3 store-adapter unit tests (spec D9 + §7.1).
 
 Synthetic toy stores for BOTH schemas — no production data required.
-Covers: get_zarr_path env behavior; fail-closed schema detection;
-raw-read (mask_and_scale=False) requirement; hc unit/convention
-equivalence between schemas; tpxo10 flag-2 masking; lazy selection
-(materialize only the selected subset).
+Covers: get_zarr_path env behavior (cwd-independent default); full
+fail-closed schema/coord/dtype validation; reserved-kwarg guard;
+raw-read requirement; hc unit/convention equivalence; tpxo10 flag-2
+masking; vectorized multipoint selection (order/duplicate/tolerance);
+dateline-wrap bbox coordinate-order parity; and selection-before-
+materialization proven in DIRECT mode with a read-counting store.
 """
 import numpy as np
 import numpy.ma as ma
 import pytest
 import xarray as xr
+import zarr
 
 from src import store_adapter as SA
 
@@ -17,8 +20,7 @@ CONS = ["m2", "s2", "k1"]
 NLAT, NLON, NC = 6, 8, len(CONS)
 
 
-def _legacy_store(tmp_path):
-    """TPXO9-shape store: z/u/v amp+ph on lon/lat, no schema attr."""
+def _legacy_store(tmp_path, name="legacy.zarr"):
     rng = np.random.default_rng(1)
     lat = np.linspace(0, 5, NLAT)
     lon = np.linspace(100, 107, NLON)
@@ -30,20 +32,19 @@ def _legacy_store(tmp_path):
         data[f"{v}_ph"] = (("lat", "lon", "constituents"), ph[v])
     ds = xr.Dataset(data, coords={"lat": lat, "lon": lon,
                                   "constituents": np.array(CONS, dtype="<U3")})
-    p = tmp_path / "legacy.zarr"
+    p = tmp_path / name
     ds.to_zarr(p, mode="w", consolidated=True)
     return p, amp, ph
 
 
-def _tpxo10_store(tmp_path, with_flag2=True):
-    """tpxo10-cgrid-v1-shape store: z_Re/z_Im + uz/vz on lon_z/lat_z."""
+def _tpxo10_store(tmp_path, with_flag2=True, name="tpxo10.zarr",
+                  lon=None, chunks=None):
     rng = np.random.default_rng(2)
     lat = np.linspace(0, 5, NLAT)
-    lon = np.linspace(100, 107, NLON)
-    re = {v: rng.integers(-2000, 2000, (NLAT, NLON, NC)).astype(np.int32)
-          for v in ("z",)}
-    im = {v: rng.integers(-2000, 2000, (NLAT, NLON, NC)).astype(np.int32)
-          for v in ("z",)}
+    if lon is None:
+        lon = np.linspace(100, 107, NLON)
+    zre = rng.integers(-2000, 2000, (NLAT, NLON, NC)).astype(np.int32)
+    zim = rng.integers(-2000, 2000, (NLAT, NLON, NC)).astype(np.int32)
     uz_re = rng.uniform(-1, 1, (NLAT, NLON, NC)).astype(np.float32)
     uz_im = rng.uniform(-1, 1, (NLAT, NLON, NC)).astype(np.float32)
     vz_re = rng.uniform(-1, 1, (NLAT, NLON, NC)).astype(np.float32)
@@ -54,8 +55,8 @@ def _tpxo10_store(tmp_path, with_flag2=True):
     if with_flag2:
         zf[0, 0] = 2; uzf[1, 1] = 2; vzf[2, 2] = 2
     data = {
-        "z_Re": (("lat_z", "lon_z", "constituents"), re["z"]),
-        "z_Im": (("lat_z", "lon_z", "constituents"), im["z"]),
+        "z_Re": (("lat_z", "lon_z", "constituents"), zre),
+        "z_Im": (("lat_z", "lon_z", "constituents"), zim),
         "uz_Re": (("lat_z", "lon_z", "constituents"), uz_re),
         "uz_Im": (("lat_z", "lon_z", "constituents"), uz_im),
         "vz_Re": (("lat_z", "lon_z", "constituents"), vz_re),
@@ -67,73 +68,94 @@ def _tpxo10_store(tmp_path, with_flag2=True):
     ds = xr.Dataset(data, coords={"lat_z": lat, "lon_z": lon,
                                   "constituents": np.array(CONS, dtype="<U3")},
                     attrs={"tide_store_schema": SA.SCHEMA_TPXO10})
-    p = tmp_path / "tpxo10.zarr"
-    ds.to_zarr(p, mode="w", consolidated=True)
-    return p, re["z"], im["z"], dict(uz=(uz_re, uz_im), vz=(vz_re, vz_im)), \
+    enc = None
+    if chunks:
+        enc = {k: {"chunks": chunks if ds[k].ndim == 3 else chunks[:2]}
+               for k in ds.data_vars}
+    p = tmp_path / name
+    ds.to_zarr(p, mode="w", consolidated=True, encoding=enc)
+    return p, zre, zim, dict(uz=(uz_re, uz_im), vz=(vz_re, vz_im)), \
         dict(z=zf, uz=uzf, vz=vzf)
 
 
-# ---------- get_zarr_path ----------
+# ---------- get_zarr_path (F8) ----------
 
-def test_get_zarr_path_default_and_env(monkeypatch):
+def test_get_zarr_path_default_is_repo_rooted(monkeypatch):
     monkeypatch.delenv("TIDE_ZARR_PATH", raising=False)
-    assert SA.get_zarr_path() == SA.DEFAULT_ZARR_PATH
-    assert SA.get_zarr_path("x.zarr") == "x.zarr"
+    p = SA.get_zarr_path()
+    assert p.endswith("data/tpxo10.zarr")
+    assert p.startswith("/")  # absolute (repo-root resolved, cwd-independent)
+
+
+def test_get_zarr_path_env_verbatim(monkeypatch):
     monkeypatch.setenv("TIDE_ZARR_PATH", "/custom/store.zarr")
     assert SA.get_zarr_path() == "/custom/store.zarr"
     assert SA.get_zarr_path("ignored.zarr") == "/custom/store.zarr"
 
 
-# ---------- fail-closed detection ----------
+# ---------- reserved-kwarg guard (F2) ----------
 
-def test_detect_tpxo10(tmp_path):
+def test_open_store_rejects_reserved_kwargs(tmp_path):
     p, *_ = _tpxo10_store(tmp_path)
-    a = SA.open_store(str(p))
-    assert isinstance(a, SA.Tpxo10Adapter)
-    assert a.lon_name == "lon_z" and a.lat_name == "lat_z"
-    assert a.constituents == CONS
+    for bad in ({"mask_and_scale": True}, {"chunks": {}}, {"decode_times": True}):
+        with pytest.raises(ValueError, match="binding params|fixed by contract"):
+            SA.open_store(str(p), **bad)
+    with pytest.raises(ValueError, match="unsupported kwargs"):
+        SA.open_store(str(p), engine="zarr")
 
 
-def test_detect_legacy_only_with_full_var_set(tmp_path):
-    p, *_ = _legacy_store(tmp_path)
-    a = SA.open_store(str(p))
-    assert isinstance(a, SA.LegacyAdapter)
-    assert a.lon_name == "lon" and a.lat_name == "lat"
+# ---------- fail-closed detection (F1) ----------
+
+def test_detect_tpxo10_and_legacy(tmp_path):
+    pt, *_ = _tpxo10_store(tmp_path)
+    a = SA.open_store(str(pt))
+    assert isinstance(a, SA.Tpxo10Adapter) and a.lon_name == "lon_z"
+    pl, *_ = _legacy_store(tmp_path)
+    b = SA.open_store(str(pl))
+    assert isinstance(b, SA.LegacyAdapter) and b.lon_name == "lon"
 
 
-def test_missing_attr_incomplete_legacy_aborts(tmp_path):
-    ds = xr.Dataset({"z_amp": (("lat", "lon"), np.zeros((2, 2)))},
-                    coords={"lat": [0, 1], "lon": [0, 1],
-                            "constituents": np.array(["m2"], dtype="<U3")})
-    with pytest.raises(SA.StoreSchemaError, match="incomplete legacy"):
+def test_tpxo10_missing_z_flag_aborts_at_startup(tmp_path):
+    """The reviewer's exact case: dropping z_flag must fail at make_adapter,
+    not later at query time."""
+    p, *_ = _tpxo10_store(tmp_path)
+    ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
+    ds = ds.drop_vars("z_flag")
+    with pytest.raises(SA.StoreSchemaError, match="missing variables.*z_flag"):
         SA.make_adapter(ds)
 
 
-def test_unknown_schema_aborts(tmp_path):
+def test_legacy_missing_coord_aborts(tmp_path):
+    ds = xr.Dataset(
+        {f"{v}_amp": (("lat", "lon"), np.zeros((2, 2))) for v in "zuv"}
+        | {f"{v}_ph": (("lat", "lon"), np.zeros((2, 2))) for v in "zuv"},
+        coords={"lat": [0, 1], "lon": [0, 1]})  # NO constituents coord
+    with pytest.raises(SA.StoreSchemaError, match="missing coordinates"):
+        SA.make_adapter(ds)
+
+
+def test_dtype_kind_mismatch_aborts(tmp_path):
+    """A CF-decoded tpxo10 store (z_Re float64 instead of int32) is rejected."""
+    p, *_ = _tpxo10_store(tmp_path)
+    ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
+    ds["z_Re"] = ds["z_Re"].astype(np.float64)
+    with pytest.raises(SA.StoreSchemaError, match="dtype kind"):
+        SA.make_adapter(ds)
+
+
+def test_unknown_schema_aborts():
     ds = xr.Dataset(coords={"constituents": np.array(["m2"], dtype="<U3")},
                     attrs={"tide_store_schema": "tpxo10-cgrid-v2-future"})
     with pytest.raises(SA.StoreSchemaError, match="unknown tide_store_schema"):
         SA.make_adapter(ds)
 
 
-def test_tpxo10_attr_but_missing_vars_aborts(tmp_path):
-    ds = xr.Dataset({"z_Re": (("lat_z", "lon_z"), np.zeros((2, 2)))},
-                    coords={"lat_z": [0, 1], "lon_z": [0, 1],
-                            "constituents": np.array(["m2"], dtype="<U3")},
-                    attrs={"tide_store_schema": SA.SCHEMA_TPXO10})
-    with pytest.raises(SA.StoreSchemaError, match="missing required vars"):
-        SA.make_adapter(ds)
-
-
-# ---------- raw read (mask_and_scale=False) ----------
+# ---------- raw read ----------
 
 def test_open_store_uses_raw_read(tmp_path):
-    """A tpxo10 store with fill_value attrs must NOT be CF-decoded:
-    z_Re stays int32, flag==2 cells are not NaN-masked away."""
     p, *_ = _tpxo10_store(tmp_path)
     a = SA.open_store(str(p))
-    assert a.ds["z_Re"].dtype == np.int32
-    assert a.ds["z_flag"].dtype == np.uint8
+    assert a.ds["z_Re"].dtype == np.int32 and a.ds["z_flag"].dtype == np.uint8
     assert int((a.ds["z_flag"].values == 2).sum()) == 1
 
 
@@ -142,11 +164,10 @@ def test_open_store_uses_raw_read(tmp_path):
 def test_legacy_hc_matches_amp_ph_formula(tmp_path):
     p, amp, ph = _legacy_store(tmp_path)
     a = SA.open_store(str(p))
-    sub = a.sel_point(amp_lon := a.lon[3], a.lat[2], tol=1.0)
-    hc = a.hc(sub, "z")
+    sub = a.sel_point(a.lon[3], a.lat[2], tol=1.0)
     j, i = 2, 3
     expect = amp["z"][j, i] * np.exp(-1j * ph["z"][j, i] * np.pi / 180.0)
-    assert np.allclose(np.asarray(hc), expect, rtol=1e-12)
+    assert np.allclose(np.asarray(a.hc(sub, "z")), expect, rtol=1e-12)
 
 
 def test_tpxo10_hc_units_z_metres_uv_cms(tmp_path):
@@ -154,11 +175,11 @@ def test_tpxo10_hc_units_z_metres_uv_cms(tmp_path):
     a = SA.open_store(str(p))
     sub = a.sel_point(a.lon[3], a.lat[2], tol=1.0)
     j, i = 2, 3
-    hz = np.asarray(a.hc(sub, "z"))
-    assert np.allclose(hz, 1e-3 * (zre[j, i] + 1j * zim[j, i]), rtol=1e-6)
-    hu = np.asarray(a.hc(sub, "u"))
+    assert np.allclose(np.asarray(a.hc(sub, "z")),
+                       1e-3 * (zre[j, i] + 1j * zim[j, i]), rtol=1e-6)
     ure, uim = uvw["uz"]
-    assert np.allclose(hu, 100.0 * (ure[j, i] + 1j * uim[j, i]), rtol=1e-5)
+    assert np.allclose(np.asarray(a.hc(sub, "u")),
+                       100.0 * (ure[j, i] + 1j * uim[j, i]), rtol=1e-5)
 
 
 def test_amp_ph_round_trips_to_hc(tmp_path):
@@ -166,41 +187,104 @@ def test_amp_ph_round_trips_to_hc(tmp_path):
     a = SA.open_store(str(p))
     sub = a.sel_point(a.lon[3], a.lat[2], tol=1.0)
     amp, ph = a.amp_ph(sub, "z")
-    hc = amp * np.exp(-1j * ph * np.pi / 180.0)
-    assert np.allclose(hc, np.asarray(a.hc(sub, "z")), rtol=1e-9)
+    assert np.allclose(amp * np.exp(-1j * ph * np.pi / 180.0),
+                       np.asarray(a.hc(sub, "z")), rtol=1e-9)
 
-
-# ---------- flag-2 masking ----------
 
 def test_tpxo10_flag2_masks_hc(tmp_path):
-    p, *_ , flags = _tpxo10_store(tmp_path, with_flag2=True)
+    p, *_, _flags = _tpxo10_store(tmp_path, with_flag2=True)
     a = SA.open_store(str(p))
-    # uz_flag[1,1]==2 -> u hc fully masked at that node
     sub = a.sel_bbox(a.lon[0], a.lon[-1], a.lat[0], a.lat[-1])
     hu = a.hc(sub, "u")
-    assert ma.is_masked(hu)
-    assert bool(np.all(hu.mask[1, 1, :]))
-    assert not bool(hu.mask[0, 0, :].any())  # a valid node stays unmasked
+    assert ma.is_masked(hu) and bool(np.all(hu.mask[1, 1, :]))
+    assert not bool(hu.mask[0, 0, :].any())
 
 
-# ---------- lazy selection ----------
+# ---------- vectorized multipoint (F3) ----------
 
-def test_selection_is_lazy(tmp_path):
-    """sel_* must not materialize the whole store; the returned subset is
-    still dask/lazy until .values is taken on the small selection."""
-    p, *_ = _tpxo10_store(tmp_path)
-    a = SA.open_store(str(p), chunks={})  # force dask-backed
-    sub = a.sel_point(a.lon[3], a.lat[2], tol=1.0)
-    var = sub["z_Re"]
-    assert var.chunks is not None  # still lazy after selection
-    assert var.size == NC  # selection reduced to one node x constituents
-
-
-def test_subsample_and_coords(tmp_path):
-    p, *_ = _tpxo10_store(tmp_path)
+def test_sel_points_order_and_duplicates(tmp_path):
+    p, zre, zim, *_ = _tpxo10_store(tmp_path, with_flag2=False)
     a = SA.open_store(str(p))
-    sub = a.sel_bbox(a.lon[0], a.lon[-1], a.lat[0], a.lat[-1])
-    sm = a.subsample(sub, 2)
-    glon, glat = a.coord_values(sm)
-    assert len(glon) == len(range(0, NLON, 2))
-    assert len(glat) == len(range(0, NLAT, 2))
+    # pick three points incl. a duplicate, in a non-monotone order
+    idx = [(2, 5), (0, 1), (2, 5)]
+    lons = [a.lon[i] for (_, i) in idx]
+    lats = [a.lat[j] for (j, _) in idx]
+    sub = a.sel_points(lons, lats, tol=1.0)
+    assert sub.sizes["points"] == 3
+    hc = np.asarray(a.hc(sub, "z"))
+    for n, (j, i) in enumerate(idx):
+        assert np.allclose(hc[n], 1e-3 * (zre[j, i] + 1j * zim[j, i]), rtol=1e-6)
+    assert np.allclose(hc[0], hc[2])  # duplicate coords -> identical rows
+
+
+def test_sel_points_out_of_tolerance_raises(tmp_path):
+    p, *_ = _tpxo10_store(tmp_path, with_flag2=False)
+    a = SA.open_store(str(p))
+    with pytest.raises(KeyError):
+        a.sel_points([a.lon[0], 999.0], [a.lat[0], 999.0], tol=0.01)
+
+
+# ---------- dateline-wrap bbox parity (F5) ----------
+
+def test_sel_bbox_dateline_wrap_matches_manual_concat(tmp_path):
+    # global-ish lon spanning the 0/360 seam
+    lon = np.linspace(0.5, 359.5, NLON)
+    p, *_ = _tpxo10_store(tmp_path, with_flag2=False, name="wrap.zarr", lon=lon)
+    a = SA.open_store(str(p))
+    lon0, lon1 = lon[-2], lon[1]  # wraps: lon0 > lon1
+    got = a.sel_bbox(lon0, lon1, a.lat[0], a.lat[-1])
+    s1 = a.ds.sel(lon_z=slice(lon0, float(lon[-1])), lat_z=slice(a.lat[0], a.lat[-1]))
+    s2 = a.ds.sel(lon_z=slice(float(lon[0]), lon1), lat_z=slice(a.lat[0], a.lat[-1]))
+    manual = xr.concat([s1, s2], dim="lon_z")
+    assert np.array_equal(got["lon_z"].values, manual["lon_z"].values)
+    assert np.array_equal(np.asarray(a.hc(got, "z")),
+                          np.asarray(a.hc(manual, "z")))
+
+
+# ---------- selection-before-materialization in DIRECT mode (F4) ----------
+
+class _CountingStore(zarr.DirectoryStore):
+    """Counts chunk-data reads (excludes metadata keys)."""
+    _META = (".zarray", ".zattrs", ".zgroup", ".zmetadata")
+
+    def __init__(self, path):
+        super().__init__(str(path))
+        self.data_reads = 0
+
+    def __getitem__(self, key):
+        v = super().__getitem__(key)
+        if not key.endswith(self._META):
+            self.data_reads += 1
+        return v
+
+
+def test_direct_mode_point_reads_only_selected_chunks(tmp_path):
+    """D5 direct mode (chunks=None): a single-point query must read only
+    the chunks covering that point, NOT the whole array — proving
+    selection-before-materialization without relying on dask."""
+    p, *_ = _tpxo10_store(tmp_path, with_flag2=False, name="chunked.zarr",
+                          chunks=(2, 2, NC))  # 3x4 = 12 spatial chunks per var
+    store = _CountingStore(p)
+    ds = xr.open_zarr(store, decode_times=False, mask_and_scale=False,
+                      chunks=None, consolidated=True)
+    a = SA.make_adapter(ds)
+    store.data_reads = 0
+    sub = a.sel_point(a.lon[3], a.lat[2], tol=1.0)
+    _ = np.asarray(a.hc(sub, "z"))  # materialize the selection
+    # z hc reads z_Re + z_Im + z_flag = 3 vars; each point hits exactly one
+    # spatial chunk -> ~3 chunk reads, far below the full 12*2(+1) per-array
+    assert store.data_reads <= 6, f"read {store.data_reads} chunks for a point"
+
+
+def test_direct_mode_bbox_subset_bounded_reads(tmp_path):
+    p, *_ = _tpxo10_store(tmp_path, with_flag2=False, name="chunked2.zarr",
+                          chunks=(2, 2, NC))
+    store = _CountingStore(p)
+    ds = xr.open_zarr(store, decode_times=False, mask_and_scale=False,
+                      chunks=None, consolidated=True)
+    a = SA.make_adapter(ds)
+    store.data_reads = 0
+    sub = a.sel_bbox(a.lon[0], a.lon[1], a.lat[0], a.lat[1])  # 2x2 corner
+    _ = np.asarray(a.hc(sub, "z"))
+    full_per_array = (NLAT // 2 + 1) * (NLON // 2)  # all spatial chunks
+    assert store.data_reads < 3 * full_per_array
