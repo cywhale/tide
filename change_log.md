@@ -74,3 +74,9 @@
     -- Added AGENTS.md contributor guide and documented the new route wiring in FastAPI; requirements.txt already refreshed for package upgrades
 
 #### ver 0.2.8 Decouple shared Dask service and add reconnect-capable client
+
+#### ver 0.3.0 (in progress) TPXO9-atlas-v5 -> TPXO10-atlas-v2 data-source migration
+
+    -- New canonical store data/tpxo10.zarr (TPXO10-atlas-v2) on the native Arakawa C-grid: z_Re/z_Im on z-nodes, conversion-time D12 centering produces runtime-facing uz/vz on the z-grid; flag layers (0=source bit-exact / 1=derived inpaint or one-sided / 2=invalid); see specs/v0.3.0_tpxo10_migration_plan.md
+    -- API-behavior change (coastline reclassification): TPXO10 redefines the coastline at all C-grid nodes, so some cells that TPXO9 served (via fillna extrapolation) are land in TPXO10 and now return no value. This is a deliberate honesty improvement; ~6.5k z / 66k u / 168k v legacy-valid cells reclassified, all machine-classified at G2 (coastline-reclassification or frozen-rule isolated-no-data, 0 unexplained).
+    -- Conversion pipeline rewritten as a single deterministic streaming converter (dev_tpxo10/), retiring the dev/extract_parallel.py + dev/zarr_fillna_*.py flow; project tooling moved to uv; runtime stays on pyTMD 2.2.8 (the Zarr store is the version boundary).
