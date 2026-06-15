@@ -142,19 +142,31 @@ def _validate(ds: xr.Dataset, var_spec, coords_, monotone, label: str) -> None:
                 f"{label}: {name} dims {tuple(ds[name].dims)} != {dims} "
                 "(axis order / transposition mismatch)")
         _check_dtype(name, ds[name].dtype, dtype, label)
-    # coordinates: presence + 1-D
+    # coordinates: presence + DIMENSION coordinate (self-indexing 1-D, so
+    # xarray can build an index for nearest selection — round 21). A 1-D
+    # coord on a foreign dim (e.g. lon_z indexed by 'x') would pass a bare
+    # ndim check yet KeyError at sel() time.
     for c in coords_:
         if c not in ds.coords and c not in ds.variables:
             raise StoreSchemaError(f"{label}: missing coordinate {c}")
-        if ds[c].ndim != 1:
-            raise StoreSchemaError(f"{label}: coordinate {c} is not 1-D "
-                                   f"(ndim={ds[c].ndim})")
-    # numeric coords strictly increasing
+        if tuple(ds[c].dims) != (c,):
+            raise StoreSchemaError(
+                f"{label}: coordinate {c} is not a dimension coordinate "
+                f"(dims={tuple(ds[c].dims)}, expected ({c!r},))")
+    # numeric coords strictly increasing + finite
     for c in monotone:
         vals = np.asarray(ds[c].values)
+        if not np.all(np.isfinite(vals)):
+            raise StoreSchemaError(f"{label}: coordinate {c} has non-finite values")
         if not np.all(np.diff(vals) > 0):
             raise StoreSchemaError(
                 f"{label}: coordinate {c} is not strictly increasing")
+    # constituents: non-empty and unique (must build a unique label index)
+    cons = np.asarray(ds["constituents"].values)
+    if cons.size == 0:
+        raise StoreSchemaError(f"{label}: constituents coordinate is empty")
+    if len(set(cons.tolist())) != cons.size:
+        raise StoreSchemaError(f"{label}: constituents contains duplicates")
 
 
 def make_adapter(ds: xr.Dataset) -> "StoreAdapter":

@@ -179,6 +179,55 @@ def test_non_monotone_coord_aborts(tmp_path):
         SA.make_adapter(ds)
 
 
+def test_coord_on_foreign_dim_aborts(tmp_path):
+    """A store whose lon axis is named 'x' (lon_z is a non-dimension
+    coordinate) must be rejected at STARTUP, never surface as a sel()-time
+    KeyError (round 21). Caught by the var-dim and/or coord-dim check."""
+    p, *_ = _tpxo10_store(tmp_path)
+    ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
+    lonv = ds["lon_z"].values
+    ds = ds.drop_vars("lon_z").rename_dims({"lon_z": "x"})
+    ds = ds.assign_coords(lon_z=("x", lonv))
+    with pytest.raises(SA.StoreSchemaError,
+                       match="not a dimension coordinate|axis order"):
+        SA.make_adapter(ds)
+
+
+def test_coord_dim_check_in_isolation():
+    """Directly exercise the coord dimension-coordinate check: a minimal
+    legacy-shaped dataset whose lon coord rides a foreign dim 'x'."""
+    n = 4
+    z = np.zeros((n, n, 1))
+    base = {f"{v}_{p}": (("lat", "x", "constituents"), z)
+            for v in "zuv" for p in ("amp", "ph")}
+    ds = xr.Dataset(base, coords={
+        "lat": ("lat", np.arange(n, dtype=float)),
+        "lon": ("x", np.arange(n, dtype=float)),   # foreign dim
+        "constituents": ("constituents", np.array(["m2"], dtype="<U3"))})
+    # var dims are (lat, x, constituents) != (lat, lon, constituents) -> the
+    # var check fires; either way startup rejects (no late KeyError).
+    with pytest.raises(SA.StoreSchemaError):
+        SA.make_adapter(ds)
+
+
+def test_duplicate_constituents_aborts(tmp_path):
+    p, *_ = _tpxo10_store(tmp_path)
+    ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
+    ds = ds.assign_coords(constituents=np.array(["m2", "m2", "k1"], dtype="<U3"))
+    with pytest.raises(SA.StoreSchemaError, match="duplicates"):
+        SA.make_adapter(ds)
+
+
+def test_non_finite_coord_aborts(tmp_path):
+    p, *_ = _tpxo10_store(tmp_path)
+    ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
+    bad = ds["lon_z"].values.copy()
+    bad[2] = np.nan
+    ds = ds.assign_coords(lon_z=bad)
+    with pytest.raises(SA.StoreSchemaError, match="non-finite"):
+        SA.make_adapter(ds)
+
+
 def test_unknown_schema_aborts():
     ds = xr.Dataset(coords={"constituents": np.array(["m2"], dtype="<U3")},
                     attrs={"tide_store_schema": "tpxo10-cgrid-v2-future"})
