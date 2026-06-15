@@ -168,6 +168,65 @@ def test_rejected_bbox_reads_zero_data_chunks(tmp_path):
         f"rejection read data chunks: {_data_chunks(store)}"
 
 
+def test_rejected_dateline_bbox_reads_zero_data_chunks(tmp_path):
+    """Round 22 F1: a DATELINE-wrap request over the cap must also read
+    zero data chunks (the previous eager xr.concat read ~36 chunks before
+    the cap fired)."""
+    lon = np.linspace(0.5, 359.5, 60)
+    p = _store(tmp_path, 40, 60, chunks=(8, 8, NC), lon=lon, name="wrapbig.zarr")
+    store = _CountingStore(p)
+    ds = xr.open_zarr(store, decode_times=False, mask_and_scale=False,
+                      chunks=None, consolidated=True)
+    a = SA.make_adapter(ds)
+    store.keys_read = []
+    lon0, lon1 = lon[-20], lon[20]  # wraps, large
+    with pytest.raises(QP.BboxCapError):
+        QP.plan_bbox(a, lon0, lon1, a.lat[0], a.lat[-1], sample=1,
+                     max_cells=100)
+    assert _data_chunks(store) == set(), \
+        f"dateline rejection read data chunks: {_data_chunks(store)}"
+
+
+def test_accepted_dateline_lazy_until_materialize(tmp_path):
+    """Round 22: an ACCEPTED dateline request reads zero data chunks at the
+    planner stage; data is read only when hc() materializes."""
+    lon = np.linspace(0.5, 359.5, 60)
+    p = _store(tmp_path, 10, 60, chunks=(8, 8, NC), lon=lon, name="wrapok.zarr")
+    store = _CountingStore(p)
+    ds = xr.open_zarr(store, decode_times=False, mask_and_scale=False,
+                      chunks=None, consolidated=True)
+    a = SA.make_adapter(ds)
+    lon0, lon1 = lon[-5], lon[4]  # wraps, small (within cap)
+    store.keys_read = []
+    sub, cells = QP.plan_bbox(a, lon0, lon1, a.lat[0], a.lat[-1], sample=1,
+                              max_cells=10_000)
+    assert _data_chunks(store) == set()    # planner stage: zero data read
+    _ = np.asarray(a.hc(sub, "z"))         # materialize
+    assert len(_data_chunks(store)) > 0    # now the selected chunks are read
+
+
+def test_plan_bbox_rejects_bad_sample(tmp_path):
+    p = _store(tmp_path, 10, 10)
+    a = SA.open_store(str(p))
+    for bad in (1.5, True, 0, -1):
+        with pytest.raises(ValueError, match="sample"):
+            QP.plan_bbox(a, a.lon[0], a.lon[-1], a.lat[0], a.lat[-1],
+                         sample=bad, max_cells=10_000)
+
+
+def test_plan_bbox_empty_selection_raises(tmp_path):
+    p = _store(tmp_path, 10, 10)
+    a = SA.open_store(str(p))
+    # reversed latitude -> zero cells
+    with pytest.raises(QP.EmptyBboxError, match="zero cells"):
+        QP.plan_bbox(a, a.lon[0], a.lon[-1], a.lat[-1], a.lat[0], sample=1,
+                     max_cells=10_000)
+    # bbox fully outside the data extent -> zero cells
+    with pytest.raises(QP.EmptyBboxError):
+        QP.plan_bbox(a, 200.0, 210.0, a.lat[0], a.lat[-1], sample=1,
+                     max_cells=10_000)
+
+
 def test_accepted_then_materialize_reads_data(tmp_path):
     """Sanity counterpart: an accepted small query DOES read data chunks
     only when the caller materializes — proving the planner itself stays

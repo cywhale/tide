@@ -235,26 +235,48 @@ class StoreAdapter:
         return ds.sel({self.lon_name: lon_idx, self.lat_name: lat_idx},
                       method="nearest", tolerance=tol)
 
+    def bbox_indices(self, lon0: float, lon1: float, lat0: float, lat1: float,
+                     sample: int = 1, halo: float = 0.0):
+        """Resolve the post-halo, post-`sample` INTEGER index arrays
+        (lat_idx, lon_idx) for a bbox from the COORDINATE arrays only — no
+        data is touched, so the planner can count + cap before any
+        selection. Inclusive bounds match xarray label slicing
+        (searchsorted left/right). A dateline wrap (`lon0 > lon1`) yields a
+        concatenated lon index [lon0..end] ++ [0..lon1] BEFORE the stride,
+        so stride-across-seam matches the legacy concat-then-isel exactly
+        (round 22 F1/F5)."""
+        lat = self.lat
+        lon = self.lon
+        jlo = int(np.searchsorted(lat, lat0 - halo, side="left"))
+        jhi = int(np.searchsorted(lat, lat1 + halo, side="right"))
+        lat_idx = np.arange(jlo, jhi)[::sample]
+        ilo = int(np.searchsorted(lon, lon0 - halo, side="left"))
+        ihi = int(np.searchsorted(lon, lon1 + halo, side="right"))
+        if lon0 <= lon1:
+            lon_full = np.arange(ilo, ihi)
+        else:  # wrap the 0/360 seam: [lon0..end] then [0..lon1]
+            lon_full = np.concatenate([np.arange(ilo, len(lon)),
+                                       np.arange(0, ihi)])
+        return lat_idx, lon_full[::sample]
+
+    def isel_grid(self, lat_idx, lon_idx,
+                  constituents: Optional[Iterable] = None) -> xr.Dataset:
+        """Orthogonal (outer) integer selection on the z-grid producing a
+        (len(lat_idx), len(lon_idx)) map. Lazy until materialized; reads
+        only the chunks covering the indices (incl. the wrap pieces)."""
+        ds = self.select_constituents(self.ds, constituents)
+        return ds.isel({self.lat_name: np.asarray(lat_idx),
+                        self.lon_name: np.asarray(lon_idx)})
+
     def sel_bbox(self, lon0: float, lon1: float, lat0: float, lat1: float,
                  constituents: Optional[Iterable] = None, halo: float = 0.0
                  ) -> xr.Dataset:
-        """Rectangular bbox selection with an optional cell halo. When the
-        longitude window wraps the 0/360 seam (`lon0 > lon1` in store
-        coordinates), select the two pieces and concat along longitude in
-        ascending-wrapped order — coordinate order identical to the legacy
-        two-slice/concat (F5)."""
-        ds = self.select_constituents(self.ds, constituents)
-        lat_sl = slice(lat0 - halo, lat1 + halo)
-        if lon0 <= lon1:
-            return ds.sel({self.lon_name: slice(lon0 - halo, lon1 + halo),
-                           self.lat_name: lat_sl})
-        lon_max = float(self.ds[self.lon_name].values[-1])
-        lon_min = float(self.ds[self.lon_name].values[0])
-        s1 = ds.sel({self.lon_name: slice(lon0 - halo, lon_max),
-                     self.lat_name: lat_sl})
-        s2 = ds.sel({self.lon_name: slice(lon_min, lon1 + halo),
-                     self.lat_name: lat_sl})
-        return xr.concat([s1, s2], dim=self.lon_name)
+        """Dateline-aware bbox selection (sample=1) via index isel — lazy,
+        no eager concat (round 22). Coordinate order identical to the
+        legacy two-slice/concat."""
+        lat_idx, lon_idx = self.bbox_indices(lon0, lon1, lat0, lat1,
+                                             sample=1, halo=halo)
+        return self.isel_grid(lat_idx, lon_idx, constituents)
 
     def subsample(self, sub: xr.Dataset, step: int) -> xr.Dataset:
         return sub.isel({self.lon_name: slice(None, None, step),
