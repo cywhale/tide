@@ -489,6 +489,23 @@ provenance 13 hash↔commit-blob checks OK.
   `**/*.zarr` ignore); blobs purged from history (see below), gitignore
   hardened (`dev_tpxo10/stores/` + `**/*.zarr.partial`).
 
+### S2.4 Git history purge of accidental store blobs (round 16, finding 1)
+
+`git-filter-repo --path dev_tpxo10/stores/ --invert-paths` removed the
+25,785 `tpxo10_global.zarr.partial` chunk objects cbe773c had swept in.
+`.git` shrank 3.4 GiB → 150 MiB; no store path remains in any history;
+all pipeline-source blobs are unchanged (converter diff dfce18a↔HEAD is
+empty). filter-repo renumbers commits, so old `31f2491` → `dfce18a`
+(tree + blobs byte-identical, only the commit object changed) and gc'd
+the originals. The canonical store had recorded the now-defunct commit
+string `31f2491d…`, so its provenance pointer was dangling.
+
+**Remediation**: the canonical store is REBUILT at the new live HEAD
+(deterministic — candidate vs canonical fills were already identical),
+re-publishing a valid provenance pointer; the stale store is kept as
+`tpxo10_global_stale31f.zarr` until the rebuild re-passes the G2 chain.
+gitignore hardened so a `.partial` can never be committed again.
+
 **Gate G2 status: all technical gates GREEN.** Sole remaining item:
 owner/reviewer sign-off of the coverage-gate amendment (S2.1 — strict
 zero-violation criterion → all-violations-machine-explained, given the
