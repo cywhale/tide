@@ -58,7 +58,7 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--store", type=Path,
-                    default=repo_root / "dev_tpxo10" / "stores" / "tpxo10_global.zarr")
+                    default=repo_root / "data" / "tpxo10.zarr")  # promoted canonical (round 17)
     ap.add_argument("--old", type=Path, default=repo_root / "data" / "tpxo9.zarr")
     args = ap.parse_args()
 

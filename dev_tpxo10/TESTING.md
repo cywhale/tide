@@ -511,7 +511,7 @@ be rebuilt once from the repaired branch and must pass the full G2 chain
 before replacing that fallback. Gitignore is hardened so a `.partial`
 store cannot be committed again.
 
-### S2.5 Canonical store rebuilt at 3c5ba21 — full G2 chain re-passed (2026-06-12)
+### S2.5 Canonical store rebuilt at 3c5ba21 — full G2 chain re-passed (2026-06-15)
 
 After Codex's GitHub-ancestry repair (origin restored, 24 commits
 replayed onto real `origin/main`, merge-base `bc9e9d4`, `.git` ≈231 MiB,
@@ -525,7 +525,7 @@ raced on the shared `.partial` (mode='w' wiping another writer's
 metadata → KeyError); resolved by killing all stragglers and running a
 single isolated build.
 
-Full G2 chain on the 3c5ba21 store (`bfp882gjd`):
+Full G2 chain on the 3c5ba21 store (`cd dev_tpxo10 && uv run python scripts/verify_against_netcdf.py --store ../data/tpxo10.zarr` + verify_coverage + compare + golden):
 - T-B FULL 24/24-tile scan: PASS (tolerance 0; 14 provenance
   hash↔commit-blob checks resolve against the live commit)
 - Coverage: PASS (signed criterion — all violations classified
@@ -538,12 +538,11 @@ Full G2 chain on the 3c5ba21 store (`bfp882gjd`):
   40+40 invalid-zero; 0 skipped)
 - Idempotency: PASS byte-identical (2-tile rebuild)
 
-Fallback stores removed after the re-pass. **Gate G2: all technical
-gates GREEN at 3c5ba21**; coverage-gate amendment accepted by reviewer
-(2026-06-12). G2 ready for close-out.
+Fallback stores removed after the re-pass; canonical PROMOTED by
+atomic `os.rename` from `dev_tpxo10/stores/tpxo10_global.zarr` to the
+spec runtime path `data/tpxo10.zarr` (provenance path-independent;
+re-verified with a 4-tile T-B sample at the promoted path). **Gate G2:
+all technical gates GREEN at 3c5ba21**; coverage-gate amendment accepted by owner + reviewer
+(2026-06-15) and folded into the binding spec §4 Gate G2; canonical
+promoted to `data/tpxo10.zarr`. G2 ready for close-out.
 
-**Gate G2 status: all technical gates GREEN.** Sole remaining item:
-owner/reviewer sign-off of the coverage-gate amendment (S2.1 — strict
-zero-violation criterion → all-violations-machine-explained, given the
-TPXO10 coastline reclassification and the 4 isolated-no-data contract
-cells; 0 unexplained).
