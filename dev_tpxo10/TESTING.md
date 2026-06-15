@@ -511,6 +511,37 @@ be rebuilt once from the repaired branch and must pass the full G2 chain
 before replacing that fallback. Gitignore is hardened so a `.partial`
 store cannot be committed again.
 
+### S2.5 Canonical store rebuilt at 3c5ba21 — full G2 chain re-passed (2026-06-12)
+
+After Codex's GitHub-ancestry repair (origin restored, 24 commits
+replayed onto real `origin/main`, merge-base `bc9e9d4`, `.git` ≈231 MiB,
+repair commit `3c5ba21`), the canonical store was rebuilt at the stable
+live commit `3c5ba21` (atomic publish; `canonical=true`,
+`conversion_status=complete`, 24 tiles; fills z=356/u=618/v=595 —
+IDENTICAL across all four independent builds, cross-revision determinism
+confirmed). Root cause of the two failed rebuild attempts: leftover
+convert processes from harness-killed background tasks survived and
+raced on the shared `.partial` (mode='w' wiping another writer's
+metadata → KeyError); resolved by killing all stragglers and running a
+single isolated build.
+
+Full G2 chain on the 3c5ba21 store (`bfp882gjd`):
+- T-B FULL 24/24-tile scan: PASS (tolerance 0; 14 provenance
+  hash↔commit-blob checks resolve against the live commit)
+- Coverage: PASS (signed criterion — all violations classified
+  coastline-reclassified or frozen-rule isolated-no-data; z 6470+3,
+  u 66227+1, v 167747+0; 0 unexplained)
+- T-C global (polar BINDING): PASS (`tc_global.json` regenerated at
+  3c5ba21; deep-M2 bias −0.739 mm; binding thresholds held)
+- Golden global: PASS (z hc; u 248 + v 245 transport; uz/vz centering
+  incl. periodic wrap column, Arctic/Weddell, one-sided last row;
+  40+40 invalid-zero; 0 skipped)
+- Idempotency: PASS byte-identical (2-tile rebuild)
+
+Fallback stores removed after the re-pass. **Gate G2: all technical
+gates GREEN at 3c5ba21**; coverage-gate amendment accepted by reviewer
+(2026-06-12). G2 ready for close-out.
+
 **Gate G2 status: all technical gates GREEN.** Sole remaining item:
 owner/reviewer sign-off of the coverage-gate amendment (S2.1 — strict
 zero-violation criterion → all-violations-machine-explained, given the
