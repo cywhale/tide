@@ -475,6 +475,20 @@ flags, derived wrap-centering rtol 1e-6); reproduced fill counts
 provenance 13 hash↔commit-blob checks OK.
 `PASS verify_against_netcdf (tolerance 0 on source layer)`
 
+### S2.3 Round 16 coverage-gate rigor (2026-06-12)
+
+- legacy-valid now = finite in ANY constituent (was M2-only): u
+  reclassified 66,224 -> 66,227 (+3 cells whose M2 was invalid but other
+  constituents valid — previously dropped). z/v unchanged.
+- isolated-no-data class self-verifies the frozen §3.2+D3 rule
+  (recompute validity + distance from source), no longer inferred from
+  T-B; result unchanged (z 3 / u 1 / v 0), 0 unexplained.
+- T-C `tc_global.json` regenerated: `polar_stratum=binding_at_G2`.
+- Git history: cbe773c had accidentally swept in the in-flight round-15
+  `tpxo10_global.zarr.partial` (the `.partial` suffix escaped the
+  `**/*.zarr` ignore); blobs purged from history (see below), gitignore
+  hardened (`dev_tpxo10/stores/` + `**/*.zarr.partial`).
+
 **Gate G2 status: all technical gates GREEN.** Sole remaining item:
 owner/reviewer sign-off of the coverage-gate amendment (S2.1 — strict
 zero-violation criterion → all-violations-machine-explained, given the

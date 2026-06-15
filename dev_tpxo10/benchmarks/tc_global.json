@@ -2,7 +2,7 @@
  "_meta": {
   "seed": 20260611,
   "n": 119871,
-  "polar_stratum": "deferred to Stage 2 global store",
+  "polar_stratum": "binding_at_G2 (|lat|>60, global store)",
   "units": "mm |\u0394hc| (complex vector difference)"
  },
  "2n2": {
