@@ -13,9 +13,11 @@ is a single `TIDE_ZARR_PATH` env change + restart:
 Uniform interface (schema mapping ONLY — no resampling, no native-node
 access, no runtime regridding; D12): coordinate names; scalar-point,
 vectorized multipoint, and dateline-aware bbox selection; and
-per-variable complex harmonic constants in the SAME native units the
-legacy runtime produced (z in metres, u/v in cm/s), so downstream pyTMD
-prediction is byte-for-byte the legacy path.
+per-variable complex harmonic constants preserving the legacy units
+(z in metres, u/v in cm/s), array shape, and phase convention, so the
+downstream pyTMD prediction interface is unchanged. (TPXO10 values
+differ from TPXO9 — different model generation; true rollback byte
+parity is for the legacy store, proven by the G3 golden test.)
 
 Binding contracts:
   * RAW READ (G2 raw-read contract): stores are opened with
@@ -54,16 +56,34 @@ FLAG_INVALID = 2
 _RESERVED_OPEN_KWARGS = {"mask_and_scale", "chunks", "decode_times"}
 _ALLOWED_OPEN_KWARGS = {"consolidated", "storage_options"}
 
-# (var, coord, dtype-kind) contracts validated fail-closed at startup
-LEGACY_REQUIRED_VARS = ["z_amp", "z_ph", "u_amp", "u_ph", "v_amp", "v_ph"]
-LEGACY_REQUIRED_COORDS = ["lon", "lat", "constituents"]
-TPXO10_REQUIRED_VARS = ["z_Re", "z_Im", "uz_Re", "uz_Im", "vz_Re", "vz_Im",
-                        "z_flag", "uz_flag", "vz_flag"]
-TPXO10_REQUIRED_COORDS = ["lon_z", "lat_z", "constituents"]
-# discriminating dtype checks (kind only — robust to platform int width)
-TPXO10_DTYPE_KIND = {"z_Re": "i", "z_Im": "i", "z_flag": "u",
-                     "uz_flag": "u", "vz_flag": "u"}
-LEGACY_DTYPE_KIND = {"z_amp": "f", "z_ph": "f"}
+# Structural contracts validated fail-closed at startup (round 20): each
+# entry is var -> (expected dims tuple, expected dtype). dtype is an exact
+# numpy type for tpxo10 (locks int32/float32/uint8) or a kind string for
+# legacy float amp/ph (robust to float32/64). Dim TUPLES lock axis order
+# so a transposed store (e.g. (constituents, lat, lon)) is rejected.
+_LAT, _LON, _CON = "lat_z", "lon_z", "constituents"
+TPXO10_VAR_SPEC = {
+    "z_Re": ((_LAT, _LON, _CON), np.int32),
+    "z_Im": ((_LAT, _LON, _CON), np.int32),
+    "uz_Re": ((_LAT, _LON, _CON), np.float32),
+    "uz_Im": ((_LAT, _LON, _CON), np.float32),
+    "vz_Re": ((_LAT, _LON, _CON), np.float32),
+    "vz_Im": ((_LAT, _LON, _CON), np.float32),
+    "z_flag": ((_LAT, _LON), np.uint8),
+    "uz_flag": ((_LAT, _LON), np.uint8),
+    "vz_flag": ((_LAT, _LON), np.uint8),
+}
+TPXO10_REQUIRED_COORDS = (_LON, _LAT, _CON)
+TPXO10_MONOTONE_COORDS = (_LON, _LAT)
+LEGACY_VAR_SPEC = {
+    f"{v}_{p}": (("lat", "lon", "constituents"), "f")
+    for v in "zuv" for p in ("amp", "ph")
+}
+LEGACY_REQUIRED_COORDS = ("lon", "lat", "constituents")
+LEGACY_MONOTONE_COORDS = ("lon", "lat")
+# kept for back-compat references
+LEGACY_REQUIRED_VARS = list(LEGACY_VAR_SPEC)
+TPXO10_REQUIRED_VARS = list(TPXO10_VAR_SPEC)
 
 
 class StoreSchemaError(RuntimeError):
@@ -100,30 +120,52 @@ def open_store(path: Optional[str] = None, **open_kwargs) -> "StoreAdapter":
     return make_adapter(ds)
 
 
-def _validate(ds: xr.Dataset, vars_, coords_, dtype_kind, label: str) -> None:
-    missing_v = [v for v in vars_ if v not in ds.variables]
-    if missing_v:
-        raise StoreSchemaError(f"{label}: missing variables {missing_v}")
-    missing_c = [c for c in coords_ if c not in ds.coords and c not in ds.variables]
-    if missing_c:
-        raise StoreSchemaError(f"{label}: missing coordinates {missing_c}")
-    for name, kind in dtype_kind.items():
-        k = ds[name].dtype.kind
-        if k != kind:
+def _check_dtype(name, actual, expected, label):
+    if isinstance(expected, str):  # kind check (legacy floats)
+        if actual.kind != expected:
             raise StoreSchemaError(
-                f"{label}: {name} dtype kind {k!r} != expected {kind!r} "
+                f"{label}: {name} dtype kind {actual.kind!r} != {expected!r} "
                 "(store likely CF-decoded — open raw with mask_and_scale=False)")
+    elif actual != np.dtype(expected):  # exact (tpxo10 int32/float32/uint8)
+        raise StoreSchemaError(
+            f"{label}: {name} dtype {actual} != expected {np.dtype(expected)} "
+            "(store likely CF-decoded — open raw with mask_and_scale=False)")
+
+
+def _validate(ds: xr.Dataset, var_spec, coords_, monotone, label: str) -> None:
+    # variables: presence + exact dim-tuple (axis order) + dtype
+    for name, (dims, dtype) in var_spec.items():
+        if name not in ds.variables:
+            raise StoreSchemaError(f"{label}: missing variable {name}")
+        if tuple(ds[name].dims) != dims:
+            raise StoreSchemaError(
+                f"{label}: {name} dims {tuple(ds[name].dims)} != {dims} "
+                "(axis order / transposition mismatch)")
+        _check_dtype(name, ds[name].dtype, dtype, label)
+    # coordinates: presence + 1-D
+    for c in coords_:
+        if c not in ds.coords and c not in ds.variables:
+            raise StoreSchemaError(f"{label}: missing coordinate {c}")
+        if ds[c].ndim != 1:
+            raise StoreSchemaError(f"{label}: coordinate {c} is not 1-D "
+                                   f"(ndim={ds[c].ndim})")
+    # numeric coords strictly increasing
+    for c in monotone:
+        vals = np.asarray(ds[c].values)
+        if not np.all(np.diff(vals) > 0):
+            raise StoreSchemaError(
+                f"{label}: coordinate {c} is not strictly increasing")
 
 
 def make_adapter(ds: xr.Dataset) -> "StoreAdapter":
     schema = ds.attrs.get("tide_store_schema")
     if schema == SCHEMA_TPXO10:
-        _validate(ds, TPXO10_REQUIRED_VARS, TPXO10_REQUIRED_COORDS,
-                  TPXO10_DTYPE_KIND, f"schema {schema!r}")
+        _validate(ds, TPXO10_VAR_SPEC, TPXO10_REQUIRED_COORDS,
+                  TPXO10_MONOTONE_COORDS, f"schema {schema!r}")
         return Tpxo10Adapter(ds)
     if schema is None:
-        _validate(ds, LEGACY_REQUIRED_VARS, LEGACY_REQUIRED_COORDS,
-                  LEGACY_DTYPE_KIND,
+        _validate(ds, LEGACY_VAR_SPEC, LEGACY_REQUIRED_COORDS,
+                  LEGACY_MONOTONE_COORDS,
                   "no tide_store_schema attr -> legacy candidate")
         return LegacyAdapter(ds)
     raise StoreSchemaError(f"unknown tide_store_schema {schema!r}")

@@ -121,16 +121,15 @@ def test_tpxo10_missing_z_flag_aborts_at_startup(tmp_path):
     p, *_ = _tpxo10_store(tmp_path)
     ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
     ds = ds.drop_vars("z_flag")
-    with pytest.raises(SA.StoreSchemaError, match="missing variables.*z_flag"):
+    with pytest.raises(SA.StoreSchemaError, match="missing variable.*z_flag"):
         SA.make_adapter(ds)
 
 
 def test_legacy_missing_coord_aborts(tmp_path):
-    ds = xr.Dataset(
-        {f"{v}_amp": (("lat", "lon"), np.zeros((2, 2))) for v in "zuv"}
-        | {f"{v}_ph": (("lat", "lon"), np.zeros((2, 2))) for v in "zuv"},
-        coords={"lat": [0, 1], "lon": [0, 1]})  # NO constituents coord
-    with pytest.raises(SA.StoreSchemaError, match="missing coordinates"):
+    p, *_ = _legacy_store(tmp_path)
+    ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
+    ds = ds.drop_vars("constituents")  # drop the coord, keep the dim
+    with pytest.raises(SA.StoreSchemaError, match="missing coordinate"):
         SA.make_adapter(ds)
 
 
@@ -139,7 +138,44 @@ def test_dtype_kind_mismatch_aborts(tmp_path):
     p, *_ = _tpxo10_store(tmp_path)
     ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
     ds["z_Re"] = ds["z_Re"].astype(np.float64)
-    with pytest.raises(SA.StoreSchemaError, match="dtype kind"):
+    with pytest.raises(SA.StoreSchemaError, match="dtype.*int32"):
+        SA.make_adapter(ds)
+
+
+def test_tpxo10_transposed_dims_aborts(tmp_path):
+    """z_Re with axis order (constituents, lat_z, lon_z) must be rejected
+    (would silently misplace the constituent axis) — round 20 finding 1."""
+    p, *_ = _tpxo10_store(tmp_path)
+    ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
+    ds["z_Re"] = ds["z_Re"].transpose("constituents", "lat_z", "lon_z")
+    with pytest.raises(SA.StoreSchemaError, match="dims.*axis order"):
+        SA.make_adapter(ds)
+
+
+def test_tpxo10_flag_transposed_dims_aborts(tmp_path):
+    p, *_ = _tpxo10_store(tmp_path)
+    ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
+    ds["uz_flag"] = ds["uz_flag"].transpose("lon_z", "lat_z")
+    with pytest.raises(SA.StoreSchemaError, match="dims"):
+        SA.make_adapter(ds)
+
+
+def test_tpxo10_wrong_float_width_aborts(tmp_path):
+    """uz_Re as float64 (not float32) must be rejected (exact dtype)."""
+    p, *_ = _tpxo10_store(tmp_path)
+    ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
+    ds["uz_Re"] = ds["uz_Re"].astype(np.float64)
+    with pytest.raises(SA.StoreSchemaError, match="dtype.*float64"):
+        SA.make_adapter(ds)
+
+
+def test_non_monotone_coord_aborts(tmp_path):
+    p, *_ = _tpxo10_store(tmp_path)
+    ds = xr.open_zarr(p, decode_times=False, mask_and_scale=False, chunks=None)
+    bad = ds["lat_z"].values.copy()
+    bad[3] = bad[0] - 1.0  # break strict increase
+    ds = ds.assign_coords(lat_z=bad)
+    with pytest.raises(SA.StoreSchemaError, match="strictly increasing"):
         SA.make_adapter(ds)
 
 
@@ -244,47 +280,56 @@ def test_sel_bbox_dateline_wrap_matches_manual_concat(tmp_path):
 # ---------- selection-before-materialization in DIRECT mode (F4) ----------
 
 class _CountingStore(zarr.DirectoryStore):
-    """Counts chunk-data reads (excludes metadata keys)."""
+    """Records chunk-data read keys (excludes metadata keys)."""
     _META = (".zarray", ".zattrs", ".zgroup", ".zmetadata")
 
     def __init__(self, path):
         super().__init__(str(path))
-        self.data_reads = 0
+        self.keys_read = []
 
     def __getitem__(self, key):
         v = super().__getitem__(key)
         if not key.endswith(self._META):
-            self.data_reads += 1
+            self.keys_read.append(key)
         return v
 
 
+def _z_data_chunks(store):
+    """Chunk keys read for the z hc data variables (excludes coordinate
+    arrays, which nearest-neighbor selection legitimately scans)."""
+    return {k for k in store.keys_read
+            if k.split("/", 1)[0] in ("z_Re", "z_Im", "z_flag")}
+
+
 def test_direct_mode_point_reads_only_selected_chunks(tmp_path):
-    """D5 direct mode (chunks=None): a single-point query must read only
-    the chunks covering that point, NOT the whole array — proving
-    selection-before-materialization without relying on dask."""
+    """D5 direct mode (chunks=None): a single-point query reads ONLY the
+    data chunks covering that point — proven by exact chunk-key
+    containment, not a loose count (round 20 finding 2)."""
     p, *_ = _tpxo10_store(tmp_path, with_flag2=False, name="chunked.zarr",
-                          chunks=(2, 2, NC))  # 3x4 = 12 spatial chunks per var
+                          chunks=(2, 2, NC))  # ceil(6/2)*ceil(8/2)=12 chunks/var
     store = _CountingStore(p)
     ds = xr.open_zarr(store, decode_times=False, mask_and_scale=False,
                       chunks=None, consolidated=True)
     a = SA.make_adapter(ds)
-    store.data_reads = 0
-    sub = a.sel_point(a.lon[3], a.lat[2], tol=1.0)
-    _ = np.asarray(a.hc(sub, "z"))  # materialize the selection
-    # z hc reads z_Re + z_Im + z_flag = 3 vars; each point hits exactly one
-    # spatial chunk -> ~3 chunk reads, far below the full 12*2(+1) per-array
-    assert store.data_reads <= 6, f"read {store.data_reads} chunks for a point"
+    store.keys_read = []
+    j, i = 2, 3
+    sub = a.sel_point(a.lon[i], a.lat[j], tol=1.0)
+    _ = np.asarray(a.hc(sub, "z"))
+    lc, oc, cc = j // 2, i // 2, 0  # chunk coords of the point
+    expected = {f"z_Re/{lc}.{oc}.{cc}", f"z_Im/{lc}.{oc}.{cc}",
+                f"z_flag/{lc}.{oc}"}
+    assert _z_data_chunks(store) == expected, _z_data_chunks(store)
 
 
-def test_direct_mode_bbox_subset_bounded_reads(tmp_path):
+def test_direct_mode_bbox_subset_reads_only_selected_chunks(tmp_path):
     p, *_ = _tpxo10_store(tmp_path, with_flag2=False, name="chunked2.zarr",
                           chunks=(2, 2, NC))
     store = _CountingStore(p)
     ds = xr.open_zarr(store, decode_times=False, mask_and_scale=False,
                       chunks=None, consolidated=True)
     a = SA.make_adapter(ds)
-    store.data_reads = 0
-    sub = a.sel_bbox(a.lon[0], a.lon[1], a.lat[0], a.lat[1])  # 2x2 corner
+    store.keys_read = []
+    sub = a.sel_bbox(a.lon[0], a.lon[1], a.lat[0], a.lat[1])  # 2x2 corner chunk
     _ = np.asarray(a.hc(sub, "z"))
-    full_per_array = (NLAT // 2 + 1) * (NLON // 2)  # all spatial chunks
-    assert store.data_reads < 3 * full_per_array
+    expected = {"z_Re/0.0.0", "z_Im/0.0.0", "z_flag/0.0"}
+    assert _z_data_chunks(store) == expected, _z_data_chunks(store)

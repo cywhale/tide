@@ -66,3 +66,5 @@ data_src/
 # zarr stores (the .partial suffix escapes **/*.zarr — round 16)
 dev_tpxo10/stores/
 **/*.zarr.partial
+
+**/.DS_Store
