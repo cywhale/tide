@@ -311,7 +311,10 @@ async def get_tide(
             for var in variables:
                 unit = 'cm' if var == 'z' else ''
                 amp, ph = config.adapter.amp_ph(dsub, var)
-                ts = get_tide_series(np.asarray(amp), np.asarray(ph),
+                # fill masked (TPXO10 flag==2 invalid) to NaN, NOT 0, so the
+                # prediction core treats it as missing (round 23 F1).
+                ts = get_tide_series(np.ma.filled(amp, np.nan),
+                                     np.ma.filled(ph, np.nan),
                                      cons, tide_time, format="netcdf",
                                      unit=unit, drop_mask=True)
                 tide[var] = ts
@@ -535,18 +538,20 @@ def get_constituent_vec(
            'grid_lat': np.asarray(dsub[adapter.lat_name].values).tolist()}
 
     for TYPE in type:
-        amp_all, ph_all = adapter.amp_ph(dsub, TYPE)   # (npoints, nc)
+        amp_all, ph_all = adapter.amp_ph(dsub, TYPE)   # (npoints, nc) masked
         hc_all = adapter.hc(dsub, TYPE) if 'hc' in vars else None
         for idx, const in enumerate(constituent):
             key = f"{TYPE}_{const}"
+            # fill masked (TPXO10 flag==2 invalid) to NaN -> null in JSON,
+            # never 0 (round 23 F1).
             if 'amp' in vars:
-                out[key+"_amp"] = np.asarray(amp_all[..., idx]).tolist()
+                out[key+"_amp"] = np.ma.filled(amp_all[..., idx], np.nan).tolist()
             if 'ph' in vars:
-                out[key+"_ph"] = np.asarray(ph_all[..., idx]).tolist()
+                out[key+"_ph"] = np.ma.filled(ph_all[..., idx], np.nan).tolist()
             if 'hc' in vars:
-                hc = np.asarray(hc_all[..., idx])
-                out[key+"_real"] = hc.real.tolist()
-                out[key+"_imag"] = hc.imag.tolist()
+                hc = np.ma.filled(hc_all[..., idx], np.nan + 1j*np.nan)
+                out[key+"_real"] = np.asarray(hc.real).tolist()
+                out[key+"_imag"] = np.asarray(hc.imag).tolist()
     return out
 
 
@@ -573,11 +578,11 @@ def get_constituent(adapter, dsub, lon, lat, vars=['amp', 'ph'],
         hc_all = adapter.hc(dsub, TYPE)
         for idx, const in enumerate(constituent):
             key = f"{const}_{TYPE}"
-            amplitudes[key] = float(np.asarray(amp_all[..., idx]).ravel())
-            phase[key] = float(np.asarray(ph_all[..., idx]).ravel())
-            hc = np.asarray(hc_all[..., idx])
-            imag[key] = float(hc.imag.ravel())
-            real[key] = float(hc.real.ravel())
+            amplitudes[key] = float(np.ma.filled(amp_all[..., idx], np.nan).ravel())
+            phase[key] = float(np.ma.filled(ph_all[..., idx], np.nan).ravel())
+            hc = np.ma.filled(hc_all[..., idx], np.nan + 1j*np.nan)
+            imag[key] = float(np.asarray(hc.imag).ravel())
+            real[key] = float(np.asarray(hc.real).ravel())
 
     if 'amp' in vars:
         out["amp"] = amplitudes

@@ -36,6 +36,7 @@ def _serve_point(zarr_path):
 
     os.chdir(REPO_ROOT)
     os.environ["TIDE_ZARR_PATH"] = str(zarr_path)
+    os.environ["TIDE_DASK_DISABLE"] = "1"   # fast startup; no scheduler in tests
     try:
         import importlib
 

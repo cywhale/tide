@@ -267,6 +267,20 @@ def test_tpxo10_hc_units_z_metres_uv_cms(tmp_path):
                        100.0 * (ure[j, i] + 1j * uim[j, i]), rtol=1e-5)
 
 
+def test_amp_ph_carries_mask_for_flag2(tmp_path):
+    """round 23 F1: amp_ph must carry the flag==2 mask so callers can fill
+    NaN (not 0) at the boundary. np.ma.filled(.., nan) must be NaN — never
+    the on-disk 0 — at the invalid node."""
+    p, *_ = _tpxo10_store(tmp_path, with_flag2=True)  # uz_flag[1,1]==2
+    a = SA.open_store(str(p))
+    sub = a.sel_bbox(a.lon[0], a.lon[-1], a.lat[0], a.lat[-1])
+    amp, ph = a.amp_ph(sub, "u")
+    assert ma.is_masked(amp) and bool(np.all(amp.mask[1, 1, :]))
+    filled = np.ma.filled(amp, np.nan)
+    assert bool(np.all(np.isnan(filled[1, 1, :])))         # invalid -> NaN
+    assert not np.isnan(filled[0, 0, :]).any()             # valid stays real
+
+
 def test_amp_ph_round_trips_to_hc(tmp_path):
     p, *_ = _tpxo10_store(tmp_path, with_flag2=False)
     a = SA.open_store(str(p))

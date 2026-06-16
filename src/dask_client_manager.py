@@ -19,11 +19,20 @@ class DaskClientManager:
         self._log = logging.getLogger(__name__)
 
     def _connect(self):
+        # Fast path (round 23 F3): skip the connect entirely when dask is
+        # disabled (tests / single-process runs), avoiding the multi-second
+        # connect timeout when no scheduler is reachable. The data paths do
+        # not require a dask client.
+        if os.getenv("TIDE_DASK_DISABLE", "").strip().lower() in ("1", "true", "yes"):
+            self._log.info("Dask disabled via TIDE_DASK_DISABLE; no client.")
+            self.client = None
+            return None
         try:
             self.client = Client(
                 self.scheduler_address,
                 name=self.service_name,
-                set_as_default=True
+                set_as_default=True,
+                timeout="5s",   # fail fast if no scheduler (was ~30s default)
             )
 
             # Configure unique key prefix for this service

@@ -184,8 +184,17 @@ def make_adapter(ds: xr.Dataset) -> "StoreAdapter":
 
 
 def _amp_ph_from_hc(hc: np.ndarray):
-    amp = np.abs(hc)
-    ph = np.rad2deg(-np.angle(hc)) % 360.0
+    """Polar form (amp, phase[deg]) carrying hc's mask EXPLICITLY, so an
+    invalid (flag==2) cell stays masked through `np.angle` (which does not
+    reliably preserve the mask) — callers fill it to NaN at the
+    serialization/prediction boundary, never to 0 (round 23 F1)."""
+    mask = ma.getmaskarray(hc) if ma.isMaskedArray(hc) else None
+    data = ma.getdata(hc)
+    amp = np.abs(data)
+    ph = np.rad2deg(-np.angle(data)) % 360.0
+    if mask is not None:
+        amp = ma.array(amp, mask=mask)
+        ph = ma.array(ph, mask=mask)
     return amp, ph
 
 

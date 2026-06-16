@@ -175,7 +175,10 @@ def get_tide_map(adapter, dsub, tide_time, format='netcdf', type=['u', 'v'], dro
     return tide
 
 
-# Note dz is the data from Zarr and tide_time will get its first element
+# LEGACY / UNUSED (v0.3.0 Stage 3): predates the adapter-based get_tide_map
+# signature `(adapter, dsub, tide_time, ...)` and the lon/lat schema names;
+# not called anywhere in the runtime. Kept for reference only — do NOT call
+# without migrating it to the adapter + query planner first.
 def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5, normalize=True):
     grid_sz = 1/30
     dsub = dz.sel(lon=slice(x0-grid_sz, x1+grid_sz),

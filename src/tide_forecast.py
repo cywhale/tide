@@ -249,8 +249,9 @@ def _select_point_constants(lon: float, lat: float) -> Tuple[np.ndarray, np.ndar
         ) from exc
 
     z_amp, z_ph = config.adapter.amp_ph(dsub, "z")
-    z_amp = np.squeeze(np.asarray(z_amp))
-    z_ph = np.squeeze(np.asarray(z_ph))
+    # fill masked (TPXO10 flag==2 invalid) to NaN, NOT 0 (round 23 F1)
+    z_amp = np.squeeze(np.ma.filled(z_amp, np.nan))
+    z_ph = np.squeeze(np.ma.filled(z_ph, np.nan))
 
     if z_amp.ndim != 1 or z_ph.ndim != 1:
         raise HTTPException(
