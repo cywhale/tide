@@ -15,6 +15,9 @@ import json
 from datetime import datetime, timedelta
 from src.model_utils import get_tide_time, get_tide_series, get_tide_map
 import src.config as config
+from src import store_adapter
+from src.store_adapter import get_zarr_path
+from src.query_planner import plan_bbox, get_max_bbox_cells, BboxCapError, EmptyBboxError
 # from dask.distributed import Client
 # client = Client('tcp://localhost:8786')
 from src.dask_client_manager import get_dask_client, close_dask_client
@@ -28,7 +31,7 @@ def generate_custom_openapi():
     openapi_schema = get_openapi(
         title="ODB Tide API",
         version="1.0.0",
-        description=('Open API to query TPXO9-v5 global tide models, compiled by ODB. Reference: Egbert, Gary D., and Svetlana Y. Erofeeva. "Efficient inverse modeling of barotropic ocean tides." Journal of Atmospheric and Oceanic Technology 19.2 (2002): 183-204.\n' +
+        description=('Open API to query TPXO global tide models (TPXO10-atlas-v2 by default; TPXO9-atlas-v5 supported), compiled by ODB. Reference: Egbert, Gary D., and Svetlana Y. Erofeeva. "Efficient inverse modeling of barotropic ocean tides." Journal of Atmospheric and Oceanic Technology 19.2 (2002): 183-204.\n' +
                      '* The tide model predictions provided by this API are for reference purposes only and are intended to serve as a preliminary resource, not to be considered as definitive for scientific research or risk assessment. Users should understand that no legal liability or responsibility is assumed by the provider of this API for any decisions made based on reliance on this data. Users should conduct their own independent analysis and verification before relying on the data.\n' +
                      '* 本API提供的模型預測數據僅供參考之用，旨在做為初步的資訊來源，而不應被視為科學研究或風險評估的決定性依據。使用者須理解，對於依賴這些數據所做出的任何決策，本API提供者不承擔任何法律責任或義務。使用者在依賴這些數據前，應進行獨立分析和驗證。\n' +
                      '* Parts of this API utilize functions provided by pyTMD (https://github.com/tsutterley/pyTMD). We acknowledge and thank the original authors for their contributions.'),
@@ -47,16 +50,21 @@ def generate_custom_openapi():
 # async def startup():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    config.dz = xr.open_zarr('data/tpxo9.zarr', chunks='auto', decode_times=False)
+    # v0.3.0 Stage 3 (D9): open via the schema-keyed store adapter; the
+    # store is resolved by TIDE_ZARR_PATH (default data/tpxo10.zarr) so a
+    # rollback to data/tpxo9.zarr is a single env change + restart.
+    config.adapter = store_adapter.open_store(get_zarr_path())
+    config.dz = config.adapter.ds           # coords/metadata access
     config.gridSz = 1/30
     config.timeLimit = 30
     config.LON_RANGE_LIMIT = 45
     config.LAT_RANGE_LIMIT = 45
     config.AREA_LIMIT = config.LON_RANGE_LIMIT * config.LAT_RANGE_LIMIT
-    config.cons = config.dz.coords['constituents'].values
+    config.cons = np.asarray(config.adapter.constituents)
+    config.MAX_BBOX_CELLS = get_max_bbox_cells()
     yield
     # below code to execute when app is shutting down
-    config.dz.close()
+    config.adapter.ds.close()
     close_dask_client("tideapi")
 
 
@@ -206,7 +214,7 @@ async def get_tide(
         description="Allowed harmonic constituents are 'q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm'. If none, all 15 constituents will be included in evaluation. See also: https://www.tpxo.net/global")
 ):
     """
-    Query tide from TPXO9-atlas-v5 model by longitude/latitude/date (in JSON).
+    Query tide from the TPXO global tide model (TPXO10-atlas-v2 by default) by longitude/latitude/date (in JSON).
 
     #### Usage
     * One-point tide height with time-span limitation (<= 30 days, hourly data): e.g. /tide?lon0=125&lat0=15&start=2023-07-25&end=2023-07-26T01:30:00.000
@@ -288,44 +296,24 @@ async def get_tide(
             if lon0 >= 0 and lon0 < zero_nearest_pt:  # Consider values very close to 0 as 0
                 lon0 = zero_nearest_pt
 
-            # Create the selection indexers including both spatial and constituent dimensions
-            ds_cons = config.dz.sel(constituents=cons)
-
-            # Then create a dataset with a single point
-            point_ds = xr.Dataset(
-                coords={
-                    'lon': [lon0],
-                    'lat': [lat0]
-                }
-            )
-
-            # Use sel to find the nearest point
-            dsub = ds_cons.sel(
-                lon=point_ds.lon,
-                lat=point_ds.lat,
-                method="nearest",
-                tolerance=tol
-            )
-            # else:
-            #     dsub = config.dz.sel(lon=slice(lon0-0.5*config.gridSz, lon0+0.5*config.gridSz),
-            #                         lat=slice(lat0-0.5*config.gridSz, lat0+0.5*config.gridSz),
-            #                         constituents=cons)
+            # v0.3.0 Stage 3: nearest-point selection + per-variable hc via
+            # the adapter; the prediction core (get_tide_series) is unchanged.
+            try:
+                dsub = config.adapter.sel_point(lon0, lat0, tol, constituents=cons)
+            except KeyError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Requested point is outside the tide grid coverage.") from exc
+            glon = np.atleast_1d(dsub[config.adapter.lon_name].values)
+            glat = np.atleast_1d(dsub[config.adapter.lat_name].values)
 
             tide = {}
             for var in variables:
-                amp_var = f'{var}_amp'
-                ph_var = f'{var}_ph'
-                unit = ""
-                if var == 'z':
-                    unit = 'cm'
-
-                #if findNear:
-                #   ts = get_tide_series(dsub[amp_var].values, dsub[ph_var].values,
-                #                     cons, tide_time, format="netcdf", unit=unit, drop_mask=True)
-                #else:
-                ts = get_tide_series(dsub[amp_var].isel(lon=0, lat=0).values,
-                                     dsub[ph_var].isel(lon=0, lat=0).values,
-                                     cons, tide_time, format="netcdf", unit=unit, drop_mask=True)
+                unit = 'cm' if var == 'z' else ''
+                amp, ph = config.adapter.amp_ph(dsub, var)
+                ts = get_tide_series(np.asarray(amp), np.asarray(ph),
+                                     cons, tide_time, format="netcdf",
+                                     unit=unit, drop_mask=True)
                 tide[var] = ts
         else:
             # Bounding box
@@ -351,40 +339,30 @@ async def get_tide(
                 orig_lon1 = lon1
                 lon1, lat1 = to_global_lonlat(lon1, lat1)
 
-            if np.sign(orig_lon0) != np.sign(orig_lon1):
-                # print("Cross-zero lon, lat:", lon0, lat0, lon1, lat1, orig_lon0, orig_lon1)
-                # Requested area crosses the zero meridian
-                # The following should not happen because lon1 < lon0 had been swapped aboving
-                #if orig_lon1 < 0:
-                #    # Swap if orig_lon1 < 0 and now 180 < lon1 < 360
-                #    lon0, lon1 = lon1, lon0
-                #    orig_lon0, orig_lon1 = orig_lon1, orig_lon0
-                subset1 = config.dz.sel(
-                    lon=slice(lon0-0.5*config.gridSz, 360),
-                    lat=slice(lat0-0.5*config.gridSz, lat1+0.5*config.gridSz),
-                    constituents=cons)
-                subset2 = config.dz.sel(
-                    lon=slice(0, lon1+0.5*config.gridSz),
-                    lat=slice(lat0-0.5*config.gridSz, lat1+0.5*config.gridSz),
-                    constituents=cons)
-                ds1 = xr.concat([subset1, subset2], dim='lon')
-            else:
-                # Requested area doesn't cross the zero meridian
-                # print("Current subsetting lon, lat:", lon0, lat0, lon1, lat1)
-                ds1 = config.dz.sel(lon=slice(lon0-0.5*config.gridSz, lon1+0.5*config.gridSz),
-                                    lat=slice(lat0-0.5*config.gridSz, lat1+0.5*config.gridSz),
-                                    constituents=cons)
-
-            dsub = ds1.isel(lon=slice(None, None, sample), lat=slice(None, None, sample))
+            # v0.3.0 Stage 3: the unified planner is the ONLY bbox/map path.
+            # It resolves the post-halo/post-sample indices from coordinates
+            # (dateline-wrap aware: lon0 > lon1 after the normalization above
+            # means a cross-zero window), enforces MAX_BBOX_CELLS BEFORE any
+            # materialization, and rejects an empty selection — both as
+            # HTTP 400.
+            try:
+                dsub, _cells = plan_bbox(
+                    config.adapter, lon0, lon1, lat0, lat1, sample,
+                    constituents=cons, halo=0.5*config.gridSz,
+                    max_cells=config.MAX_BBOX_CELLS)
+            except (BboxCapError, EmptyBboxError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            glon, glat = config.adapter.coord_values(dsub)
             # if not single-pont mode, only allow one datetime moment
             tide_time = tide_time[0:1]
             dtime = dtime[0:1]
-            tide = get_tide_map(dsub, tide_time, format='netcdf', type=variables, drop_dim=True)
+            tide = get_tide_map(config.adapter, dsub, tide_time,
+                                format='netcdf', type=variables, drop_dim=True)
             output_mode = 'map'
 
         #if mode is None or mode != 'row':
         #print(tide)
-        out = tide_to_output(tide, dsub.coords['lon'].values, dsub.coords['lat'].values, dtime, variables,
+        out = tide_to_output(tide, glon, glat, dtime, variables,
                              # allow both 'map' and 'time' mode can have truncate mode, 202504
                              output_mode + ',truncate' if 'truncate' in mode else output_mode,
                              # output_mode + ',truncate' if 'truncate' in mode and output_mode == 'map' else output_mode,
@@ -546,40 +524,39 @@ def const_to_output_vec(data_dict, mode):
 
 
 def get_constituent_vec(
-        dsub, loni, lati, vars=['amp', 'ph'],
+        adapter, dsub, loni, lati, vars=['amp', 'ph'],
         constituent=['q1', 'o1', 'p1', 'k1', 'n2', 'm2', 's1', 's2', 'k2', 'm4', 'ms4', 'mn4', '2n2', 'mf', 'mm'],
         type=['u', 'v']):
+    # v0.3.0 Stage 3: amp/ph (and hc real/imag) come from the adapter in
+    # the store's native units, so the response is schema-agnostic.
     out = {'longitude': loni.tolist(),
            'latitude': lati.tolist(),
-           'grid_lon': dsub['lon'].values.tolist(),
-           'grid_lat': dsub['lat'].values.tolist()}
-    # print("Debug dsub: ", dsub)
-    # print("Debug out: ", out)
-    # print("Debug amp", dsub['u_amp'].values)
+           'grid_lon': np.asarray(dsub[adapter.lon_name].values).tolist(),
+           'grid_lat': np.asarray(dsub[adapter.lat_name].values).tolist()}
 
     for TYPE in type:
-        amp_all = dsub[TYPE+'_amp'].values
-        ph_all = dsub[TYPE+'_ph'].values
+        amp_all, ph_all = adapter.amp_ph(dsub, TYPE)   # (npoints, nc)
+        hc_all = adapter.hc(dsub, TYPE) if 'hc' in vars else None
         for idx, const in enumerate(constituent):
             key = f"{TYPE}_{const}"
-            amp = amp_all[..., idx]
-            ph = ph_all[..., idx]
-            cph = -1j * ph * np.pi / 180.0
-            hc = amp * np.exp(cph)
             if 'amp' in vars:
-                out[key+"_amp"] = amp.tolist()
+                out[key+"_amp"] = np.asarray(amp_all[..., idx]).tolist()
             if 'ph' in vars:
-                out[key+"_ph"] = ph.tolist()
+                out[key+"_ph"] = np.asarray(ph_all[..., idx]).tolist()
             if 'hc' in vars:
+                hc = np.asarray(hc_all[..., idx])
                 out[key+"_real"] = hc.real.tolist()
                 out[key+"_imag"] = hc.imag.tolist()
     return out
 
 
-def get_constituent(dz, lon, lat, vars=['amp', 'ph'],
+def get_constituent(adapter, dsub, lon, lat, vars=['amp', 'ph'],
                     constituent=['q1', 'o1', 'p1', 'k1', 'n2', 'm2', 's1', 's2', 'k2', 'm4', 'ms4', 'mn4', '2n2', 'mf', 'mm'],
                     type=['u', 'v']):
-    # Note dz should be a filtered zarr dataset including only filtered constituents
+    # v0.3.0 Stage 3: legacy single-point constituent helper (currently
+    # unused by the endpoint, which uses get_constituent_vec); migrated to
+    # the adapter so no schema-specific variable names remain. `dsub` is an
+    # adapter point selection already filtered to `constituent`.
     amplitudes = {}
     phase = {}
     imag = {}
@@ -588,22 +565,17 @@ def get_constituent(dz, lon, lat, vars=['amp', 'ph'],
     lon = lon-360 if lon > 180 else lon
     out['longitude'] = lon
     out['latitude'] = lat
-    # Just debug if (lon == 120.1375 and lat == 23.61861):
-    #                print("Find target: ", dz)
-    # vars = list(set([var.strip() for var in mode.split(',') if var.strip() in ['amp', 'ph', 'hc']]))
     if not vars:
         vars = ['amp', 'ph']
 
     for TYPE in type:
-        for const in constituent:
+        amp_all, ph_all = adapter.amp_ph(dsub, TYPE)
+        hc_all = adapter.hc(dsub, TYPE)
+        for idx, const in enumerate(constituent):
             key = f"{const}_{TYPE}"
-            amp = dz[TYPE+'_amp'].sel(constituents=const).values
-            amplitudes[key] = float(amp.ravel())
-            ph = dz[TYPE+'_ph'].sel(constituents=const).values
-            phase[key] = float(ph.ravel())
-            cph = -1j * ph * np.pi / 180.0
-            # Calculate constituent oscillation
-            hc = amp * np.exp(cph)
+            amplitudes[key] = float(np.asarray(amp_all[..., idx]).ravel())
+            phase[key] = float(np.asarray(ph_all[..., idx]).ravel())
+            hc = np.asarray(hc_all[..., idx])
             imag[key] = float(hc.imag.ravel())
             real[key] = float(hc.real.ravel())
 
@@ -629,7 +601,7 @@ class ConstMinResponse(BaseModel):
 
 
 @app.get("/api/tide/const", response_model=List[Union[ConstMinResponse, dict]],
-         tags=["Tide"], summary="Get harmonic constituents of TPXO9 model")
+         tags=["Tide"], summary="Get harmonic constituents of the TPXO model")
 async def get_tide_const(
     lon: Optional[str] = Query(
             None,
@@ -658,7 +630,7 @@ async def get_tide_const(
                     'Example: {"longitude":[122.36,122.47,122.56,122.66],"latitude":[25.02,24.82,24.72,24.62]}')
 ):
     """
-    Query harmonic constituents from TPXO9-atlas-v5 model by longitude/latitude.
+    Query harmonic constituents from the TPXO global tide model (TPXO10-atlas-v2 by default) by longitude/latitude.
 
     #### Usage
     * e.g. /tide/const?lon=122.36,122.47&lat=25.02,24.82&constituent=k1,m2,n2,o1,p1,s2&complex=amp,ph,hc&append=z,u,v
@@ -762,47 +734,20 @@ async def get_tide_const(
         tol = 0.5*config.gridSz
 
 
-    #pre-subsetting if bounding box within 45 x 45 degrees
-    if not onlyOnePt:
-        # min_lon, max_lon = min(loni), max(loni)
-        # min_lat, max_lat = min(lati), max(lati)
-        # lon_rng = max_lon - min_lon
-        # lat_rng = max_lat - min_lat
-        # if (lon_rng > config.LON_RANGE_LIMIT and lat_rng > config.LAT_RANGE_LIMIT) or (
-        #     lon_rng * lat_rng > config.AREA_LIMIT) or np.sign(min_lon) != np.sign(max_lon):
-        #    # Note if sign is different, do pre-subset may cause error because we must use slice in ds.sel
-        #    ds = config.dz.sel(constituents=cons)
-        # else:
-        #    min_lon, max_lon = min(mlon), max(mlon)
-        #    ds = config.dz.sel(lon=slice(min_lon-0.5*config.gridSz, max_lon+0.5*config.gridSz),
-        #                       lat=slice(min_lat-0.5*config.gridSz, max_lat+0.5*config.gridSz),
-        #                       constituents=cons)
-        # vectorized version
-        # Create a multi-dimensional coordinate array for vectorized selection
-        coords = xr.DataArray(np.arange(len(mlon)),
-                    coords={'points_lon': ('points', mlon),
-                            'points_lat': ('points', mlat)}, dims='points')
-        # print("Points Lon Full Precision:", coords['points_lon'].values)
-        # print("Points Lat Full Precision:", coords['points_lat'].values)
-        dsub = config.dz.sel(lon=coords.points_lon, lat=coords.points_lat, 
-                             method="nearest", tolerance=tol
-        ).sel(constituents=cons)
-    else:
-        coords = xr.DataArray([0],
-            coords={
-                'points_lon': ('points', mlon),
-                'points_lat': ('points', mlat)
-            }, dims='points')
+    # v0.3.0 Stage 3: vectorized point-paired (NOT Cartesian) nearest
+    # selection via the adapter — the /api/tide/const access pattern. Used
+    # for both single- and multi-point requests (this is NOT a bbox/map
+    # query and is never routed through plan_bbox).
+    try:
+        dsub = config.adapter.sel_points(mlon, mlat, tol, constituents=cons)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="One or more requested points are outside the tide grid "
+                   "coverage (beyond the selection tolerance).") from exc
 
-        dsub = config.dz.sel(
-            lon=coords.points_lon,
-            lat=coords.points_lat,
-            method="nearest",
-            tolerance=tol
-        ).sel(constituents=cons)        
-        # print("One point coords: ", mlon, mlat, coords)    
-
-    out = get_constituent_vec(dsub, loni, lati, vars=pars, constituent=cons, type=variables)
+    out = get_constituent_vec(config.adapter, dsub, loni, lati,
+                              vars=pars, constituent=cons, type=variables)
 
     if mode is not None and 'object' in mode:
         # Serialize the data to JSON

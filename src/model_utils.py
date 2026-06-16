@@ -131,28 +131,23 @@ def time_series_for_constituents(t, hc, constituents, deltat=0.0):
 
 
 # Note dz is the data from Zarr
-def get_tide_map(dz, tide_time, format='netcdf', type=['u', 'v'], drop_dim=False):
+def get_tide_map(adapter, dsub, tide_time, format='netcdf', type=['u', 'v'], drop_dim=False):
+    # v0.3.0 Stage 3: variable access goes through the store adapter (D9)
+    # so this works unchanged across schemas. `adapter.hc(dsub, TYPE)`
+    # returns the masked complex harmonic constants in the legacy units
+    # (z metres, u/v cm/s) the prediction core already expects.
     DELTAT = np.zeros_like(tide_time)
-    c = dz.coords['constituents'].values
-    nx = dz.coords['lon'].size
-    ny = dz.coords['lat'].size
+    c = np.asarray(dsub.coords['constituents'].values)
+    ny, nx = adapter.grid_shape(dsub)
     timelen = len(tide_time)
     tide = {}
 
     for TYPE in type:
-        amp = dz[TYPE+'_amp'].values
-        ph = dz[TYPE+'_ph'].values
-        shpx = amp.shape
-        ampx = amp.reshape((shpx[0] * shpx[1], shpx[2]))
-        phx = ph.reshape((shpx[0] * shpx[1], shpx[2]))
-        # calculate complex phase in radians for Euler's
-        cph = -1j * phx * np.pi / 180.0
-        # calculate constituent oscillation
-        hc = ampx * np.exp(cph)
-        # Create a mask where values are NA # or 0 #modified v0.1.1 let it contribute 0, not NA
-        mask = np.isnan(hc) # | (hc == 0)
-        # Convert hc to a masked array
-        hc = ma.array(hc, mask=mask)  # mask=False
+        hc2d = adapter.hc(dsub, TYPE)            # (ny, nx, nc) masked
+        shpx = hc2d.shape
+        hc = hc2d.reshape((shpx[0] * shpx[1], shpx[2]))
+        if not ma.isMaskedArray(hc):
+            hc = ma.array(hc, mask=np.isnan(hc))
 
         if drop_dim:
             TIDE = predict.map(tide_time[0], hc, c,
