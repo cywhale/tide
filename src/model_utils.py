@@ -175,49 +175,16 @@ def get_tide_map(adapter, dsub, tide_time, format='netcdf', type=['u', 'v'], dro
     return tide
 
 
-# LEGACY / UNUSED (v0.3.0 Stage 3): predates the adapter-based get_tide_map
-# signature `(adapter, dsub, tide_time, ...)` and the lon/lat schema names;
-# not called anywhere in the runtime. Kept for reference only — do NOT call
-# without migrating it to the adapter + query planner first.
-def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5, normalize=True):
-    grid_sz = 1/30
-    dsub = dz.sel(lon=slice(x0-grid_sz, x1+grid_sz),
-                  lat=slice(y0-grid_sz, y1+grid_sz))
-    gtide = get_tide_map(dsub, tide_time[0:1])
-
-    t = 0
-    nx = dsub.coords['lon'].size
-    ny = dsub.coords['lat'].size
-    glon, glat = np.meshgrid(
-        dsub.coords['lon'].values, dsub.coords['lat'].values)
-
-    # Reshape u and v to 2D
-    u0 = gtide['u'][:, :, t]
-    v0 = gtide['v'][:, :, t]
-
-    # Create a grid of indices for subsetting
-    X, Y = np.meshgrid(np.arange(nx), np.arange(ny))
-
-    # Calculate magnitude of the current
-    magnitude = np.sqrt(u0**2 + v0**2)
-    # Normalize the arrows to create a uniform arrow size across the plot
-    if normalize:
-        u = u0/magnitude
-        v = v0/magnitude
-    else:
-        u = u0
-        v = v0
-
-    n = mask_grid
-    mask = (X % n == 0) & (Y % n == 0)
-
-    x = glon[mask]
-    y = glat[mask]
-    u = u[mask]
-    v = v[mask]
-    mag = magnitude[mask]
-
-    return x, y, u, v, mag
+def get_current_map(*args, **kwargs):
+    # LEGACY / RETIRED (v0.3.0 Stage 3): the original quiver-map helper
+    # predates the adapter-based get_tide_map signature and the C-grid
+    # schema. It is not used by the runtime; fail loudly rather than
+    # surface a confusing signature error if some external caller revives
+    # it. Reinstate against the adapter + query planner if ever needed.
+    raise NotImplementedError(
+        "get_current_map was retired in v0.3.0; rewrite it against the "
+        "store adapter (D9) + query planner before use. See "
+        "dev/legacy_tpxo9/ for the pre-migration TPXO9 tooling.")
 
 
 # Ref/modified from pyTMD.interpolate.spline()

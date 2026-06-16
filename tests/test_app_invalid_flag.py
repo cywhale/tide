@@ -56,6 +56,10 @@ def tpxo10_app(tmp_path, monkeypatch):
 
     monkeypatch.setenv("TIDE_ZARR_PATH", str(store))
     monkeypatch.setenv("TIDE_DASK_DISABLE", "1")
+    # mock the USNO sun/moon dependency so forecast tests never touch the
+    # network (reviewer suggestion round 23)
+    import src.tide_forecast as tf
+    monkeypatch.setattr(tf, "_fetch_usno_oneday", lambda *a, **k: (None, ""))
     from fastapi.testclient import TestClient
     import tide_app
     importlib.reload(tide_app)
