@@ -26,11 +26,11 @@ CWA_FIXTURE = {
                     "StationLatitude": "24.29"},
         "StationObsTimes": {"StationObsTime": [
             {"DateTime": "2023-07-25T08:00:00+08:00",
-             "WeatherElements": {"TideHeight": "123.4"}},
+             "WeatherElements": {"TideHeight": "1.234"}},
             {"DateTime": "2023-07-25T08:30:00+08:00",
              "WeatherElements": {"TideHeight": "None"}},   # missing -> skipped
             {"DateTime": "2023-07-25T09:00:00+08:00",
-             "WeatherElements": {"TideHeight": "150.1"}},
+             "WeatherElements": {"TideHeight": "1.501"}},
         ]}}]}},
 }
 
@@ -43,17 +43,30 @@ def test_normalize_noaa_metres_to_cm_and_utc():
     assert rec["heights_cm"] == [51.2, 49.8]            # m -> cm, gap dropped
 
 
-def test_normalize_cwa_local_to_utc_and_cm():
-    sid, rec = FT.normalize_cwa(CWA_FIXTURE)
+def test_normalize_cwa_local_to_utc_metres_to_cm():
+    sid, rec = FT.normalize_cwa(CWA_FIXTURE)   # default unit = metres
     assert sid == "C6V100"
     # +08:00 -> UTC shifts back 8 h
     assert rec["times_utc"] == ["2023-07-25T00:00:00", "2023-07-25T01:00:00"]
-    assert rec["heights_cm"] == [123.4, 150.1]          # cm as-is; None dropped
+    assert rec["heights_cm"] == [123.4, 150.1]          # m -> cm; None dropped
 
 
-def test_normalize_cwa_height_unit_m():
-    sid, rec = FT.normalize_cwa(CWA_FIXTURE, height_unit="m")
-    assert rec["heights_cm"] == [12340.0, 15010.0]      # m -> cm scaling
+def test_normalize_cwa_height_unit_cm_keeps_raw():
+    sid, rec = FT.normalize_cwa(CWA_FIXTURE, height_unit="cm")
+    assert rec["heights_cm"] == [1.234, 1.501]          # cm override = raw
+
+
+def test_normalize_cwa_uses_station_meta_for_coords():
+    # obs response without coords -> lon/lat come from station_meta
+    j = {"Records": {"SeaSurfaceObs": {"Location": [{
+        "Station": {"StationID": "C4A01"},
+        "StationObsTimes": {"StationObsTime": [
+            {"DateTime": "2026-06-16T08:00:00+08:00",
+             "WeatherElements": {"TideHeight": "1.4"}}]}}]}}}
+    sid, rec = FT.normalize_cwa(j, station_meta={"C4A01": {"lon": 121.42, "lat": 25.18}})
+    assert rec["lon"] == 121.42 and rec["lat"] == 25.18 and rec["heights_cm"] == [140.0]
+    # missing coords AND no meta -> None
+    assert FT.normalize_cwa(j) is None
 
 
 def test_normalize_handles_empty():
@@ -78,3 +91,13 @@ def test_sanitized_output_has_no_metadata_or_token():
     assert set(rec) == {"lon", "lat", "times_utc", "heights_cm"}
     blob = json.dumps(rec)
     assert "Providence" not in blob and "metadata" not in blob
+
+
+def test_cwa_station_cap_refuses_bulk(monkeypatch, tmp_path):
+    """Conservative guard: CWA with >5 stations is refused (exit 2) unless
+    --allow-bulk, before any token load / fetch."""
+    import sys
+    monkeypatch.setattr(sys, "argv", [
+        "fetch_tf_observations.py", "--source", "cwa",
+        "--stations", "a,b,c,d,e,f", "--out", str(tmp_path / "o.json")])
+    assert FT.main() == 2

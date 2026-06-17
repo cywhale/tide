@@ -1,0 +1,340 @@
+{
+ "stations": {
+  "1612340": {
+   "lon": -157.8645,
+   "lat": 21.3033,
+   "old": {
+    "rmse_cm": 3.154,
+    "bias_cm": -1.049,
+    "coverage": 1.0,
+    "n": 1200
+   },
+   "new": {
+    "rmse_cm": 3.255,
+    "bias_cm": -1.049,
+    "coverage": 1.0,
+    "n": 1200
+   },
+   "diag_old": {
+    "corr_at_zero_lag": 0.99,
+    "best_lag_min": -12.0,
+    "corr_at_best_lag": 0.9923,
+    "shape_rmse_cm": 2.787,
+    "std_ratio": 1.0433,
+    "range_ratio": 1.0127,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "diag_new": {
+    "corr_at_zero_lag": 0.9893,
+    "best_lag_min": -12.0,
+    "corr_at_best_lag": 0.9917,
+    "shape_rmse_cm": 2.893,
+    "std_ratio": 1.0439,
+    "range_ratio": 1.012,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "within_tol": true
+  },
+  "8665530": {
+   "lon": -79.9236,
+   "lat": 32.7808,
+   "old": {
+    "rmse_cm": 7.687,
+    "bias_cm": -11.74,
+    "coverage": 1.0,
+    "n": 1195
+   },
+   "new": {
+    "rmse_cm": 7.739,
+    "bias_cm": -11.799,
+    "coverage": 1.0,
+    "n": 1195
+   },
+   "diag_old": {
+    "corr_at_zero_lag": 0.9925,
+    "best_lag_min": 0.0,
+    "corr_at_best_lag": 0.9925,
+    "shape_rmse_cm": 7.687,
+    "std_ratio": 0.9984,
+    "range_ratio": 1.0429,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "diag_new": {
+    "corr_at_zero_lag": 0.9924,
+    "best_lag_min": 0.0,
+    "corr_at_best_lag": 0.9924,
+    "shape_rmse_cm": 7.739,
+    "std_ratio": 0.9915,
+    "range_ratio": 1.0121,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "within_tol": true
+  },
+  "8443970": {
+   "lon": -71.0503,
+   "lat": 42.3539,
+   "old": {
+    "rmse_cm": 9.654,
+    "bias_cm": -25.238,
+    "coverage": 1.0,
+    "n": 1200
+   },
+   "new": {
+    "rmse_cm": 8.869,
+    "bias_cm": -25.218,
+    "coverage": 1.0,
+    "n": 1200
+   },
+   "diag_old": {
+    "corr_at_zero_lag": 0.9958,
+    "best_lag_min": 6.0,
+    "corr_at_best_lag": 0.9977,
+    "shape_rmse_cm": 7.086,
+    "std_ratio": 0.9969,
+    "range_ratio": 1.0018,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "diag_new": {
+    "corr_at_zero_lag": 0.9969,
+    "best_lag_min": 6.0,
+    "corr_at_best_lag": 0.9984,
+    "shape_rmse_cm": 6.818,
+    "std_ratio": 0.9679,
+    "range_ratio": 0.9732,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "within_tol": true
+  },
+  "8534720": {
+   "lon": -74.4181,
+   "lat": 39.3567,
+   "old": {
+    "rmse_cm": 8.425,
+    "bias_cm": -20.363,
+    "coverage": 1.0,
+    "n": 1200
+   },
+   "new": {
+    "rmse_cm": 9.541,
+    "bias_cm": -20.604,
+    "coverage": 1.0,
+    "n": 1200
+   },
+   "diag_old": {
+    "corr_at_zero_lag": 0.9857,
+    "best_lag_min": 12.0,
+    "corr_at_best_lag": 0.9902,
+    "shape_rmse_cm": 7.003,
+    "std_ratio": 0.9603,
+    "range_ratio": 0.929,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "diag_new": {
+    "corr_at_zero_lag": 0.9851,
+    "best_lag_min": 12.0,
+    "corr_at_best_lag": 0.9899,
+    "shape_rmse_cm": 8.252,
+    "std_ratio": 0.8977,
+    "range_ratio": 0.884,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "within_tol": false
+  },
+  "8651370": {
+   "lon": -75.7467,
+   "lat": 36.1833,
+   "old": {
+    "rmse_cm": 8.546,
+    "bias_cm": -10.806,
+    "coverage": 1.0,
+    "n": 1200
+   },
+   "new": {
+    "rmse_cm": null,
+    "bias_cm": null,
+    "coverage": 0.0,
+    "n": 0
+   },
+   "diag_old": {
+    "corr_at_zero_lag": 0.9785,
+    "best_lag_min": 6.0,
+    "corr_at_best_lag": 0.9795,
+    "shape_rmse_cm": 8.344,
+    "std_ratio": 0.9765,
+    "range_ratio": 0.959,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "diag_new": null
+  },
+  "9410230": {
+   "lon": -117.2571,
+   "lat": 32.8669,
+   "old": {
+    "rmse_cm": 3.652,
+    "bias_cm": -16.129,
+    "coverage": 1.0,
+    "n": 1199
+   },
+   "new": {
+    "rmse_cm": 3.796,
+    "bias_cm": -15.976,
+    "coverage": 1.0,
+    "n": 1199
+   },
+   "diag_old": {
+    "corr_at_zero_lag": 0.9982,
+    "best_lag_min": 0.0,
+    "corr_at_best_lag": 0.9982,
+    "shape_rmse_cm": 3.652,
+    "std_ratio": 1.026,
+    "range_ratio": 1.0157,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "diag_new": {
+    "corr_at_zero_lag": 0.9982,
+    "best_lag_min": 0.0,
+    "corr_at_best_lag": 0.9982,
+    "shape_rmse_cm": 3.796,
+    "std_ratio": 1.0297,
+    "range_ratio": 1.02,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "within_tol": true
+  },
+  "9411340": {
+   "lon": -119.6925,
+   "lat": 34.4046,
+   "old": {
+    "rmse_cm": 4.072,
+    "bias_cm": -17.137,
+    "coverage": 1.0,
+    "n": 1200
+   },
+   "new": {
+    "rmse_cm": 4.21,
+    "bias_cm": -17.214,
+    "coverage": 1.0,
+    "n": 1200
+   },
+   "diag_old": {
+    "corr_at_zero_lag": 0.9975,
+    "best_lag_min": 0.0,
+    "corr_at_best_lag": 0.9975,
+    "shape_rmse_cm": 4.072,
+    "std_ratio": 1.003,
+    "range_ratio": 0.9824,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "diag_new": {
+    "corr_at_zero_lag": 0.9973,
+    "best_lag_min": 0.0,
+    "corr_at_best_lag": 0.9973,
+    "shape_rmse_cm": 4.21,
+    "std_ratio": 1.0073,
+    "range_ratio": 0.9894,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "within_tol": true
+  },
+  "1617760": {
+   "lon": -155.0556,
+   "lat": 19.7303,
+   "old": {
+    "rmse_cm": null,
+    "bias_cm": null,
+    "coverage": 0.0,
+    "n": 0
+   },
+   "new": {
+    "rmse_cm": null,
+    "bias_cm": null,
+    "coverage": 0.0,
+    "n": 0
+   },
+   "diag_old": null,
+   "diag_new": null
+  },
+  "8720218": {
+   "lon": -81.4279,
+   "lat": 30.3982,
+   "old": {
+    "rmse_cm": null,
+    "bias_cm": null,
+    "coverage": 0.0,
+    "n": 0
+   },
+   "new": {
+    "rmse_cm": null,
+    "bias_cm": null,
+    "coverage": 0.0,
+    "n": 0
+   },
+   "diag_old": null,
+   "diag_new": null
+  },
+  "9418767": {
+   "lon": -124.2173,
+   "lat": 40.7669,
+   "old": {
+    "rmse_cm": 10.079,
+    "bias_cm": -17.204,
+    "coverage": 1.0,
+    "n": 1200
+   },
+   "new": {
+    "rmse_cm": 8.763,
+    "bias_cm": -17.15,
+    "coverage": 1.0,
+    "n": 1200
+   },
+   "diag_old": {
+    "corr_at_zero_lag": 0.9897,
+    "best_lag_min": -18.0,
+    "corr_at_best_lag": 0.9953,
+    "shape_rmse_cm": 6.922,
+    "std_ratio": 1.0213,
+    "range_ratio": 0.9916,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "diag_new": {
+    "corr_at_zero_lag": 0.9922,
+    "best_lag_min": -12.0,
+    "corr_at_best_lag": 0.9958,
+    "shape_rmse_cm": 6.495,
+    "std_ratio": 1.0179,
+    "range_ratio": 0.9973,
+    "dt_minutes": 6.0,
+    "regular_sampling_assumed": true
+   },
+   "within_tol": true
+  }
+ },
+ "summary": {
+  "n_stations": 7,
+  "frac_within_1cm": 0.857,
+  "mean_rmse_old_cm": 6.675,
+  "mean_rmse_new_cm": 6.596,
+  "stations_to_review_gt3cm": [],
+  "gate_pass": true
+ },
+ "_meta": {
+  "mode": "GATE (dev_tpxo10/benchmarks/tf_observations_noaa_20260617.json)",
+  "old": "/Users/cywhale/proj/tide/data/tpxo9.zarr",
+  "new": "/Users/cywhale/proj/tide/data/tpxo10.zarr",
+  "old_fallback_to_new": false
+ }
+}

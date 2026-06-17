@@ -61,17 +61,24 @@ def normalize_noaa(noaa_json: dict) -> tuple[str, dict] | None:
     return sid, {"lon": lon, "lat": lat, "times_utc": times, "heights_cm": heights}
 
 
-def normalize_cwa(cwa_json: dict, height_unit: str = "cm") -> tuple[str, dict] | None:
-    """CWA O-B0075-002 JSON -> sanitized station record. TideHeight is
-    cm by default (Taiwan obs); pass height_unit='m' to scale."""
+def normalize_cwa(cwa_json: dict, height_unit: str = "m",
+                  station_meta: dict | None = None) -> tuple[str, dict] | None:
+    """CWA O-B0075-002 JSON -> sanitized station record. TideHeight is in
+    METRES in this dataset (height_unit='m' -> *100 to cm). The obs
+    response carries only StationID (no coordinates), so lon/lat are taken
+    from `station_meta[StationID] = {"lon", "lat"}` (e.g. test/stations_cwa.json)."""
     try:
         loc = cwa_json["Records"]["SeaSurfaceObs"]["Location"][0]
     except (KeyError, IndexError):
         return None
     station = loc["Station"]
     sid = str(station["StationID"])
-    lon = float(station.get("StationLongitude") or station.get("Longitude"))
-    lat = float(station.get("StationLatitude") or station.get("Latitude"))
+    meta = (station_meta or {}).get(sid, {})
+    lon = meta.get("lon", station.get("StationLongitude") or station.get("Longitude"))
+    lat = meta.get("lat", station.get("StationLatitude") or station.get("Latitude"))
+    if lon is None or lat is None:
+        return None
+    lon, lat = float(lon), float(lat)
     scale = 100.0 if height_unit == "m" else 1.0
     times, heights = [], []
     for rec in loc["StationObsTimes"]["StationObsTime"]:
@@ -100,7 +107,7 @@ def fetch_noaa(station: str, begin: str, end: str, timeout: int = 20):
     import requests
     params = {"product": "water_level", "begin_date": begin, "end_date": end,
               "datum": "MSL", "station": station, "time_zone": "GMT",
-              "units": "metric", "format": "json",
+              "units": "metric", "format": "json", "interval": "h",
               "application": "ODB_TIDE_TF"}
     r = requests.get(NOAA_URL, params=params, timeout=timeout)
     r.raise_for_status()
@@ -139,12 +146,25 @@ def main() -> int:
     ap.add_argument("--end", help="NOAA end date YYYYMMDD")
     ap.add_argument("--hours", type=int, default=24,
                     help="CWA recent window in hours (smoke; default 24)")
-    ap.add_argument("--cwa-height-unit", default="cm", choices=["cm", "m"])
+    ap.add_argument("--cwa-height-unit", default="m", choices=["cm", "m"])
+    ap.add_argument("--station-meta", type=Path,
+                    help="JSON {stationID: {lon, lat}} for CWA coords "
+                         "(the obs response carries no coordinates)")
+    ap.add_argument("--allow-bulk", action="store_true",
+                    help="override the conservative CWA station cap")
     ap.add_argument("--out", type=Path, required=True,
                     help="sanitized observations JSON (tracked path for gate evidence)")
     args = ap.parse_args()
 
     stations = [s.strip() for s in args.stations.split(",") if s.strip()]
+    # Conservative CWA guard (free API with transfer limits): refuse a bulk
+    # query unless explicitly overridden; the CWA path is a 24h smoke only.
+    CWA_STATION_CAP = 5
+    if args.source == "cwa" and len(stations) > CWA_STATION_CAP and not args.allow_bulk:
+        print(f"REFUSED: CWA is a 24h smoke — {len(stations)} stations exceeds "
+              f"the conservative cap of {CWA_STATION_CAP}. Pass --allow-bulk to "
+              "override (avoid bulk CWA queries / dense retries).")
+        return 2
     out: dict = {}
     token = None
     if args.source == "noaa":
@@ -165,12 +185,14 @@ def main() -> int:
         if not token:
             print("CWA needs CWA_TOKEN in the environment or .env")
             return 2
+        smeta = json.loads(args.station_meta.read_text()) if args.station_meta else {}
         time_from = (datetime.now(timezone.utc) - timedelta(hours=args.hours)
                      ).strftime("%Y-%m-%dT%H:%M:%S")
         for sid in stations:
             try:
                 rec = normalize_cwa(fetch_cwa(sid, time_from, token),
-                                    height_unit=args.cwa_height_unit)
+                                    height_unit=args.cwa_height_unit,
+                                    station_meta=smeta)
             except Exception as e:
                 print(f"  CWA {sid}: fetch/parse failed — skipped")  # never echo token
                 continue

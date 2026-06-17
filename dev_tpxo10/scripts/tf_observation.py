@@ -73,8 +73,10 @@ def _days_since_epoch(times_utc):
 
 
 def predict_cm(adapter, lon, lat, t_days):
-    """z elevation (cm) at the given instants via the runtime path."""
+    """z elevation (cm) at the given instants via the runtime path. The
+    store grid is 0-360; wrap a NOAA-style -180..180 longitude first."""
     from src.model_utils import get_tide_series   # noqa: E402
+    lon = lon + 360.0 if lon < 0 else lon
     sub = adapter.sel_point(lon, lat, tol=0.5 / 30.0)
     amp, ph = adapter.amp_ph(sub, "z")
     z = get_tide_series(np.ma.filled(amp, np.nan), np.ma.filled(ph, np.nan),

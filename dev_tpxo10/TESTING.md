@@ -672,11 +672,42 @@ binding gate evidence must use a non-ignored name to survive into the G3
 close-out (the harness warns if the default is used with
 `--observations`).
 
-### S3 remaining for G3
+### S3.4 T-F observation gate EXECUTED — NOAA primary PASS; CWA smoke validated (2026-06-17)
 
-- T-F observation: EXECUTE the binding gate — run the fetch/normalize
-  step (`fetch_tf_observations.py`, NOAA primary / CWA 24h smoke) to
-  produce sanitized obs, then `tf_observation.py --observations <json>
-  --out <tracked>`. Harness + fetcher are ready and unit-tested; needs
-  live NOAA/CWA API access to execute.
-- (DONE) §7.5.2 P4 cold-cache — PASS on Linux VM24 (S3.2b).
+Fetch/normalize + gate run live (NOAA no token; CWA token from `.env`,
+never written to output — verified the evidence JSONs contain no
+auth/token strings).
+
+**NOAA primary gate — PASS** (`tf_observations_noaa_20260617.json` ->
+`tf_observation_noaa_20260617.json`): 10 open-coast stations fetched
+(hourly water_level, MSL, GMT, 2026-06-10..14); 7 resolved by the global
+model (3 dropped — estuary/refined-coastline cells, incl. Duck NC where
+TPXO10 marks land that TPXO9 served = the coastline reclassification).
+Of the 7: **within 1 cm 6/7 = 85.7% (>= 80%)**, **mean RMSE new 6.60 <=
+old 6.68 cm**, 0 stations > 3 cm worse -> `gate_pass=True`. Phase/shape
+diagnostics excellent (corr0 0.985-0.998, |lag| <= 12 min = 1 sample,
+std_ratio 0.90-1.04): **TPXO10 phase/shape does NOT regress vs TPXO9**.
+The one not-within-1cm station (Atlantic City, +1.12 cm) is
+amplitude-dominated (std_ratio 0.90), below the 3 cm review threshold.
+
+**CWA 24h smoke — pipeline + diagnostics validated** (informational, NOT
+a gate; 2 northern-Taiwan stations C4A01/C4C01, 18 hourly samples,
+TideHeight in metres, lon/lat injected from station-meta): C4C01 9.43 ->
+6.18 cm (improved, corr0 0.999); C4A01 21.61 -> 23.49 cm (+1.9 cm,
+amplitude-dominated std_ratio 1.12, corr0 0.978, lag 0 min — the
+"amplitude differs, phase agrees" pattern at a Keelung-strait station).
+mean RMSE new 14.83 <= old 15.52; within-1cm 0.5 -> gate_pass=False is
+EXPECTED for a 2-station 24h smoke and does NOT override the NOAA primary
+gate. Confirms the Taiwan recent-data pipeline + phase/amplitude
+diagnostics work end-to-end.
+
+### Gate G3: all binding gates GREEN
+
+- T-D2 golden prediction (engine equivalence): PASS 0.001 mm (S3.1)
+- §7.5.2 performance: warm core + P-Strip + cap revalidation PASS (S3.2)
+  + cold-cache PASS on Linux VM24 (S3.2b)
+- T-F observation: NOAA primary gate PASS, CWA smoke validated (S3.4)
+
+Stage 3 / G3 binding gates complete. Follow-up (not gate blockers):
+broader NOAA station panels and longer windows can be re-run any time
+with the same harness; CWA bulk requires `--allow-bulk`.
