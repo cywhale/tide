@@ -62,6 +62,25 @@ def test_default_store_path_only_in_helper_constant():
     assert "DEFAULT_ZARR_RELPATH" in hits[0][2]
 
 
+def test_no_store_literal_bypass_in_production():
+    """Round 24 F3: ANY non-comment `tpxo9.zarr` / `tpxo10.zarr` literal in
+    production code (not just open_zarr) must appear ONLY in store_adapter's
+    DEFAULT_ZARR_RELPATH — catches an open_store('data/tpxo9.zarr') or a
+    Path('...tpxo10.zarr') bypass of get_zarr_path()."""
+    pat = re.compile(r"tpxo(?:9|10)\.zarr")
+    offenders = []
+    for f in PROD_FILES:
+        for i, line in enumerate(f.read_text().splitlines(), 1):
+            if line.strip().startswith("#") or not pat.search(line):
+                continue
+            if f.name == "store_adapter.py" and "DEFAULT_ZARR_RELPATH" in line:
+                continue
+            offenders.append(f"{f.name}:{i}: {line.strip()}")
+    assert offenders == [], (
+        "production store-path literal outside DEFAULT_ZARR_RELPATH: "
+        + "; ".join(offenders))
+
+
 def test_legacy_tooling_archived():
     legacy = REPO / "dev" / "legacy_tpxo9"
     assert (legacy / "extract_parallel.py").exists()
