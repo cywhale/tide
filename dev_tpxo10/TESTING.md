@@ -678,17 +678,23 @@ Fetch/normalize + gate run live (NOAA no token; CWA token from `.env`,
 never written to output — verified the evidence JSONs contain no
 auth/token strings).
 
+**Station selection (model-coverage filter)**: of the 314 NOAA CO-OPS
+stations in `test/stations_noaa.json`, the 115 water-level stations (less
+the known-bad skip list) are filtered OFFLINE against the tpxo10 store —
+keep only those whose nearest cell is flag-0 valid — yielding 42
+model-resolved stations (estuary/inner-bay gauges the global 1/30deg
+model cannot resolve are excluded BEFORE any API call). 40 fetched, 37
+returned data for the window.
+
 **NOAA primary gate — PASS** (`tf_observations_noaa_20260617.json` ->
-`tf_observation_noaa_20260617.json`): 10 open-coast stations fetched
-(hourly water_level, MSL, GMT, 2026-06-10..14); 7 resolved by the global
-model (3 dropped — estuary/refined-coastline cells, incl. Duck NC where
-TPXO10 marks land that TPXO9 served = the coastline reclassification).
-Of the 7: **within 1 cm 6/7 = 85.7% (>= 80%)**, **mean RMSE new 6.60 <=
-old 6.68 cm**, 0 stations > 3 cm worse -> `gate_pass=True`. Phase/shape
-diagnostics excellent (corr0 0.985-0.998, |lag| <= 12 min = 1 sample,
-std_ratio 0.90-1.04): **TPXO10 phase/shape does NOT regress vs TPXO9**.
-The one not-within-1cm station (Atlantic City, +1.12 cm) is
-amplitude-dominated (std_ratio 0.90), below the 3 cm review threshold.
+`tf_observation_noaa_20260617.json`): 37 stations (hourly water_level,
+MSL, GMT, 2026-06-10..14), **34 with both stores comparable**. Result:
+**within 1 cm 82.4% (>= 80%)**, **mean RMSE new 9.06 <= old 9.11 cm**, 0
+stations > 3 cm worse -> `gate_pass=True`. Phase/shape diagnostics across
+the panel: **corr0 median 0.984** (min 0.840), **|lag| median 12 min**
+(1 sample), std_ratio median 1.016 (0.85-1.77) — **TPXO10 phase/shape
+does NOT regress vs TPXO9** (the wider amplitude spread is the diverse
+coastal panel; no station crosses the 3 cm review threshold).
 
 **CWA 24h smoke — pipeline + diagnostics validated** (informational, NOT
 a gate; 2 northern-Taiwan stations C4A01/C4C01, 18 hourly samples,
