@@ -169,6 +169,14 @@ def main() -> int:
         old = SA.open_store(str(args.old))
         obs = json.loads(args.observations.read_text())
         mode = f"GATE ({args.observations})"
+        # the default --out (tf_result.json) is gitignored as self-test
+        # output; binding gate evidence must be saved to a TRACKED path so
+        # it survives into the G3 close-out (reviewer round 26 note).
+        if args.out.name == "tf_result.json":
+            print("WARNING: binding T-F gate is writing to the gitignored "
+                  "default tf_result.json. Re-run with an explicit tracked "
+                  "--out, e.g. --out dev_tpxo10/benchmarks/"
+                  "tf_observation_real_YYYYMMDD.json, to preserve G3 evidence.")
     else:  # self-test: fallback to new is allowed but flagged
         new = SA.open_store(str(args.new))
         if args.old.exists():

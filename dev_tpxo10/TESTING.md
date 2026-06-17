@@ -622,7 +622,13 @@ station/network availability cannot affect local tests.
 
 **The binding T-F gate is NOT executed**: it requires real tide-gauge
 observations supplied as `--observations <sanitized.json>`. Provide the
-NOAA/CWA data and re-run in the production env to execute the gate.
+NOAA/CWA data and re-run in the production env to execute the gate. When
+executed, save to a TRACKED `--out` path (e.g.
+`--out dev_tpxo10/benchmarks/tf_observation_real_YYYYMMDD.json`) — the
+default `tf_result.json` is gitignored as self-test output, so the
+binding gate evidence must use a non-ignored name to survive into the G3
+close-out (the harness warns if the default is used with
+`--observations`).
 
 ### S3 remaining for G3 (external-dependency gates)
 
