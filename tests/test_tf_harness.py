@@ -55,3 +55,37 @@ def test_days_since_epoch_naive_is_utc():
     assert np.isclose(d[0], 1.0)
     d2 = TF._days_since_epoch(["1992-01-01T12:00:00+00:00"])
     assert np.isclose(d2[0], 0.5)
+
+
+# ---------- CLI behavior (round 26) ----------
+
+def test_no_args_does_not_open_store(monkeypatch, capsys):
+    """no-args must print 'SCRIPT READY' and return 0 WITHOUT opening any
+    store (round 26 F1)."""
+    import src.store_adapter as SA
+    calls = []
+    monkeypatch.setattr(SA, "open_store", lambda *a, **k: calls.append(a) or 1/0)
+    monkeypatch.setattr(sys, "argv", ["tf_observation.py"])
+    rc = TF.main()
+    assert rc == 0 and calls == []
+    assert "SCRIPT READY, GATE NOT EXECUTED" in capsys.readouterr().out
+
+
+def test_observations_gate_requires_both_stores(monkeypatch, tmp_path, capsys):
+    """--observations with a missing TPXO9 baseline must FAIL (no silent
+    old->new fallback that would compare TPXO10 to itself; round 26 F2)."""
+    import src.store_adapter as SA
+    opened = []
+    monkeypatch.setattr(SA, "open_store", lambda p, *a, **k: opened.append(p))
+    obs = tmp_path / "obs.json"
+    obs.write_text('{"s1": {"lon": 120.0, "lat": 24.0, '
+                   '"times_utc": ["2023-07-25T00:00:00"], "heights_cm": [50.0]}}')
+    missing_old = tmp_path / "nope_tpxo9.zarr"
+    present_new = tmp_path / "tpxo10.zarr"; present_new.mkdir()
+    monkeypatch.setattr(sys, "argv", [
+        "tf_observation.py", "--observations", str(obs),
+        "--old", str(missing_old), "--new", str(present_new)])
+    rc = TF.main()
+    assert rc == 2                       # nonzero: aborts
+    assert opened == []                  # never opened either store
+    assert "requires both stores" in capsys.readouterr().out

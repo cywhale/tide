@@ -146,24 +146,41 @@ def main() -> int:
                     default=REPO / "dev_tpxo10" / "benchmarks" / "tf_result.json")
     args = ap.parse_args()
 
-    from src import store_adapter as SA   # noqa: E402
-    new = SA.open_store(str(args.new))
-    old = SA.open_store(str(args.old)) if args.old.exists() else new
-
-    if args.self_test:
-        obs = _self_test_observations(new)
-        mode = "SELF-TEST (synthetic obs; plumbing only — NOT the T-F gate)"
-    elif args.observations:
-        obs = json.loads(args.observations.read_text())
-        mode = f"GATE ({args.observations})"
-    else:
+    # no-args: print the status and return BEFORE opening any store (round
+    # 26 F1) — "SCRIPT READY, GATE NOT EXECUTED" must not require a store.
+    if not args.self_test and not args.observations:
         print("T-F harness: SCRIPT READY, GATE NOT EXECUTED.\n"
               "Provide --observations <file> (real tide-gauge data) to run the\n"
               "binding gate, or --self-test to exercise the plumbing.")
         return 0
 
+    from src import store_adapter as SA   # noqa: E402
+    old_fallback = False
+    if args.observations:
+        # binding gate: BOTH stores must exist — no silent old->new fallback
+        # (round 26 F2), which would compare TPXO10 against itself.
+        missing = [str(p) for p in (args.old, args.new) if not p.exists()]
+        if missing:
+            print(f"ERROR: --observations gate requires both stores; missing "
+                  f"{missing}. The TPXO9 baseline and TPXO10 store must both "
+                  "be present to compare. Aborting (no fallback).")
+            return 2
+        new = SA.open_store(str(args.new))
+        old = SA.open_store(str(args.old))
+        obs = json.loads(args.observations.read_text())
+        mode = f"GATE ({args.observations})"
+    else:  # self-test: fallback to new is allowed but flagged
+        new = SA.open_store(str(args.new))
+        if args.old.exists():
+            old = SA.open_store(str(args.old))
+        else:
+            old = new; old_fallback = True
+        obs = _self_test_observations(new)
+        mode = "SELF-TEST (synthetic obs; plumbing only — NOT the T-F gate)"
+
     result = run_gate(obs, old, new)
-    result["_meta"] = {"mode": mode, "old": str(args.old), "new": str(args.new)}
+    result["_meta"] = {"mode": mode, "old": str(args.old), "new": str(args.new),
+                       "old_fallback_to_new": old_fallback}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=1))
     sm = result["summary"]
