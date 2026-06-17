@@ -77,11 +77,23 @@ def test_diag_detects_zero_lag_and_unit_amplitude():
 def test_diag_detects_phase_lag():
     t = np.arange(0, 48*60, 30.0)              # 48 h, 30-min sampling
     obs = _m2(t)
-    model = _m2(t, phase_min=60.0)             # model leads obs by 60 min
+    # model(t) = sin(2pi(t-60)/T) = obs(t-60): the model peak arrives 60 min
+    # AFTER the observed peak -> model LAGS obs -> positive best_lag_min
+    model = _m2(t, phase_min=60.0)
     d = TF.phase_amplitude_diagnostics(model, obs, 30.0)
-    assert abs(d["best_lag_min"] - 60.0) <= 30.0     # detects ~+60 min lead
+    assert abs(d["best_lag_min"] - 60.0) <= 30.0     # positive = model lags
     assert d["corr_at_best_lag"] > d["corr_at_zero_lag"]
+    assert d["dt_minutes"] == 30.0 and d["regular_sampling_assumed"] is True
     assert TF.classify_failure(d) == "phase-lag"
+
+
+def test_diag_negative_lag_when_model_leads():
+    """Sign check: model arriving EARLIER than obs -> negative best_lag."""
+    t = np.arange(0, 48*60, 30.0)
+    obs = _m2(t)
+    model = _m2(t, phase_min=-60.0)            # model peak 60 min BEFORE obs
+    d = TF.phase_amplitude_diagnostics(model, obs, 30.0)
+    assert abs(d["best_lag_min"] + 60.0) <= 30.0     # negative = model leads
 
 
 def test_diag_detects_amplitude_shrink():

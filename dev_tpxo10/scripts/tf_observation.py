@@ -98,11 +98,20 @@ def phase_amplitude_diagnostics(model_cm, obs_cm, dt_minutes, max_lag_min=180.0)
 
       corr_at_zero_lag : normalized correlation, no shift
       best_lag_min     : lag (min, within +/-max_lag_min) maximizing corr;
-                         positive = model LEADS obs
+                         POSITIVE = model LAGS obs (model[k+i] aligns with
+                         obs[i], i.e. the model peak arrives `best_lag_min`
+                         minutes after the observed peak); negative = model
+                         leads obs.
       corr_at_best_lag : correlation at that lag
       shape_rmse_cm    : de-meaned RMSE after aligning at best_lag
       std_ratio        : std(model)/std(obs)  (amplitude)
       range_ratio      : (max-min model)/(max-min obs)
+      dt_minutes       : the sampling step assumed for the lag conversion
+      regular_sampling_assumed : True — lag is sample-shift x dt_minutes,
+                         so the minute value is exact only if the
+                         observations are regularly sampled (NaN/missing
+                         samples make it approximate; resample real
+                         NOAA/CWA series with gaps before trusting the lag).
     """
     m = np.asarray(model_cm, float); o = np.asarray(obs_cm, float)
     ok = np.isfinite(m) & np.isfinite(o)
@@ -139,6 +148,8 @@ def phase_amplitude_diagnostics(model_cm, obs_cm, dt_minutes, max_lag_min=180.0)
         "shape_rmse_cm": None if shape_rmse is None else round(shape_rmse, 3),
         "std_ratio": None if so == 0 else round(ss / so, 4),
         "range_ratio": None if rng_o == 0 else round(rng_m / rng_o, 4),
+        "dt_minutes": round(float(dt_minutes), 2),
+        "regular_sampling_assumed": True,
     }
 
 
