@@ -620,9 +620,20 @@ station/network availability cannot affect local tests.
 - Scoring math (de-meaned RMSE, datum bias, coverage, NaN handling,
   epoch-days) locked by 6 unit tests (`tests/test_tf_harness.py`).
 
-**The binding T-F gate is NOT executed**: it requires real tide-gauge
-observations supplied as `--observations <sanitized.json>`. Provide the
-NOAA/CWA data and re-run in the production env to execute the gate. When
+**The binding T-F gate is NOT executed**: it requires running the
+observation FETCH + NORMALIZE step (`scripts/fetch_tf_observations.py`)
+to turn NOAA/CWA API data into the sanitized observations JSON, then
+feeding that to `tf_observation.py --observations`. Provide the
+NOAA/CWA data and re-run in the production env to execute the gate. The fetch step (`scripts/fetch_tf_observations.py`, network-touching,
+kept SEPARATE from the gate harness):
+- **NOAA CO-OPS** (PRIMARY gate): no token, water_level datum=MSL
+  units=metric time_zone=GMT (m->cm, already UTC); `--source noaa
+  --stations <ids> --begin YYYYMMDD --end YYYYMMDD`.
+- **CWA O-B0075-002** (24 h SMOKE): token from `.env`/env (CWA_TOKEN),
+  sent ONLY in the request, asserted absent from the output before
+  writing; `--source cwa --stations <ids> --hours 24`.
+- Output is sanitized (lon/lat/times/heights only — no station name, no
+  token, no raw metadata; unit-tested). When
 executed, save to a TRACKED `--out` path (e.g.
 `--out dev_tpxo10/benchmarks/tf_observation_real_YYYYMMDD.json`) — the
 default `tf_result.json` is gitignored as self-test output, so the
