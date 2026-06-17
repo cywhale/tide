@@ -1,44 +1,174 @@
 {
  "P1_point_all15": {
-  "old_ms": 3.96,
-  "new_ms": 3.33,
-  "ratio": 0.84,
+  "old": {
+   "mean": 4.07,
+   "median": 4.0,
+   "p95": 4.53,
+   "p99": 4.74,
+   "max": 5.24,
+   "n": 400
+  },
+  "new": {
+   "mean": 3.46,
+   "median": 3.41,
+   "p95": 3.95,
+   "p99": 4.12,
+   "max": 4.56,
+   "n": 400
+  },
+  "ratio_median": 0.853,
+  "blocking": true,
   "pass": true
  },
  "P1_point_m2": {
-  "old_ms": 1.91,
-  "new_ms": 2.05,
-  "ratio": 1.074,
+  "old": {
+   "mean": 1.94,
+   "median": 1.93,
+   "p95": 2.19,
+   "p99": 2.34,
+   "max": 2.54,
+   "n": 400
+  },
+  "new": {
+   "mean": 2.11,
+   "median": 2.07,
+   "p95": 2.38,
+   "p99": 2.68,
+   "max": 2.92,
+   "n": 400
+  },
+  "ratio_median": 1.073,
+  "blocking": true,
   "pass": true
  },
  "P2_point_1day": {
-  "old_ms": 4.55,
-  "new_ms": 3.96,
-  "ratio": 0.871,
+  "old": {
+   "mean": 4.79,
+   "median": 4.73,
+   "p95": 5.34,
+   "p99": 5.91,
+   "max": 6.4,
+   "n": 400
+  },
+  "new": {
+   "mean": 4.13,
+   "median": 4.07,
+   "p95": 4.73,
+   "p99": 5.0,
+   "max": 5.18,
+   "n": 400
+  },
+  "ratio_median": 0.86,
+  "blocking": true,
   "pass": true
  },
  "P3_map_1deg": {
-  "old_ms": 22.18,
-  "new_ms": 17.91,
-  "ratio": 0.808,
+  "old": {
+   "mean": 23.29,
+   "median": 23.14,
+   "p95": 24.59,
+   "p99": 25.62,
+   "max": 25.83,
+   "n": 50
+  },
+  "new": {
+   "mean": 18.84,
+   "median": 18.74,
+   "p95": 19.76,
+   "p99": 20.39,
+   "max": 20.61,
+   "n": 50
+  },
+  "ratio_median": 0.81,
+  "blocking": true,
   "pass": true
  },
  "P3_map_5deg": {
-  "old_ms": 75.47,
-  "new_ms": 59.23,
-  "ratio": 0.785,
+  "old": {
+   "mean": 75.31,
+   "median": 75.07,
+   "p95": 77.36,
+   "p99": 79.26,
+   "max": 80.19,
+   "n": 50
+  },
+  "new": {
+   "mean": 59.05,
+   "median": 58.6,
+   "p95": 60.08,
+   "p99": 68.02,
+   "max": 74.6,
+   "n": 50
+  },
+  "ratio_median": 0.781,
+  "blocking": true,
   "pass": true
  },
  "P3_map_10deg": {
-  "old_ms": 129.29,
-  "new_ms": 98.08,
-  "ratio": 0.759,
+  "old": {
+   "mean": 133.1,
+   "median": 132.99,
+   "p95": 134.42,
+   "p99": 135.24,
+   "max": 135.44,
+   "n": 12
+  },
+  "new": {
+   "mean": 100.92,
+   "median": 100.86,
+   "p95": 101.91,
+   "p99": 102.0,
+   "max": 102.03,
+   "n": 12
+  },
+  "ratio_median": 0.758,
+  "blocking": true,
   "pass": true
  },
  "PMap45_s5": {
-  "old_ms": 1335.84,
-  "new_ms": 915.94,
-  "ratio": 0.686,
+  "old": {
+   "mean": 1343.06,
+   "median": 1341.73,
+   "p95": 1355.1,
+   "p99": 1356.68,
+   "max": 1357.07,
+   "n": 8
+  },
+  "new": {
+   "mean": 914.83,
+   "median": 914.83,
+   "p95": 920.44,
+   "p99": 920.93,
+   "max": 921.05,
+   "n": 8
+  },
+  "ratio_median": 0.682,
+  "blocking": true,
   "pass": true
+ },
+ "PStrip_45x5": {
+  "old": {
+   "mean": 195.73,
+   "median": 195.77,
+   "p95": 196.58,
+   "p99": 196.6,
+   "max": 196.61,
+   "n": 8
+  },
+  "new": {
+   "mean": 129.09,
+   "median": 129.41,
+   "p95": 129.53,
+   "p99": 129.55,
+   "max": 129.55,
+   "n": 8
+  },
+  "ratio_median": 0.661,
+  "blocking": true,
+  "pass": true
+ },
+ "PMap45_s1_cap": {
+  "rejected_by_cap": true,
+  "cap": 500000
  }
 }

@@ -570,32 +570,38 @@ max|delta| 0.001 mm** vs the gate 5 mm / 20 mm — essentially exact. The
 prediction engines agree to sub-micron precision; the migration
 introduces zero prediction drift. Evidence: `benchmarks/td2_result.json`.
 
-### S3.2 §7.5.2 old/new performance benchmark — PASS (2026-06-15)
+### S3.2 §7.5.2 old/new performance benchmark — core + P-Strip PASS; cap revalidated (2026-06-15)
 
 ```
 TIDE_DASK_DISABLE=1 uv run python dev_tpxo10/scripts/benchmark_old_new_api.py
 ```
 
-Post-migration OLD = migrated runtime on data/tpxo9.zarr (legacy
-adapter), NEW = migrated runtime on data/tpxo10.zarr (tpxo10 adapter);
-warmup + randomized interleaved, points 120 reps (stable median on
-sub-5ms ops), maps 3-8 reps. NEW/OLD median ratios (gate <= 1.10x):
+OLD = migrated runtime on data/tpxo9.zarr (legacy adapter), NEW = on
+data/tpxo10.zarr; warmup + randomized interleaved; points 400 reps,
+maps wall-time-bounded (1/5deg 50, 10deg/strip 12, 45deg 8 — rep design
+justified in spec §7.5.2). Each pattern reports mean/median/P95/P99/max
+(`benchmarks/perf_old_new.json`). Blocking gate NEW median <= 1.10x OLD:
 
-| pattern | OLD ms | NEW ms | ratio |
+| pattern (blocking) | OLD med / p95 ms | NEW med / p95 ms | ratio |
 |---|---|---|---|
-| P1 point all-15 | 3.96 | 3.33 | 0.840 |
-| P1 point M2-only | 1.91 | 2.05 | 1.074 |
-| P2 point 1-day | 4.55 | 3.96 | 0.871 |
-| P3 map 1deg | 22.18 | 17.91 | 0.808 |
-| P3 map 5deg | 75.47 | 59.23 | 0.785 |
-| P3 map 10deg | 129.29 | 98.08 | 0.759 |
-| P-Map45 s5 | 1335.84 | 915.94 | 0.686 |
+| P1 point all-15 | 4.00 / 4.53 | 3.41 / 3.95 | 0.853 |
+| P1 point M2-only | 1.93 / 2.19 | 2.07 / 2.38 | 1.073 |
+| P2 point 1-day | 4.73 / 5.34 | 4.07 / 4.73 | 0.860 |
+| P3 map 1deg | 23.14 / 24.59 | 18.74 / 19.76 | 0.810 |
+| P3 map 5deg | 75.07 / 77.36 | 58.60 / 60.08 | 0.781 |
+| P3 map 10deg | 132.99 / 134.42 | 100.86 / 101.91 | 0.758 |
+| P-Map45 s5 | 1341.73 / 1355.10 | 914.83 / 920.44 | 0.682 |
+| P-Strip 45x5 | 195.77 / 196.58 | 129.41 / 129.53 | 0.661 |
 
-NEW is FASTER on every dominant pattern (maps 20-32%, 45deg 31%); the
-single-constituent micro-point is 1.074x (sub-0.15ms, within gate). The
-tpxo10 (113,113,15) int32 chunking (D5) pays off in production vs the
-legacy (113,113,8) float64 split-constituent layout. `PASS` ->
-`benchmarks/perf_old_new.json`.
+ALL blocking patterns PASS; NEW faster on every dominant pattern (maps
+20-34%); the single-constituent micro-point is 1.073x (within gate,
+sub-0.15ms). **P-Map45-s1** (unsampled 45deg) is REJECTED by the
+production cap (1,825,201 > 500,000 cells) BEFORE materialization —
+re-confirmed here; its peak-RSS/payload is the §7.5.3 W8 harness
+evidence at G1 (not re-run). **P4 cold-cache** deferred to a Linux host
+(macOS cannot evict the page cache; §7.5.1). §7.5.2 status: core
+warm-cache + P-Strip latency PASS + cap revalidation; cold-cache pending
+the Linux round.
 
 ### S3 remaining for G3 (external-dependency gates)
 
