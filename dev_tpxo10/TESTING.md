@@ -603,9 +603,30 @@ evidence at G1 (not re-run). **P4 cold-cache** deferred to a Linux host
 warm-cache + P-Strip latency PASS + cap revalidation; cold-cache pending
 the Linux round.
 
+### S3.3 T-F observation harness — SCRIPT READY, GATE NOT EXECUTED (2026-06-15)
+
+`scripts/tf_observation.py` predicts the z series at the OBSERVED instants
+from BOTH stores (OLD tpxo9 legacy adapter / NEW tpxo10) via the runtime
+path, de-means model+obs (drops the datum/MSL offset), and scores RMSE /
+bias / coverage per station; gate (spec §7.6): TPXO10 RMSE <= TPXO9 + 1cm
+at >=80% stations AND mean RMSE(new) <= mean RMSE(old); >3cm-worse
+stations flagged for review. It is DECOUPLED from the observation source
+(parametrized `--observations <file>`) and NEVER hits the network, so
+station/network availability cannot affect local tests.
+
+- `tf_observation.py` (no args) -> "SCRIPT READY, GATE NOT EXECUTED".
+- `--self-test` exercises the full plumbing on synthetic obs (no network):
+  2 stations, scoring + gate decision run end-to-end (NOT a validation).
+- Scoring math (de-meaned RMSE, datum bias, coverage, NaN handling,
+  epoch-days) locked by 6 unit tests (`tests/test_tf_harness.py`).
+
+**The binding T-F gate is NOT executed**: it requires real tide-gauge
+observations supplied as `--observations <sanitized.json>`. Provide the
+NOAA/CWA data and re-run in the production env to execute the gate.
+
 ### S3 remaining for G3 (external-dependency gates)
 
-- T-F observation validation (NOAA / CWA): TPXO10 >= TPXO9 accuracy —
-  needs the NOAA tide-gauge API + CWA comparison data (network)
+- T-F observation: EXECUTE the gate with real NOAA/CWA observations
+  (harness ready; `--observations <file>`)
 - Linux-host cold-cache round (macOS = first-path-access only) — needs a
   Linux host with verifiable page-cache eviction (deferred per §7.5.1)

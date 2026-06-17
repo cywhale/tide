@@ -159,14 +159,17 @@ def main() -> int:
     # §7.5.3 W8 harness at G1, not re-run).
     cap = get_max_bbox_cells()
     rejected = False
+    requested_cells = None
     try:
         plan_bbox(new, 110, 155, 0, 45, 1, constituents=np.asarray(new.constituents),
                   halo=HALO, max_cells=cap)
     except BboxCapError as e:
         rejected = True
-        print(f"  PMap45_s1        cap rejects ({e.requested} > {cap} cells) "
+        requested_cells = int(e.requested)
+        print(f"  PMap45_s1        cap rejects ({requested_cells} > {cap} cells) "
               "before materialization — PASS (peak-RSS = W8/G1 evidence)")
-    results["PMap45_s1_cap"] = {"rejected_by_cap": rejected, "cap": cap}
+    results["PMap45_s1_cap"] = {"rejected_by_cap": rejected, "cap": cap,
+                                "requested_cells": requested_cells}
     if not rejected:
         fails.append("PMap45_s1: cap did NOT reject the unsampled 45deg map")
 
