@@ -57,6 +57,47 @@ def test_days_since_epoch_naive_is_utc():
     assert np.isclose(d2[0], 0.5)
 
 
+# ---------- report-only diagnostics (round 27) ----------
+
+def _m2(t_min, amp=100.0, phase_min=0.0):
+    # an M2-like sinusoid sampled at t_min minutes, phase shift in minutes
+    period = 12.42 * 60.0
+    return amp * np.sin(2*np.pi*(t_min - phase_min)/period)
+
+
+def test_diag_detects_zero_lag_and_unit_amplitude():
+    t = np.arange(0, 24*60, 60.0)              # 24 h hourly (dt=60min)
+    obs = _m2(t); model = obs.copy()
+    d = TF.phase_amplitude_diagnostics(model, obs, 60.0)
+    assert abs(d["corr_at_zero_lag"] - 1.0) < 1e-6
+    assert d["best_lag_min"] == 0.0
+    assert abs(d["std_ratio"] - 1.0) < 1e-6
+
+
+def test_diag_detects_phase_lag():
+    t = np.arange(0, 48*60, 30.0)              # 48 h, 30-min sampling
+    obs = _m2(t)
+    model = _m2(t, phase_min=60.0)             # model leads obs by 60 min
+    d = TF.phase_amplitude_diagnostics(model, obs, 30.0)
+    assert abs(d["best_lag_min"] - 60.0) <= 30.0     # detects ~+60 min lead
+    assert d["corr_at_best_lag"] > d["corr_at_zero_lag"]
+    assert TF.classify_failure(d) == "phase-lag"
+
+
+def test_diag_detects_amplitude_shrink():
+    t = np.arange(0, 48*60, 30.0)
+    obs = _m2(t, amp=100.0)
+    model = _m2(t, amp=70.0)                    # 30% amplitude shrink, no lag
+    d = TF.phase_amplitude_diagnostics(model, obs, 30.0)
+    assert abs(d["std_ratio"] - 0.70) < 0.02
+    assert d["best_lag_min"] == 0.0
+    assert TF.classify_failure(d) == "amplitude"
+
+
+def test_diag_none_on_too_few_points():
+    assert TF.phase_amplitude_diagnostics([1.0, 2.0], [1.0, 2.0], 60.0) is None
+
+
 # ---------- CLI behavior (round 26) ----------
 
 def test_no_args_does_not_open_store(monkeypatch, capsys):
