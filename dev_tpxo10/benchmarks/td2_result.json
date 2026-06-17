@@ -1,0 +1,152 @@
+{
+ "_meta": {
+  "ours_store": "/Users/cywhale/proj/tide/data/tpxo10.zarr",
+  "model": "TPXO10-atlas-v2-nc",
+  "gate": {
+   "rmse_mm": 5.0,
+   "maxabs_mm": 20.0
+  }
+ },
+ "stations": {
+  "taiwan_strait": {
+   "2023-07-25": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.001,
+    "n": 49,
+    "pass": true
+   },
+   "2023-03-20": {
+    "rmse_mm": 0.001,
+    "maxabs_mm": 0.001,
+    "n": 49,
+    "pass": true
+   }
+  },
+  "kuroshio_e_taiwan": {
+   "2023-07-25": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   },
+   "2023-03-20": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   }
+  },
+  "luzon_strait": {
+   "2023-07-25": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   },
+   "2023-03-20": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.001,
+    "n": 49,
+    "pass": true
+   }
+  },
+  "open_pacific": {
+   "2023-07-25": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   },
+   "2023-03-20": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   }
+  },
+  "n_atlantic": {
+   "2023-07-25": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   },
+   "2023-03-20": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   }
+  },
+  "gulf_of_maine": {
+   "2023-07-25": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.001,
+    "n": 49,
+    "pass": true
+   },
+   "2023-03-20": {
+    "rmse_mm": 0.001,
+    "maxabs_mm": 0.001,
+    "n": 49,
+    "pass": true
+   }
+  },
+  "yellow_sea": {
+   "2023-07-25": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.001,
+    "n": 49,
+    "pass": true
+   },
+   "2023-03-20": {
+    "rmse_mm": 0.001,
+    "maxabs_mm": 0.001,
+    "n": 49,
+    "pass": true
+   }
+  },
+  "arabian_sea": {
+   "2023-07-25": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   },
+   "2023-03-20": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   }
+  },
+  "south_atlantic": {
+   "2023-07-25": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   },
+   "2023-03-20": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   }
+  },
+  "weddell_edge": {
+   "2023-07-25": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.0,
+    "n": 49,
+    "pass": true
+   },
+   "2023-03-20": {
+    "rmse_mm": 0.0,
+    "maxabs_mm": 0.001,
+    "n": 49,
+    "pass": true
+   }
+  }
+ }
+}

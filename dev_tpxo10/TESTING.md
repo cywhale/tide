@@ -546,3 +546,32 @@ all technical gates GREEN at 3c5ba21**; coverage-gate amendment accepted by owne
 (2026-06-15) and folded into the binding spec §4 Gate G2; canonical
 promoted to `data/tpxo10.zarr`. G2 ready for close-out.
 
+
+## Stage 3 — runtime migration + G3 gates
+
+### S3.1 T-D2 golden prediction (engine equivalence) — PASS (2026-06-15)
+
+Cross-checks the 2.2.8<->3.0.6 prediction-engine boundary (the spec's
+flagged drift risk): OURS = production runtime (pyTMD 2.2.8
+predict.time_series + infer_minor over hc from data/tpxo10.zarr via the
+store adapter) vs REFERENCE = pyTMD 3.0.6 compute.tide_elevations from
+the TPXO10 SOURCE NetCDF, at the SAME instants (delta_time seconds since
+the 1992 epoch).
+
+```
+cd ~/proj/tide && TIDE_DASK_DISABLE=1 uv run python dev_tpxo10/scripts/td2_ours.py
+cd dev_tpxo10 && uv run python scripts/td2_golden.py
+```
+
+10 stations (Taiwan Strait, Kuroshio, Luzon, open Pacific, N/S Atlantic,
+Gulf of Maine, Yellow Sea, Arabian Sea, Weddell edge) x 2 windows
+(solstice + equinox, ~48 h hourly). **Worst RMSE 0.001 mm, worst
+max|delta| 0.001 mm** vs the gate 5 mm / 20 mm — essentially exact. The
+prediction engines agree to sub-micron precision; the migration
+introduces zero prediction drift. Evidence: `benchmarks/td2_result.json`.
+
+### S3 remaining for G3
+
+- T-F observation validation (NOAA / CWA): TPXO10 >= TPXO9 accuracy
+- §7.5.2 old/new performance benchmark (rollback latency + bbox/cap)
+- Linux-host cold-cache round (macOS = first-path-access only)
