@@ -684,7 +684,13 @@ the known-bad skip list) are filtered OFFLINE against the tpxo10 store —
 keep only those whose nearest cell is flag-0 valid — yielding 42
 model-resolved stations (estuary/inner-bay gauges the global 1/30deg
 model cannot resolve are excluded BEFORE any API call). 40 fetched, 37
-returned data for the window.
+returned data for the window. The selection is REPRODUCIBLE
+(`scripts/select_tf_noaa_stations.py`) and its full chain is fixed in a
+tracked manifest `benchmarks/tf_noaa_station_selection_20260617.json`:
+total 314 -> water-level 115 -> model-resolved (flag-0) 42 -> returned
+37 -> comparable 34, with per-stage exclusion reasons (model_invalid_cell
+73, resolved-but-no-data 4, tpxo9-baseline-invalid 3) + the known skip
+list.
 
 **NOAA primary gate — PASS** (`tf_observations_noaa_20260617.json` ->
 `tf_observation_noaa_20260617.json`): 37 stations (hourly water_level,
