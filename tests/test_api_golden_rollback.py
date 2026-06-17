@@ -115,9 +115,10 @@ def test_point_rollback_identical(stores, monkeypatch):
     with _client(tpath, monkeypatch) as ct:
         jt = _point(ct, qlon, qlat).json()
     assert set(jl) == set(jt)
-    assert jl["z"] and jt["z"]
-    assert np.allclose(jl["z"], jt["z"], rtol=0, atol=1e-2)   # cm, quantized
-    assert np.allclose(jl["u"], jt["u"], rtol=0, atol=1e-2)
+    for var in ("z", "u", "v"):
+        assert jl[var] and jt[var]
+        assert len(jl[var]) == len(jt[var])
+        assert np.allclose(jl[var], jt[var], rtol=0, atol=1e-2)   # cm, quantized
 
 
 # ---------- bbox map: cross-schema identical shape + values ----------
@@ -134,9 +135,9 @@ def test_bbox_rollback_identical(stores, monkeypatch):
     assert set(jl) == set(jt)
     assert jl["longitude"] == jt["longitude"]
     assert jl["latitude"] == jt["latitude"]
-    assert np.allclose(jl["z"], jt["z"], rtol=0, atol=1e-2)
-    # the invalid node is filtered out in BOTH schemas (missing, not 0)
-    assert len(jl["z"]) == len(jt["z"]) == NLAT * NLON - 1
+    for var in ("z", "u", "v"):
+        assert len(jl[var]) == len(jt[var]) == NLAT * NLON - 1   # invalid dropped
+        assert np.allclose(jl[var], jt[var], rtol=0, atol=1e-2)
 
 
 # ---------- const multipoint: cross-schema + missing ----------
