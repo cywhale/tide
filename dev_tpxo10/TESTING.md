@@ -603,6 +603,37 @@ evidence at G1 (not re-run). **P4 cold-cache** deferred to a Linux host
 warm-cache + P-Strip latency PASS + cap revalidation; cold-cache pending
 the Linux round.
 
+### S3.2b §7.5.2 P4 cold-cache — PASS (Linux VM24, 2026-06-17)
+
+The binding cold-cache round, run by Codex on the production-like Linux
+host VM24 (`odb24` / 192.168.2.24) in an ISOLATED dir
+(`/home/odbadmin/python/tide_coldcache_stage3`); production repo NOT
+touched (its `data/tpxo10.zarr` still absent), no restart/kill/process
+change. Test stores: tpxo9 symlinked to existing data, tpxo10 copied
+(12 GB). Eviction: `sync; echo 3 > /proc/sys/vm/drop_caches` before each
+read (verifiable page-cache eviction — the macOS rounds could only be
+`first-path-access`). Evidence: `benchmarks/cold_cache_vm24.json`.
+
+| pattern | OLD median | NEW median | ratio |
+|---|---|---|---|
+| P1 point all-15 | 130.07 ms | 57.08 ms | 0.439 |
+| P1 point M2-only | 26.21 ms | 19.16 ms | 0.731 |
+| P2 point 1-day | 33.46 ms | 22.72 ms | 0.679 |
+| P3 map 10deg | 2147.18 ms | 888.50 ms | 0.414 |
+| P-Map45 s5 | 27082.59 ms | 6257.33 ms | 0.231 |
+| P-Strip 45x5 | 827.79 ms | 456.36 ms | 0.551 |
+
+TPXO10 is faster on EVERY pattern under cold cache — dramatically for
+large maps (P-Map45 4.3x faster cold), because the (113,113,15) int32 +
+Blosc/lz4 layout reads far less from disk than the legacy
+(113,113,8) float64 split-constituent store. P-Map45-s5 cold latency is
+noisy (2 reps, first-read disk I/O), but the new/old gap is large and the
+conclusion is robust. **§7.5.2 P4 cold-cache: PASS.**
+
+With S3.2 (warm core + P-Strip + cap revalidation) and S3.2b (cold-cache)
+both green, **§7.5.2 is complete** (warm + cold + cap; tpxo10 faster
+throughout).
+
 ### S3.3 T-F observation harness — SCRIPT READY, GATE NOT EXECUTED (2026-06-15)
 
 `scripts/tf_observation.py` predicts the z series at the OBSERVED instants
@@ -641,9 +672,11 @@ binding gate evidence must use a non-ignored name to survive into the G3
 close-out (the harness warns if the default is used with
 `--observations`).
 
-### S3 remaining for G3 (external-dependency gates)
+### S3 remaining for G3
 
-- T-F observation: EXECUTE the gate with real NOAA/CWA observations
-  (harness ready; `--observations <file>`)
-- Linux-host cold-cache round (macOS = first-path-access only) — needs a
-  Linux host with verifiable page-cache eviction (deferred per §7.5.1)
+- T-F observation: EXECUTE the binding gate — run the fetch/normalize
+  step (`fetch_tf_observations.py`, NOAA primary / CWA 24h smoke) to
+  produce sanitized obs, then `tf_observation.py --observations <json>
+  --out <tracked>`. Harness + fetcher are ready and unit-tested; needs
+  live NOAA/CWA API access to execute.
+- (DONE) §7.5.2 P4 cold-cache — PASS on Linux VM24 (S3.2b).

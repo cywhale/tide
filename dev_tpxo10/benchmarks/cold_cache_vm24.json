@@ -1,0 +1,97 @@
+{
+ "host": "odb24",
+ "method": "linux_drop_caches",
+ "reps": 2,
+ "patterns": {
+  "P1_point_all15": {
+   "old": {
+    "median_ms": 130.07,
+    "min_ms": 56.65,
+    "max_ms": 203.5,
+    "n": 2
+   },
+   "new": {
+    "median_ms": 57.08,
+    "min_ms": 29.18,
+    "max_ms": 84.98,
+    "n": 2
+   },
+   "ratio_median": 0.439
+  },
+  "P1_point_m2": {
+   "old": {
+    "median_ms": 26.21,
+    "min_ms": 25.85,
+    "max_ms": 26.57,
+    "n": 2
+   },
+   "new": {
+    "median_ms": 19.16,
+    "min_ms": 16.24,
+    "max_ms": 22.09,
+    "n": 2
+   },
+   "ratio_median": 0.731
+  },
+  "P2_point_1day": {
+   "old": {
+    "median_ms": 33.46,
+    "min_ms": 31.47,
+    "max_ms": 35.45,
+    "n": 2
+   },
+   "new": {
+    "median_ms": 22.72,
+    "min_ms": 22.52,
+    "max_ms": 22.91,
+    "n": 2
+   },
+   "ratio_median": 0.679
+  },
+  "P3_map_10deg": {
+   "old": {
+    "median_ms": 2147.18,
+    "min_ms": 643.43,
+    "max_ms": 3650.92,
+    "n": 2
+   },
+   "new": {
+    "median_ms": 888.5,
+    "min_ms": 362.85,
+    "max_ms": 1414.16,
+    "n": 2
+   },
+   "ratio_median": 0.414
+  },
+  "PMap45_s5": {
+   "old": {
+    "median_ms": 27082.59,
+    "min_ms": 5931.99,
+    "max_ms": 48233.18,
+    "n": 2
+   },
+   "new": {
+    "median_ms": 6257.33,
+    "min_ms": 2948.1,
+    "max_ms": 9566.56,
+    "n": 2
+   },
+   "ratio_median": 0.231
+  },
+  "PStrip_45x5": {
+   "old": {
+    "median_ms": 827.79,
+    "min_ms": 751.62,
+    "max_ms": 903.96,
+    "n": 2
+   },
+   "new": {
+    "median_ms": 456.36,
+    "min_ms": 452.64,
+    "max_ms": 460.08,
+    "n": 2
+   },
+   "ratio_median": 0.551
+  }
+ }
+}
