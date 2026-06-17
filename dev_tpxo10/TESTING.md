@@ -570,8 +570,36 @@ max|delta| 0.001 mm** vs the gate 5 mm / 20 mm — essentially exact. The
 prediction engines agree to sub-micron precision; the migration
 introduces zero prediction drift. Evidence: `benchmarks/td2_result.json`.
 
-### S3 remaining for G3
+### S3.2 §7.5.2 old/new performance benchmark — PASS (2026-06-15)
 
-- T-F observation validation (NOAA / CWA): TPXO10 >= TPXO9 accuracy
-- §7.5.2 old/new performance benchmark (rollback latency + bbox/cap)
-- Linux-host cold-cache round (macOS = first-path-access only)
+```
+TIDE_DASK_DISABLE=1 uv run python dev_tpxo10/scripts/benchmark_old_new_api.py
+```
+
+Post-migration OLD = migrated runtime on data/tpxo9.zarr (legacy
+adapter), NEW = migrated runtime on data/tpxo10.zarr (tpxo10 adapter);
+warmup + randomized interleaved, points 120 reps (stable median on
+sub-5ms ops), maps 3-8 reps. NEW/OLD median ratios (gate <= 1.10x):
+
+| pattern | OLD ms | NEW ms | ratio |
+|---|---|---|---|
+| P1 point all-15 | 3.96 | 3.33 | 0.840 |
+| P1 point M2-only | 1.91 | 2.05 | 1.074 |
+| P2 point 1-day | 4.55 | 3.96 | 0.871 |
+| P3 map 1deg | 22.18 | 17.91 | 0.808 |
+| P3 map 5deg | 75.47 | 59.23 | 0.785 |
+| P3 map 10deg | 129.29 | 98.08 | 0.759 |
+| P-Map45 s5 | 1335.84 | 915.94 | 0.686 |
+
+NEW is FASTER on every dominant pattern (maps 20-32%, 45deg 31%); the
+single-constituent micro-point is 1.074x (sub-0.15ms, within gate). The
+tpxo10 (113,113,15) int32 chunking (D5) pays off in production vs the
+legacy (113,113,8) float64 split-constituent layout. `PASS` ->
+`benchmarks/perf_old_new.json`.
+
+### S3 remaining for G3 (external-dependency gates)
+
+- T-F observation validation (NOAA / CWA): TPXO10 >= TPXO9 accuracy —
+  needs the NOAA tide-gauge API + CWA comparison data (network)
+- Linux-host cold-cache round (macOS = first-path-access only) — needs a
+  Linux host with verifiable page-cache eviction (deferred per §7.5.1)

@@ -1,0 +1,44 @@
+{
+ "P1_point_all15": {
+  "old_ms": 3.96,
+  "new_ms": 3.33,
+  "ratio": 0.84,
+  "pass": true
+ },
+ "P1_point_m2": {
+  "old_ms": 1.91,
+  "new_ms": 2.05,
+  "ratio": 1.074,
+  "pass": true
+ },
+ "P2_point_1day": {
+  "old_ms": 4.55,
+  "new_ms": 3.96,
+  "ratio": 0.871,
+  "pass": true
+ },
+ "P3_map_1deg": {
+  "old_ms": 22.18,
+  "new_ms": 17.91,
+  "ratio": 0.808,
+  "pass": true
+ },
+ "P3_map_5deg": {
+  "old_ms": 75.47,
+  "new_ms": 59.23,
+  "ratio": 0.785,
+  "pass": true
+ },
+ "P3_map_10deg": {
+  "old_ms": 129.29,
+  "new_ms": 98.08,
+  "ratio": 0.759,
+  "pass": true
+ },
+ "PMap45_s5": {
+  "old_ms": 1335.84,
+  "new_ms": 915.94,
+  "ratio": 0.686,
+  "pass": true
+ }
+}
