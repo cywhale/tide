@@ -73,14 +73,25 @@ class TideForecastResponse(BaseModel):
     summary="Daily tide extremes (high tide/low tide) plus sun/moon phases/events",
 )
 def tide_forecast(
-    lon: float = Query(..., description="Longitude in degrees [-180, 180]"),
-    lat: float = Query(..., description="Latitude in degrees [-90, 90]"),
+    lon: float = Query(
+        ...,
+        description="Longitude in degrees [-180, 180]",
+        examples=[123.442],
+    ),
+    lat: float = Query(
+        ...,
+        description="Latitude in degrees [-90, 90]",
+        examples=[25.086],
+    ),
     date: Optional[str] = Query(
-        None, description="Local date in YYYY-MM-DD; defaults to today in tz"
+        None,
+        description="Local date in YYYY-MM-DD; defaults to today in tz",
+        examples=["2025-01-11"],
     ),
     tz: Union[str, float, int] = Query(
         "+00:00",
         description="Timezone offset, e.g. +08:00, -05:30, 8, -8. Defaults to UTC.",
+        examples=["+08:00"],
     ),
 ):
     """
