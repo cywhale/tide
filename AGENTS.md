@@ -22,8 +22,8 @@ Run the API locally with hot reload when you do not need TLS:
 ```bash
 uvicorn tide_app:app --reload --port 8040
 ```
-For a production-like stack with Dask scheduler/workers, certificates, and
-Gunicorn workers, use `bash conf/start_app.sh`. The TPXO10 conversion
+For a production-like stack with certificates and Gunicorn workers, use
+`bash conf/start_app.sh`. The TPXO10 conversion
 environment is separate:
 ```bash
 cd dev_tpxo10
@@ -64,12 +64,16 @@ through hardcoded `xr.open_zarr(...)`. Bbox/map queries must go through
 `TIDE_MAX_BBOX_CELLS`) is enforced before materialization. TPXO10 invalid
 cells (`flag==2`) must propagate as missing/null, never as fabricated zero.
 `TIDE_DASK_DISABLE=1` skips the Dask client for tests/single-process runs;
-production keeps the shared scheduler unless deployment deliberately
-changes that contract.
+TPXO10 store reads use the direct adapter path, so Dask is optional and must
+not be treated as part of the bbox critical path.
 
-## v0.3.0 Deployment Boundary
-G0→G3 are complete and pre-deployment evidence is tracked. Deployment is a
-separate operational step: do not mutate the VM24 production repo/process
-from development scripts. For rollout, use an isolated worktree, transfer
-`data/tpxo10.zarr` out-of-band, keep `data/tpxo9.zarr` for rollback, and
-follow `dev_tpxo10/STAGE3_G3_CLOSEOUT.md` section 5.
+## v0.3.1 Production Notes
+VM24 production serves TPXO10 from a release directory, not from the legacy
+`~/python/tide` checkout. The legacy checkout is intentionally kept as the
+TPXO9 rollback anchor and should remain clean. Operator details and rollback
+commands live in `dev_tpxo10/DEPLOYMENT_VM24.md`.
+
+For deployment scripts, do not assume an interactive shell PATH. Use
+`GUNICORN_BIN`, `uv run gunicorn`, PATH, or the VM24 py311 fallback as in
+`conf/start_app.sh`. Public API users cannot select TPXO9; TPXO9 is
+deprecated and retained only for operator rollback.

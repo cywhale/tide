@@ -1,5 +1,10 @@
 # Spec for Codex for revision v0.2.7 of tide_app.py (FastAPI)
 
+Historical note: this document records the original v0.2.7 TPXO9 forecast
+design. Since API v1.1.0 / project v0.3.1, the runtime serves
+TPXO10-atlas-v2 by default and the forecast response reference is selected
+from the active store schema.
+
 ## 1) Endpoint
 
 **Path:** `GET /api/tide/forecast`

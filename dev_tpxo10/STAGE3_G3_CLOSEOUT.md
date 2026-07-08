@@ -1,5 +1,9 @@
 # v0.3.0 Stage 3 / Gate G3 — Close-out & Deployment Handoff
 
+Post-deployment note: VM24 production cutover was completed after this
+pre-deployment close-out. See `dev_tpxo10/DEPLOYMENT_VM24.md` for the
+current runtime layout and rollback procedure.
+
 Branch: `feature/v0.3.0-stage3-adapter` (merge-base with `origin/main`:
 `bc9e9d4`). Spec: [`specs/v0.3.0_tpxo10_migration_plan.md`](../specs/v0.3.0_tpxo10_migration_plan.md).
 Full per-gate evidence: [`TESTING.md`](TESTING.md).

@@ -8,8 +8,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, ORJSONResponse
 from fastapi.encoders import jsonable_encoder
 from contextlib import asynccontextmanager
-from typing import Optional, List, Union
-from pydantic import BaseModel
+from typing import Optional
 import requests
 import json
 from datetime import datetime, timedelta
@@ -30,8 +29,8 @@ def generate_custom_openapi():
         return app.openapi_schema
     openapi_schema = get_openapi(
         title="ODB Tide API",
-        version="1.0.0",
-        description=('Open API to query TPXO global tide models (TPXO10-atlas-v2 by default; TPXO9-atlas-v5 supported), compiled by ODB. Reference: Egbert, Gary D., and Svetlana Y. Erofeeva. "Efficient inverse modeling of barotropic ocean tides." Journal of Atmospheric and Oceanic Technology 19.2 (2002): 183-204.\n' +
+        version="1.1.0",
+        description=('Open API to query TPXO global tide models (TPXO10-atlas-v2), compiled by ODB. Reference: Egbert, Gary D., and Svetlana Y. Erofeeva. "Efficient inverse modeling of barotropic ocean tides." Journal of Atmospheric and Oceanic Technology 19.2 (2002): 183-204.\n' +
                      '* The tide model predictions provided by this API are for reference purposes only and are intended to serve as a preliminary resource, not to be considered as definitive for scientific research or risk assessment. Users should understand that no legal liability or responsibility is assumed by the provider of this API for any decisions made based on reliance on this data. Users should conduct their own independent analysis and verification before relying on the data.\n' +
                      '* 本API提供的模型預測數據僅供參考之用，旨在做為初步的資訊來源，而不應被視為科學研究或風險評估的決定性依據。使用者須理解，對於依賴這些數據所做出的任何決策，本API提供者不承擔任何法律責任或義務。使用者在依賴這些數據前，應進行獨立分析和驗證。\n' +
                      '* Parts of this API utilize functions provided by pyTMD (https://github.com/tsutterley/pyTMD). We acknowledge and thank the original authors for their contributions.'),
@@ -145,7 +144,7 @@ def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1):
     for var in variables:
         if var in tide:
             if var == 'z' and 'time' not in mode:
-                var_data = tide[var] * 100.0 # convert to cm (but time series is already cm)
+                var_data = tide[var] * 100.0  # map z is m; API returns cm
             else:
                 var_data = tide[var]
 
@@ -177,49 +176,69 @@ def tide_to_output(tide, lon, lat, dtime, variables, mode="time", absmax=-1):
     # return df
 
 
-class TideResponse(BaseModel):
-    longitude: float
-    latitude: float
-    time: str
-    z: Optional[float]
-    u: Optional[float]
-    v: Optional[float]
+def _ordered_valid_tokens(text: str, allowed) -> list:
+    """Parse comma-separated tokens, preserving order and de-duplicating."""
+    out = []
+    seen = set()
+    allowed_set = set(allowed)
+    for token in text.split(','):
+        token = token.strip()
+        if token in allowed_set and token not in seen:
+            out.append(token)
+            seen.add(token)
+    return out
 
 
-@app.get("/api/tide", response_model=List[TideResponse], tags=["Tide"], summary="Query tide height and tidal current")
+def _openapi_example(value):
+    return {"example": {"value": value}}
+
+
+@app.get("/api/tide", tags=["Tide"], summary="Query tide height and tidal current")
 async def get_tide(
     lon0: float = Query(...,
-                        description="Minimum longitude, range: [-180, 180]"),
-    lat0: float = Query(..., description="Minimum latitude, range: [-90, 90]"),
+                        description="Minimum longitude, range: [-180, 180]",
+                        openapi_examples=_openapi_example(-157.86453)),
+    lat0: float = Query(..., description="Minimum latitude, range: [-90, 90]",
+                        openapi_examples=_openapi_example(21.303333)),
     lon1: Optional[float] = Query(
-        None, description="Maximum longitude, range: [-180, 180]"),
+        None, description="Maximum longitude for bbox/map queries, range: [-180, 180]",
+        openapi_examples=_openapi_example(-157.6)),
     lat1: Optional[float] = Query(
-        None, description="Maximum latitude, range: [-90, 90]"),
+        None, description="Maximum latitude for bbox/map queries, range: [-90, 90]",
+        openapi_examples=_openapi_example(21.6)),
     start: Optional[str] = Query(
-        None, description="Start datetime (UTC) of tide data to query. If none, current datetime is default"),
+        None, description="Start datetime (UTC). If omitted, current datetime is used.",
+        openapi_examples=_openapi_example("2023-07-25T00:00:00")),
     end: Optional[str] = Query(
-        None, description="End datetime (UTC) of tide data to query"),
+        None, description="End datetime (UTC). Point time series are limited to 30 days.",
+        openapi_examples=_openapi_example("2023-07-26T00:00:00")),
     sample: Optional[int] = Query(
-        5, description="Re-sampling every N points(default 5)"),
+        5,
+        description="Stride for bbox/map output grid. Default 5. sample=1 returns every selected grid cell and may hit MAX_BBOX_CELLS=500000.",
+        openapi_examples=_openapi_example(5)),
     mode: Optional[str] = Query(
         None,
-        description="Allowed modes: list, truncate. Optional can be none (default output is list). Multiple/special modes can be separated by comma. The mode 'truncate' will output longitude/latitude to 5 decimal places, tide variables to 3 decimal places."),
+        description="Optional comma-separated modes. `truncate` rounds lon/lat to 5 decimals and values to 3 decimals; `nearest` enables nearest-point tolerance behavior.",
+        openapi_examples=_openapi_example("truncate")),
     tol: Optional[float] = Query(
         None,
-        description="Tolerance for nearest method to locate points by giving tolerance value. Default tolerance is ±1/60 degree, and maximum is ±0.25 degree."),
+        description="Nearest-point tolerance in degrees. Default 1/60 degree (half grid cell); maximum 0.25 degree."),
     append: Optional[str] = Query(
-        None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z,u,v"),
+        None, description="Comma-separated fields. Default `z`. Allowed fields: z,u,v. Invalid/missing model cells are omitted; all-missing requests return {}.",
+        openapi_examples=_openapi_example("z")),
     constituent: Optional[str] = Query(
         None,
-        description="Allowed harmonic constituents are 'q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm'. If none, all 15 constituents will be included in evaluation. See also: https://www.tpxo.net/global")
+        description="Comma-separated harmonic constituents. If omitted, all 15 constituents are used. Allowed: q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm. See also: https://www.tpxo.net/global",
+        openapi_examples=_openapi_example("m2,k1"))
 ):
     """
     Query tide from the TPXO global tide model (TPXO10-atlas-v2 by default) by longitude/latitude/date (in JSON).
 
     #### Usage
-    * One-point tide height with time-span limitation (<= 30 days, hourly data): e.g. /tide?lon0=125&lat0=15&start=2023-07-25&end=2023-07-26T01:30:00.000
-    * Get current in bounding-box <= 45x45 in degrees at one time moment(in ISOstring): e.g. /tide?lon0=125&lon1&=135&lat0=15&lat1=30&start=2023-07-25T01:30:00.000
-    * Note: the unit of z (tide height), u and v (tidal current) are all cm/s
+    * One-point tide height (<= 30 days, hourly): `/api/tide?lon0=-157.86453&lat0=21.303333&start=2023-07-25&end=2023-07-26`
+    * Small bbox map: `/api/tide?lon0=-158.2&lon1=-157.6&lat0=21.0&lat1=21.6&start=2023-07-25T00:00:00&sample=5`
+    * Units: z tide height is cm; u and v tidal-current components are cm/s.
+    * Large maps are capped at MAX_BBOX_CELLS=500000 after applying sample.
     """
 
     if append is None:
@@ -235,7 +254,7 @@ async def get_tide(
     if constituent is None:
         cons = config.cons
     else:
-        cons = list(set([c.strip() for c in constituent.split(',') if c.strip() in config.cons]))
+        cons = _ordered_valid_tokens(constituent, config.cons)
         if not cons:
             raise HTTPException(
                 status_code=400, detail="Invalid constituents. Allowed constituents are 'q1','o1','p1','k1','n2','m2','s1','s2','k2','m4','ms4','mn4','2n2','mf','mm'")
@@ -597,38 +616,33 @@ def get_constituent(adapter, dsub, lon, lat, vars=['amp', 'ph'],
     return out
 
 
-class ConstMinResponse(BaseModel):
-    longitude: float
-    latitude: float
-    grid_lon: float
-    grid_lat: float
-    type: str
-
-
-@app.get("/api/tide/const", response_model=List[Union[ConstMinResponse, dict]],
-         tags=["Tide"], summary="Get harmonic constituents of the TPXO model")
+@app.get("/api/tide/const", tags=["Tide"], summary="Get harmonic constituents of the TPXO model")
 async def get_tide_const(
     lon: Optional[str] = Query(
             None,
             description="comma-separated longitude values. One of lon/lat and jsonsrc should be specified as longitude/latitude input.",
-            example="122.36,122.47"),
+            openapi_examples=_openapi_example("-157.86453,-70.9137")),
     lat: Optional[str] = Query(
             None,
             description="comma-separated latitude values. One of lon/lat and jsonsrc should be specified as longitude/latitude input.",
-            example="25.02,24.82"),
+            openapi_examples=_openapi_example("21.303333,41.6212")),
     mode: Optional[str] = Query(
         None,
-        description="Allowed modes: list, object, row (dataframe in wide format; long-format dataframe is also available as a special mode 'long'). Optional can be none (default output is list). Multiple/special modes can be separated by comma."),
+        description="Optional modes: default/list returns a column-oriented object; row returns row records; long returns long-format records; object returns the raw column object.",
+        openapi_examples=_openapi_example("row")),
     tol: Optional[float] = Query(
         None,
-        description="Tolerance for nearest method to locate points by giving tolerance value. Default tolerance is ±1/60 degree, and maximum is ±0.25 degree."),
+        description="Nearest-point tolerance in degrees. Default 1/60 degree (half grid cell); maximum 0.25 degree."),
     append: Optional[str] = Query(
-        None, description="Data fields to append, separated by commas. If none, 'z': tide height is default. Allowed fields: z,u,v"),
+        None, description="Comma-separated fields. Default `z`. Allowed fields: z,u,v. z constants are tide height; u/v constants are current components.",
+        openapi_examples=_openapi_example("z,u,v")),
     constituent: Optional[str] = Query(
         None,
-        description="Allowed harmonic constituents are 'q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm'. If none, all 15 constituents will be included in evaluation. See also: https://www.tpxo.net/global"),
+        description="Comma-separated harmonic constituents. If omitted, all 15 constituents are returned. Allowed: q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm. See also: https://www.tpxo.net/global",
+        openapi_examples=_openapi_example("m2,k1")),
     complex: Optional[str] = Query(
-        None, description="Harmonic complex constants for output, separated by commas. If none, 'amp,ph' is default. Allowed variables: amp, ph, hc, which means amplitude, phase, harmonic in complex (real, imag), respectively"),
+        None, description="Comma-separated output components. Default amp,ph. Allowed: amp, ph, hc. hc returns real/imag columns.",
+        openapi_examples=_openapi_example("amp,ph")),
     jsonsrc: Optional[str] = Query(
         None,
         description='Optional. A valid URL for JSON source or a JSON string that contains longitude and latitude keys with values in array.\n' +
@@ -638,7 +652,7 @@ async def get_tide_const(
     Query harmonic constituents from the TPXO global tide model (TPXO10-atlas-v2 by default) by longitude/latitude.
 
     #### Usage
-    * e.g. /tide/const?lon=122.36,122.47&lat=25.02,24.82&constituent=k1,m2,n2,o1,p1,s2&complex=amp,ph,hc&append=z,u,v
+    * `/api/tide/const?lon=-157.86453,-70.9137&lat=21.303333,41.6212&constituent=m2,k1&complex=amp,ph&append=z,u,v&mode=row`
     """
     try:
         if jsonsrc:
@@ -703,7 +717,7 @@ async def get_tide_const(
     if constituent is None:
         cons = config.cons
     else:
-        cons = list(set([c.strip() for c in constituent.split(',') if c.strip() in config.cons]))
+        cons = _ordered_valid_tokens(constituent, config.cons)
         if not cons:
             raise HTTPException(
                 status_code=400, detail="Invalid constituents. Allowed constituents are 'q1','o1','p1','k1','n2','m2','s1','s2','k2','m4','ms4','mn4','2n2','mf','mm'")
@@ -711,9 +725,9 @@ async def get_tide_const(
     if complex is None:
         complex = 'amp,ph'
 
+    pars = []
     if ',' in complex:
-        pars = list(set([par.strip() for par in complex.split(
-            ',') if par.strip() in ['amp', 'ph', 'hc']]))
+        pars = _ordered_valid_tokens(complex, ['amp', 'ph', 'hc'])
     elif complex.strip() in ['amp', 'ph', 'hc']:
         pars=[complex.strip()]
 
