@@ -73,13 +73,16 @@ app.include_router(forecast_router)
 
 @app.get("/api/swagger/tide/openapi.json", include_in_schema=False)
 async def custom_openapi():
-    return JSONResponse(generate_custom_openapi())
+    return JSONResponse(
+        generate_custom_openapi(),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/swagger/tide", include_in_schema=False)
 async def custom_swagger_ui_html():
     return get_swagger_ui_html(
-        openapi_url="/api/swagger/tide/openapi.json",
+        openapi_url="/api/swagger/tide/openapi.json?v=1.1.0",
         title=app.title
     )
 
