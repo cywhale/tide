@@ -189,47 +189,47 @@ def _ordered_valid_tokens(text: str, allowed) -> list:
     return out
 
 
-def _query_examples(value):
-    return [value]
+def _query_example(value):
+    return {"example": value}
 
 
 @app.get("/api/tide", tags=["Tide"], summary="Query tide height and tidal current")
 async def get_tide(
     lon0: float = Query(...,
                         description="Minimum longitude, range: [-180, 180]",
-                        examples=_query_examples(-157.86453)),
+                        json_schema_extra=_query_example(-157.86453)),
     lat0: float = Query(..., description="Minimum latitude, range: [-90, 90]",
-                        examples=_query_examples(21.303333)),
+                        json_schema_extra=_query_example(21.303333)),
     lon1: Optional[float] = Query(
         None, description="Maximum longitude for bbox/map queries, range: [-180, 180]",
-        examples=_query_examples(-157.6)),
+        json_schema_extra=_query_example(-157.6)),
     lat1: Optional[float] = Query(
         None, description="Maximum latitude for bbox/map queries, range: [-90, 90]",
-        examples=_query_examples(21.6)),
+        json_schema_extra=_query_example(21.6)),
     start: Optional[str] = Query(
         None, description="Start datetime (UTC). If omitted, current datetime is used.",
-        examples=_query_examples("2023-07-25T00:00:00")),
+        json_schema_extra=_query_example("2023-07-25T00:00:00")),
     end: Optional[str] = Query(
         None, description="End datetime (UTC). Point time series are limited to 30 days.",
-        examples=_query_examples("2023-07-26T00:00:00")),
+        json_schema_extra=_query_example("2023-07-26T00:00:00")),
     sample: Optional[int] = Query(
         5,
         description="Stride for bbox/map output grid. Default 5. sample=1 returns every selected grid cell and may hit MAX_BBOX_CELLS=500000.",
-        examples=_query_examples(5)),
+        json_schema_extra=_query_example(5)),
     mode: Optional[str] = Query(
         None,
         description="Optional comma-separated modes. `truncate` rounds lon/lat to 5 decimals and values to 3 decimals; `nearest` enables nearest-point tolerance behavior.",
-        examples=_query_examples("truncate")),
+        json_schema_extra=_query_example("truncate")),
     tol: Optional[float] = Query(
         None,
         description="Nearest-point tolerance in degrees. Default 1/60 degree (half grid cell); maximum 0.25 degree."),
     append: Optional[str] = Query(
         None, description="Comma-separated fields. Default `z`. Allowed fields: z,u,v. Invalid/missing model cells are omitted; all-missing requests return {}.",
-        examples=_query_examples("z")),
+        json_schema_extra=_query_example("z")),
     constituent: Optional[str] = Query(
         None,
         description="Comma-separated harmonic constituents. If omitted, all 15 constituents are used. Allowed: q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm. See also: https://www.tpxo.net/global",
-        examples=_query_examples("m2,k1"))
+        json_schema_extra=_query_example("m2,k1"))
 ):
     """
     Query tide from the TPXO global tide model (TPXO10-atlas-v2 by default) by longitude/latitude/date (in JSON).
@@ -621,28 +621,28 @@ async def get_tide_const(
     lon: Optional[str] = Query(
             None,
             description="comma-separated longitude values. One of lon/lat and jsonsrc should be specified as longitude/latitude input.",
-            examples=_query_examples("-157.86453,-70.9137")),
+            json_schema_extra=_query_example("-157.86453,-70.9137")),
     lat: Optional[str] = Query(
             None,
             description="comma-separated latitude values. One of lon/lat and jsonsrc should be specified as longitude/latitude input.",
-            examples=_query_examples("21.303333,41.6212")),
+            json_schema_extra=_query_example("21.303333,41.6212")),
     mode: Optional[str] = Query(
         None,
         description="Optional modes: default/list returns a column-oriented object; row returns row records; long returns long-format records; object returns the raw column object.",
-        examples=_query_examples("row")),
+        json_schema_extra=_query_example("row")),
     tol: Optional[float] = Query(
         None,
         description="Nearest-point tolerance in degrees. Default 1/60 degree (half grid cell); maximum 0.25 degree."),
     append: Optional[str] = Query(
         None, description="Comma-separated fields. Default `z`. Allowed fields: z,u,v. z constants are tide height; u/v constants are current components.",
-        examples=_query_examples("z,u,v")),
+        json_schema_extra=_query_example("z,u,v")),
     constituent: Optional[str] = Query(
         None,
         description="Comma-separated harmonic constituents. If omitted, all 15 constituents are returned. Allowed: q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm. See also: https://www.tpxo.net/global",
-        examples=_query_examples("m2,k1")),
+        json_schema_extra=_query_example("m2,k1")),
     complex: Optional[str] = Query(
         None, description="Comma-separated output components. Default amp,ph. Allowed: amp, ph, hc. hc returns real/imag columns.",
-        examples=_query_examples("amp,ph")),
+        json_schema_extra=_query_example("amp,ph")),
     jsonsrc: Optional[str] = Query(
         None,
         description='Optional. A valid URL for JSON source or a JSON string that contains longitude and latitude keys with values in array.\n' +
