@@ -15,6 +15,19 @@ import src.config as config
 from src.model_utils import get_tide_series, get_tide_time
 
 REFERENCE_TEXT = "TPXO9_atlas_v5 relative to MSL (NTDE 1983–2001)"
+# v0.3.0 Stage 3: the reference reflects the ACTIVE store schema (rollback
+# can serve either), derived from the adapter at response time.
+_REFERENCE_BY_SCHEMA = {
+    "tpxo10-cgrid-v1": "TPXO10_atlas_v2 relative to MSL (NTDE 1983–2001)",
+    "legacy-tpxo9": REFERENCE_TEXT,
+}
+
+
+def _reference_text() -> str:
+    adapter = getattr(config, "adapter", None)
+    if adapter is not None:
+        return _REFERENCE_BY_SCHEMA.get(adapter.schema, REFERENCE_TEXT)
+    return REFERENCE_TEXT
 USNO_ENDPOINT = "https://aa.usno.navy.mil/api/rstt/oneday"
 USNO_CACHE_TTL_SECONDS = 6 * 3600  # 6 hours
 TZ_PATTERN = re.compile(r"^([+-]?)(\d{1,2})(?::(\d{2}))?$")
@@ -60,14 +73,25 @@ class TideForecastResponse(BaseModel):
     summary="Daily tide extremes (high tide/low tide) plus sun/moon phases/events",
 )
 def tide_forecast(
-    lon: float = Query(..., description="Longitude in degrees [-180, 180]"),
-    lat: float = Query(..., description="Latitude in degrees [-90, 90]"),
+    lon: float = Query(
+        ...,
+        description="Longitude in degrees [-180, 180]",
+        json_schema_extra={"example": 123.442},
+    ),
+    lat: float = Query(
+        ...,
+        description="Latitude in degrees [-90, 90]",
+        json_schema_extra={"example": 25.086},
+    ),
     date: Optional[str] = Query(
-        None, description="Local date in YYYY-MM-DD; defaults to today in tz"
+        None,
+        description="Local date in YYYY-MM-DD; defaults to today in tz",
+        json_schema_extra={"example": "2025-01-11"},
     ),
     tz: Union[str, float, int] = Query(
         "+00:00",
         description="Timezone offset, e.g. +08:00, -05:30, 8, -8. Defaults to UTC.",
+        json_schema_extra={"example": "+08:00"},
     ),
 ):
     """
@@ -127,7 +151,7 @@ def tide_forecast(
             "lon": float(lon),
             "lat": float(lat),
             "timezone": tz_label,
-            "reference": REFERENCE_TEXT,
+            "reference": _reference_text(),
             "status": usno_status,
         },
         "days": [
@@ -219,22 +243,26 @@ def _wrap_longitude(lon: float) -> float:
 
 
 def _select_point_constants(lon: float, lat: float) -> Tuple[np.ndarray, np.ndarray]:
-    if config.dz is None or config.cons is None or config.gridSz is None:
+    # v0.3.0 Stage 3 (D9): the forecast point path goes through the same
+    # store adapter as /api/tide — schema-agnostic z amplitude/phase.
+    if config.adapter is None or config.cons is None or config.gridSz is None:
         raise HTTPException(
             status_code=500,
             detail="Tide data not initialized. Please retry after startup completes.",
         )
     tol = 0.5 * config.gridSz
     try:
-        dsub = config.dz.sel(lon=lon, lat=lat, method="nearest", tolerance=tol)
+        dsub = config.adapter.sel_point(lon, lat, tol)
     except Exception as exc:
         raise HTTPException(
             status_code=400,
-            detail="Requested point is outside the TPXO9 grid coverage.",
+            detail="Requested point is outside the tide grid coverage.",
         ) from exc
 
-    z_amp = np.squeeze(dsub["z_amp"].values)
-    z_ph = np.squeeze(dsub["z_ph"].values)
+    z_amp, z_ph = config.adapter.amp_ph(dsub, "z")
+    # fill masked (TPXO10 flag==2 invalid) to NaN, NOT 0 (round 23 F1)
+    z_amp = np.squeeze(np.ma.filled(z_amp, np.nan))
+    z_ph = np.squeeze(np.ma.filled(z_ph, np.nan))
 
     if z_amp.ndim != 1 or z_ph.ndim != 1:
         raise HTTPException(

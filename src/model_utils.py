@@ -131,28 +131,23 @@ def time_series_for_constituents(t, hc, constituents, deltat=0.0):
 
 
 # Note dz is the data from Zarr
-def get_tide_map(dz, tide_time, format='netcdf', type=['u', 'v'], drop_dim=False):
+def get_tide_map(adapter, dsub, tide_time, format='netcdf', type=['u', 'v'], drop_dim=False):
+    # v0.3.0 Stage 3: variable access goes through the store adapter (D9)
+    # so this works unchanged across schemas. `adapter.hc(dsub, TYPE)`
+    # returns the masked complex harmonic constants in the legacy units
+    # (z metres, u/v cm/s) the prediction core already expects.
     DELTAT = np.zeros_like(tide_time)
-    c = dz.coords['constituents'].values
-    nx = dz.coords['lon'].size
-    ny = dz.coords['lat'].size
+    c = np.asarray(dsub.coords['constituents'].values)
+    ny, nx = adapter.grid_shape(dsub)
     timelen = len(tide_time)
     tide = {}
 
     for TYPE in type:
-        amp = dz[TYPE+'_amp'].values
-        ph = dz[TYPE+'_ph'].values
-        shpx = amp.shape
-        ampx = amp.reshape((shpx[0] * shpx[1], shpx[2]))
-        phx = ph.reshape((shpx[0] * shpx[1], shpx[2]))
-        # calculate complex phase in radians for Euler's
-        cph = -1j * phx * np.pi / 180.0
-        # calculate constituent oscillation
-        hc = ampx * np.exp(cph)
-        # Create a mask where values are NA # or 0 #modified v0.1.1 let it contribute 0, not NA
-        mask = np.isnan(hc) # | (hc == 0)
-        # Convert hc to a masked array
-        hc = ma.array(hc, mask=mask)  # mask=False
+        hc2d = adapter.hc(dsub, TYPE)            # (ny, nx, nc) masked
+        shpx = hc2d.shape
+        hc = hc2d.reshape((shpx[0] * shpx[1], shpx[2]))
+        if not ma.isMaskedArray(hc):
+            hc = ma.array(hc, mask=np.isnan(hc))
 
         if drop_dim:
             TIDE = predict.map(tide_time[0], hc, c,
@@ -180,46 +175,16 @@ def get_tide_map(dz, tide_time, format='netcdf', type=['u', 'v'], drop_dim=False
     return tide
 
 
-# Note dz is the data from Zarr and tide_time will get its first element
-def get_current_map(x0, y0, x1, y1, dz, tide_time, mask_grid=5, normalize=True):
-    grid_sz = 1/30
-    dsub = dz.sel(lon=slice(x0-grid_sz, x1+grid_sz),
-                  lat=slice(y0-grid_sz, y1+grid_sz))
-    gtide = get_tide_map(dsub, tide_time[0:1])
-
-    t = 0
-    nx = dsub.coords['lon'].size
-    ny = dsub.coords['lat'].size
-    glon, glat = np.meshgrid(
-        dsub.coords['lon'].values, dsub.coords['lat'].values)
-
-    # Reshape u and v to 2D
-    u0 = gtide['u'][:, :, t]
-    v0 = gtide['v'][:, :, t]
-
-    # Create a grid of indices for subsetting
-    X, Y = np.meshgrid(np.arange(nx), np.arange(ny))
-
-    # Calculate magnitude of the current
-    magnitude = np.sqrt(u0**2 + v0**2)
-    # Normalize the arrows to create a uniform arrow size across the plot
-    if normalize:
-        u = u0/magnitude
-        v = v0/magnitude
-    else:
-        u = u0
-        v = v0
-
-    n = mask_grid
-    mask = (X % n == 0) & (Y % n == 0)
-
-    x = glon[mask]
-    y = glat[mask]
-    u = u[mask]
-    v = v[mask]
-    mag = magnitude[mask]
-
-    return x, y, u, v, mag
+def get_current_map(*args, **kwargs):
+    # LEGACY / RETIRED (v0.3.0 Stage 3): the original quiver-map helper
+    # predates the adapter-based get_tide_map signature and the C-grid
+    # schema. It is not used by the runtime; fail loudly rather than
+    # surface a confusing signature error if some external caller revives
+    # it. Reinstate against the adapter + query planner if ever needed.
+    raise NotImplementedError(
+        "get_current_map was retired in v0.3.0; rewrite it against the "
+        "store adapter (D9) + query planner before use. See "
+        "dev/legacy_tpxo9/ for the pre-migration TPXO9 tooling.")
 
 
 # Ref/modified from pyTMD.interpolate.spline()

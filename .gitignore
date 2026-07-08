@@ -56,3 +56,15 @@ node_modules
 **/TPXO9_atlas_v5
 data/
 data_src/
+
+# uv environment pins (spec v0.3.0 D7): lock + interpreter version MUST be tracked
+!uv.lock
+!dev_tpxo10/uv.lock
+!.python-version
+!dev_tpxo10/.python-version
+
+# zarr stores (the .partial suffix escapes **/*.zarr — round 16)
+dev_tpxo10/stores/
+**/*.zarr.partial
+
+**/.DS_Store

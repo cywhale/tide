@@ -1,0 +1,92 @@
+{
+ "stations": {
+  "C4A01": {
+   "lon": 121.4248,
+   "lat": 25.1757,
+   "old": {
+    "rmse_cm": 21.612,
+    "bias_cm": -29.636,
+    "coverage": 1.0,
+    "n": 18
+   },
+   "new": {
+    "rmse_cm": 23.488,
+    "bias_cm": -29.186,
+    "coverage": 1.0,
+    "n": 18
+   },
+   "diag_old": {
+    "corr_at_zero_lag": 0.9748,
+    "best_lag_min": 0.0,
+    "corr_at_best_lag": 0.9748,
+    "shape_rmse_cm": 21.612,
+    "std_ratio": 1.0358,
+    "range_ratio": 1.0603,
+    "dt_minutes": 60.0,
+    "regular_sampling_assumed": true
+   },
+   "diag_new": {
+    "corr_at_zero_lag": 0.978,
+    "best_lag_min": 0.0,
+    "corr_at_best_lag": 0.978,
+    "shape_rmse_cm": 23.488,
+    "std_ratio": 1.1186,
+    "range_ratio": 1.1246,
+    "dt_minutes": 60.0,
+    "regular_sampling_assumed": true
+   },
+   "within_tol": false
+  },
+  "C4C01": {
+   "lon": 121.2433,
+   "lat": 25.1181,
+   "old": {
+    "rmse_cm": 9.433,
+    "bias_cm": -21.022,
+    "coverage": 1.0,
+    "n": 18
+   },
+   "new": {
+    "rmse_cm": 6.176,
+    "bias_cm": -20.273,
+    "coverage": 1.0,
+    "n": 18
+   },
+   "diag_old": {
+    "corr_at_zero_lag": 0.9981,
+    "best_lag_min": 0.0,
+    "corr_at_best_lag": 0.9981,
+    "shape_rmse_cm": 9.433,
+    "std_ratio": 0.9506,
+    "range_ratio": 0.9669,
+    "dt_minutes": 60.0,
+    "regular_sampling_assumed": true
+   },
+   "diag_new": {
+    "corr_at_zero_lag": 0.9988,
+    "best_lag_min": 0.0,
+    "corr_at_best_lag": 0.9988,
+    "shape_rmse_cm": 6.176,
+    "std_ratio": 1.0135,
+    "range_ratio": 1.0257,
+    "dt_minutes": 60.0,
+    "regular_sampling_assumed": true
+   },
+   "within_tol": true
+  }
+ },
+ "summary": {
+  "n_stations": 2,
+  "frac_within_1cm": 0.5,
+  "mean_rmse_old_cm": 15.522,
+  "mean_rmse_new_cm": 14.832,
+  "stations_to_review_gt3cm": [],
+  "gate_pass": false
+ },
+ "_meta": {
+  "mode": "GATE (dev_tpxo10/benchmarks/tf_observations_cwa_20260617.json)",
+  "old": "/Users/cywhale/proj/tide/data/tpxo9.zarr",
+  "new": "/Users/cywhale/proj/tide/data/tpxo10.zarr",
+  "old_fallback_to_new": false
+ }
+}

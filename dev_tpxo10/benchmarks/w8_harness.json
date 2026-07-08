@@ -1,0 +1,55 @@
+{
+ "_thresholds_GiB_MiB_s": {
+  "gunicorn_delta": 1.5,
+  "gunicorn_peak": 2.0,
+  "dask_delta": 2.0,
+  "dask_peak": 4.0,
+  "tree_delta": 3.0,
+  "headroom_frac": 0.25,
+  "payload": 104857600,
+  "wall_single": 15.0,
+  "wall_conc2": 30.0
+ },
+ "direct": {
+  "workers": [
+   66164,
+   66165,
+   66166
+  ],
+  "point_ms_median": 4.27,
+  "point_ms_p95": 5.74,
+  "W6_s5": {
+   "s": 1.01,
+   "MiB": 1.3
+  },
+  "W6b_s5_phase3": {
+   "s": 1.0,
+   "MiB": 1.3
+  },
+  "W8_single": {
+   "s_median": 14.65,
+   "payload_MiB": 32.6
+  },
+  "W8_conc2": {
+   "wall_s_max": 15.09,
+   "distinct_pids": [
+    "66165",
+    "66166"
+   ]
+  },
+  "memory": {
+   "gunicorn_peak_GiB": 3.71,
+   "gunicorn_delta_GiB": 3.52,
+   "dask_peak_GiB": 0.0,
+   "dask_delta_GiB": 0.0,
+   "tree_peak_GiB": 6.94,
+   "tree_delta_GiB": 6.53,
+   "min_host_headroom_frac": 0.597
+  },
+  "failures": [
+   "gunicorn_delta",
+   "gunicorn_peak",
+   "tree_delta"
+  ]
+ }
+}

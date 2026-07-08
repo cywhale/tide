@@ -74,3 +74,17 @@
     -- Added AGENTS.md contributor guide and documented the new route wiring in FastAPI; requirements.txt already refreshed for package upgrades
 
 #### ver 0.2.8 Decouple shared Dask service and add reconnect-capable client
+
+#### ver 0.3.0 (G3 gates green; pre-deployment) TPXO9-atlas-v5 -> TPXO10-atlas-v2 data-source migration
+
+    -- New canonical store data/tpxo10.zarr (TPXO10-atlas-v2) on the native Arakawa C-grid: z_Re/z_Im on z-nodes, conversion-time D12 centering produces runtime-facing uz/vz on the z-grid; flag layers (0=source bit-exact / 1=derived inpaint or one-sided / 2=invalid); see specs/v0.3.0_tpxo10_migration_plan.md
+    -- API-behavior change (coastline reclassification): TPXO10 redefines the coastline at all C-grid nodes, so some cells that TPXO9 served (via fillna extrapolation) are land in TPXO10 and now return no value. This is a deliberate honesty improvement; ~6.5k z / 66k u / 168k v legacy-valid cells reclassified, all machine-classified at G2 (coastline-reclassification or frozen-rule isolated-no-data, 0 unexplained).
+    -- Conversion pipeline rewritten as a single deterministic streaming converter (dev_tpxo10/), retiring the dev/extract_parallel.py + dev/zarr_fillna_*.py flow; project tooling moved to uv; runtime stays on pyTMD 2.2.8 (the Zarr store is the version boundary).
+    -- Gates G0->G3 all green (see dev_tpxo10/TESTING.md + STAGE3_G3_CLOSEOUT.md): lossless+deterministic conversion, zero prediction drift (T-D2 0.001mm), tpxo10 faster warm+cold, NOAA observation gate PASS, rollback via TIDE_ZARR_PATH. Deployment (store transfer + service switch) is a separate Codex-owned step; data/tpxo10.zarr is gitignored.
+
+#### ver 0.3.1 / API v1.1.0 Post-deployment TPXO10 cutover and public docs refresh
+
+    -- VM24 production cutover completed: Tide API now serves TPXO10-atlas-v2 by default from a release directory; rollback drill to TPXO9-atlas-v5 verified.
+    -- Public API documentation updated for TPXO10 default, API v1.1.0, correct z/u/v units, bbox cell cap, Swagger examples, and `/api/tide/forecast` usage.
+    -- TPXO9-atlas-v5 is deprecated for public API users. It remains an operator rollback store only and is documented in deployment/operator notes.
+    -- `conf/start_app.sh` made robust for PM2 non-interactive environments by resolving gunicorn through `GUNICORN_BIN`, `uv run`, PATH, or the VM24 py311 fallback.
