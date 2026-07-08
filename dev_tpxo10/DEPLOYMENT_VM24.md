@@ -1,6 +1,7 @@
 # VM24 TPXO10 Deployment Notes
 
-Date: 2026-06-18. API version: v1.1.0. Project release: v0.3.1.
+Initial TPXO10 cutover: 2026-06-18. Formal v0.3.1 release-directory
+cleanup: 2026-07-08. API version: v1.1.0. Project release: v0.3.1.
 
 ## Current Production Layout
 
@@ -30,6 +31,9 @@ switched from the old cwd to the TPXO10 release cwd. Smoke checks passed:
 Rollback drill passed: PM2 was switched back to `~/python/tide`, a TPXO9
 point query returned 200, and PM2 was then switched forward to the TPXO10
 release again.
+
+The temporary release directory was later renamed to the formal runtime cwd
+`~/python/tide_tpxo10_atlas_v2`; PM2 was restarted from that cwd and saved.
 
 ## Rollback
 
