@@ -204,11 +204,9 @@ async def get_tide(
     lat0: float = Query(..., description="Minimum latitude, range: [-90, 90]",
                         json_schema_extra=_query_example(21.303333)),
     lon1: Optional[float] = Query(
-        None, description="Maximum longitude for bbox/map queries, range: [-180, 180]",
-        json_schema_extra=_query_example(-157.6)),
+        None, description="Maximum longitude for bbox/map queries, range: [-180, 180]"),
     lat1: Optional[float] = Query(
-        None, description="Maximum latitude for bbox/map queries, range: [-90, 90]",
-        json_schema_extra=_query_example(21.6)),
+        None, description="Maximum latitude for bbox/map queries, range: [-90, 90]"),
     start: Optional[str] = Query(
         None, description="Start datetime (UTC). If omitted, current datetime is used.",
         json_schema_extra=_query_example("2023-07-25T00:00:00")),
@@ -216,9 +214,8 @@ async def get_tide(
         None, description="End datetime (UTC). Point time series are limited to 30 days.",
         json_schema_extra=_query_example("2023-07-26T00:00:00")),
     sample: Optional[int] = Query(
-        5,
-        description="Stride for bbox/map output grid. Default 5. sample=1 returns every selected grid cell and may hit MAX_BBOX_CELLS=500000.",
-        json_schema_extra=_query_example(5)),
+        None,
+        description="Stride for bbox/map output grid. Default 5 when omitted. sample=1 returns every selected grid cell and may hit MAX_BBOX_CELLS=500000."),
     mode: Optional[str] = Query(
         None,
         description="Optional comma-separated modes. `truncate` rounds lon/lat to 5 decimals and values to 3 decimals; `nearest` enables nearest-point tolerance behavior.",
@@ -231,8 +228,7 @@ async def get_tide(
         json_schema_extra=_query_example("z")),
     constituent: Optional[str] = Query(
         None,
-        description="Comma-separated harmonic constituents. If omitted, all 15 constituents are used. Allowed: q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm. See also: https://www.tpxo.net/global",
-        json_schema_extra=_query_example("m2,k1"))
+        description="Comma-separated harmonic constituents. If omitted, all 15 constituents are used. Allowed: q1,o1,p1,k1,n2,m2,s1,s2,k2,m4,ms4,mn4,2n2,mf,mm. See also: https://www.tpxo.net/global")
 ):
     """
     Query tide from the TPXO global tide model (TPXO10-atlas-v2 by default) by longitude/latitude/date (in JSON).
