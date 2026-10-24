@@ -116,8 +116,9 @@ call `pm2`, but it rewrites release files and can trigger a Gunicorn
 `--reload`. Inspect read-only with `pm2_restart_check.sh --daemon-only`,
 which never calls `pm2`, and `ps`. Any recovery, including `restore` and
 `pm2 resurrect`, follows the owner's decision. `https_smoke.sh --out-root`
-gives every attempt its own directory. Rollback status is "components validated" at best until an
-owner-authorized production rollback drill is run.
+gives every attempt its own directory. Rollback status is "components
+validated" at best until an owner-authorized production rollback drill is
+run.
 
 For deployment scripts, do not assume an interactive shell PATH.
 `conf/start_app.sh` runs only an explicitly set absolute `GUNICORN_BIN` or
