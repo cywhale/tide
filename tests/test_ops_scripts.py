@@ -401,6 +401,9 @@ elif sys.argv[1] == "restart":
     st["restarts"] += {"double": 2}.get(st["mode"], 1)
     if st["mode"] == "errored":
         st["status"] = "errored"
+    if st["mode"] == "respawn":     # a different daemon took over mid-run
+        with open(os.path.join(home, "pm2.pid"), "w") as f:
+            f.write(str(os.getppid()))
 json.dump(st, open(path, "w"))
 '''
 
@@ -525,6 +528,7 @@ def test_restart_check_passes_on_effective_restart(restart, pm2_home):
     ("flap", GOOD_ARGS, "not stable"),
     ("ok", "/usr/bin/python3 /usr/local/bin/gunicorn tide_app:app", "expected " + PY311_GUNICORN),
     ("missing", GOOD_ARGS, "cannot read PM2 state"),
+    ("respawn", GOOD_ARGS, "changed during the run"),        # race detected, not prevented
 ])
 def test_restart_check_fails_and_blocks_chained_smoke(restart, pm2_home, mode, ps_args, expect):
     home, dpid = pm2_home(mode)

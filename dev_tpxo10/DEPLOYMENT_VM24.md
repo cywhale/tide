@@ -240,8 +240,19 @@ Before any `pm2` call, it proves the daemon is alive without running `pm2`:
 - `rpc.sock` accepts a connection.
 
 A stale socket, a plain file, a dead or reused PID, or another home's daemon
-is refused, and `pm2` is never invoked, because a `pm2` CLI that cannot
-reach a daemon starts a new one. It then fails unless all of the following
+is refused without invoking `pm2`. A `pm2` CLI that cannot reach a daemon
+starts a new one, so this prevents a new daemon only for a missing or stale
+daemon that exists before the run.
+
+It cannot close a narrow race: if the daemon exits after the check but
+before a `pm2` call reaches it, `pm2` may still start a new daemon. To catch
+that case, the script re-checks at the end and fails ("died or changed
+during the run") unless the same daemon PID is still alive, so such a run is
+never reported as `OK restart`. If that failure appears, inspect `pm2 ls`
+and the daemon (`pm2.pid`, `ps`) with the owner before doing anything else.
+Production apps may need `pm2 resurrect` from the saved dump.
+
+After the liveness check, the script fails unless all of the following
 hold:
 
 - the restart command exits 0;
@@ -481,8 +492,10 @@ version titles its daemon `God Daemon (<PM2_HOME>)`. Record the output.
 Also confirm that the script fails when run with a wrong `--expect-exec`.
 After the final `PM2_HOME="$PROBE" "$PM2" kill`, run it once more with
 `--pm2-home "$PROBE"`: it must fail with "no running PM2 daemon", and no new
-`God Daemon ($PROBE)` process may appear in `ps`. This proves a dead
-daemon's leftovers never lead to `pm2` starting a new one.
+`God Daemon ($PROBE)` process may appear in `ps`. This shows that leftovers
+of a daemon that died before the run never lead to `pm2` starting a new
+one. The narrower race during a run is only detected, as described under
+"Restart and post-deploy checks".
 
 ## Runtime environment
 

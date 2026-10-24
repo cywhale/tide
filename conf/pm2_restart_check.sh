@@ -10,7 +10,11 @@
 # /home/odbadmin/.pm2). An inherited PM2_HOME is ignored, so a shell left
 # pointing at a test daemon cannot redirect the restart. Before any pm2 call
 # the daemon must be proven alive (see daemon_alive); otherwise the script
-# stops, because a pm2 CLI that cannot reach a daemon starts a new one.
+# stops without calling pm2, so a missing or stale daemon never leads pm2 to
+# start a new one. Limit: if the daemon exits after that check but before a
+# pm2 call reaches it (a narrow race), pm2 can still start a new daemon. The
+# script cannot prevent that, but re-checks at the end and fails unless the
+# same daemon PID is still alive, so such a run is never reported as OK.
 #
 # Checks: `pm2 restart` exits 0 (no --update-env, so the operator's shell
 # variables never reach production); within --timeout seconds the app is
@@ -21,7 +25,7 @@ set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-usage() { sed -n '2,19p' "$0" >&2; exit 2; }
+usage() { sed -n '2,23p' "$0" >&2; exit 2; }
 
 PM2=$HOME/.npm-global/bin/pm2
 TARGET_HOME=/home/odbadmin/.pm2
@@ -71,6 +75,7 @@ s.close()
 
 reason=$(daemon_alive "$TARGET_HOME") \
   || die "no running PM2 daemon at $TARGET_HOME ($reason); refusing to call pm2"
+DAEMON_PID=$(tr -dc '0-9' < "$TARGET_HOME/pm2.pid")
 if [ -n "${PM2_HOME:-}" ] && [ "$PM2_HOME" != "$TARGET_HOME" ]; then
   echo "note: ignoring inherited PM2_HOME=$PM2_HOME" >&2
 fi
@@ -121,5 +126,13 @@ case " $args " in
   *" $EXPECT_EXEC "*) ;;
   *) die "PID $pid runs '$args', expected $EXPECT_EXEC" ;;
 esac
+
+# Detect (not prevent) the race noted in the header: the daemon must still
+# be the one that passed the initial check.
+reason=$(daemon_alive "$TARGET_HOME") \
+  || die "PM2 daemon at $TARGET_HOME died or changed during the run ($reason); inspect it before trusting this restart"
+now_pid=$(tr -dc '0-9' < "$TARGET_HOME/pm2.pid")
+[ "$now_pid" = "$DAEMON_PID" ] \
+  || die "PM2 daemon at $TARGET_HOME changed during the run (PID $DAEMON_PID -> $now_pid); inspect it before trusting this restart"
 echo "OK restart: $NAME pid $pid0 -> $pid, restarts $restarts0 -> $restarts, stable ${SETTLE}s"
 echo "command: $args"
