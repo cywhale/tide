@@ -22,9 +22,10 @@ Run the API locally with hot reload when you do not need TLS:
 ```bash
 uvicorn tide_app:app --reload --port 8040
 ```
-For a production-like stack with certificates and Gunicorn workers, use
-`bash conf/start_app.sh`. The TPXO10 conversion
-environment is separate:
+`conf/start_app.sh` is the VM24 production launcher: it requires the VM24
+Dask TLS identity files and binds `127.0.0.1:8040`, so it exits early on
+other hosts. For a local production-like stack, run Gunicorn directly. The
+TPXO10 conversion environment is separate:
 ```bash
 cd dev_tpxo10
 uv sync
@@ -54,9 +55,12 @@ Store TLS keys in `conf/` only for local testing; never check real
 certificates, `.env`, API tokens, or VM credentials into Git. The API loads
 the tide store at startup through the v0.3.0 store adapter
 (`src/store_adapter.py`, D9): the path is resolved by `get_zarr_path()`
-(env `TIDE_ZARR_PATH`, default `data/tpxo10.zarr`). Rollback to the legacy
-store is a single env change `TIDE_ZARR_PATH=data/tpxo9.zarr` + restart;
-the adapter detects either schema fail-closed.
+(env `TIDE_ZARR_PATH`, default `data/tpxo10.zarr`). `TIDE_ZARR_PATH` is read
+only from the process environment (no `.env` loading) and a relative value
+resolves against the process cwd, so operators must give an absolute store
+path. Rollback to the legacy store keeps the current runtime and only
+switches `TIDE_ZARR_PATH` (see `dev_tpxo10/DEPLOYMENT_VM24.md`); the adapter
+detects either schema fail-closed.
 
 Runtime code must read the store through the adapter + query planner, never
 through hardcoded `xr.open_zarr(...)`. Bbox/map queries must go through
@@ -67,13 +71,40 @@ cells (`flag==2`) must propagate as missing/null, never as fabricated zero.
 TPXO10 store reads use the direct adapter path, so Dask is optional and must
 not be treated as part of the bbox critical path.
 
-## v0.3.1 Production Notes
-VM24 production serves TPXO10 from a release directory, not from the legacy
-`~/python/tide` checkout. The legacy checkout is intentionally kept as the
-TPXO9 rollback anchor and should remain clean. Operator details and rollback
-commands live in `dev_tpxo10/DEPLOYMENT_VM24.md`.
+The shared Dask scheduler is mutual-TLS only and loopback-only (v0.3.2;
+production address `tls://127.0.0.1:8786`). The client must never connect
+over plaintext or to a routable host: unless `DASK_SCHEDULER_ADDRESS` is
+`tls://` with a loopback IP literal (hostnames, even `localhost`, are
+rejected) and `DASK_TLS_CA_FILE`, `DASK_TLS_CLIENT_CERT`, and
+`DASK_TLS_CLIENT_KEY` are all set, `src/dask_client_manager.py` creates no
+client and the API keeps serving. Keep `tests/test_dask_client_manager.py`
+covering every refusal case. Dask client credentials are separate from the
+HTTPS `conf/privkey.pem`/`fullchain.pem`; never commit either.
 
-For deployment scripts, do not assume an interactive shell PATH. Use
-`GUNICORN_BIN`, `uv run gunicorn`, PATH, or the VM24 py311 fallback as in
-`conf/start_app.sh`. Public API users cannot select TPXO9; TPXO9 is
-deprecated and retained only for operator rollback.
+## Production Notes (v0.3.2)
+VM24 production serves TPXO10 from the non-git release directory
+`~/python/tide_tpxo10_atlas_v2`, not from the legacy `~/python/tide`
+checkout. The legacy checkout still holds the TPXO9 store used for rollback,
+but its old code is not TLS-compliant and is not a standard rollback path.
+Operator details, rollback commands, and their verification status live in
+`dev_tpxo10/DEPLOYMENT_VM24.md`; host-level Dask TLS operations live in the
+VM24 runbook `/home/odbadmin/python/conf/DASK_TLS_RUNBOOK.md`.
+
+For deployment scripts, do not assume an interactive shell PATH.
+`conf/start_app.sh` runs only an explicitly set absolute `GUNICORN_BIN` or
+the VM24 py311 Gunicorn, and exits with an error otherwise. There is no
+`uv run` or PATH fallback, so a PM2 start can never create or sync a uv
+environment; `tests/test_start_app_launcher.py` enforces this. Public API
+users cannot select TPXO9; TPXO9 is deprecated and retained only for
+operator rollback.
+
+Never run a test or canary instance through PM2 on VM24: the `tide` entry's
+`pre_stop` kills every process whose command line contains `tide_app`. Start
+a canary from a separate checkout or worktree, never by writing new code
+into the release directory (production runs with `--reload`, so any edit
+there reloads the live workers). Run it with the py311 Gunicorn on
+`127.0.0.1:8041`, without PM2, `conf/start_app.sh`, or `--reload`, with an
+absolute `TIDE_ZARR_PATH`, and stop it by PID. PM2 environment tests must use
+a separate `PM2_HOME` with a dummy app that has no `pre_stop` and is not a
+`tide_app` process; never use the production `conf/ecosystem.config.js` for
+them. The full procedures are in `dev_tpxo10/DEPLOYMENT_VM24.md`.
