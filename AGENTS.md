@@ -99,7 +99,9 @@ owner's separate authorization, then the `v0.3.2` tag. Never modify the
 release directory before the canary passes. A deployment writes only the
 runtime manifest files, each staged outside the release directory, verified
 by hash, and swapped in with an atomic rename (Gunicorn runs with
-`--reload`). Rollback status is "components validated" at best until an
+`--reload`); use `conf/replace_runtime_files.sh` (`deploy`/`restore`) rather
+than hand-typed commands. It and `conf/https_smoke.sh` are fail-fast and
+covered by `tests/test_ops_scripts.py`. Rollback status is "components validated" at best until an
 owner-authorized production rollback drill is run.
 
 For deployment scripts, do not assume an interactive shell PATH.
@@ -117,9 +119,9 @@ into the release directory (production runs with `--reload`, so any edit
 there reloads the live workers). Run it with the py311 Gunicorn on
 `127.0.0.1:8041`, without PM2, `conf/start_app.sh`, or `--reload`, with an
 absolute `TIDE_ZARR_PATH`, and stop it by PID. Smoke HTTPS against the
-certificate's hostname with `curl --resolve <host>:8041:127.0.0.1` and
-`--fail-with-body` so HTTP errors fail the command; never disable
-verification with `curl -k`. Report Dask transport evidence
+certificate's hostname with `conf/https_smoke.sh` (`curl --resolve`,
+`--fail-with-body`, HTTP 200 required); never disable verification with
+`curl -k`. Report Dask transport evidence
 (scheduler client registration, a trivial task with the same credentials)
 separately from the Tide API/store smoke. PM2 environment tests must use a
 separate `PM2_HOME` on every `pm2` command, with a dummy app that has no

@@ -94,3 +94,4 @@
     -- The Dask client connects only over mutual TLS to a loopback scheduler (`tls://` with a loopback IP, plus CA, client certificate, and key, with `require_encryption=True`); missing, partial, or mismatched settings or a non-loopback address create no client instead of falling back to plaintext, and the API keeps serving.
     -- `conf/start_app.sh` exports the VM24 Tide Dask TLS identity and runs only an explicit absolute `GUNICORN_BIN` or the VM24 py311 Gunicorn; the `uv run` and PATH fallbacks are removed, so a PM2 start never triggers a `uv` environment sync.
     -- Rollback now stays on the current runtime and switches stores by an absolute `TIDE_ZARR_PATH`; the pre-v0.3.0 checkout is no longer a standard rollback path.
+    -- Operator scripts: `conf/replace_runtime_files.sh` deploys or restores the runtime manifest by hash-verified atomic rename, and `conf/https_smoke.sh` runs a fail-fast HTTPS smoke with certificate verification.

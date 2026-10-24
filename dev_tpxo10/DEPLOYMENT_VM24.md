@@ -128,6 +128,20 @@ workers.
    "Rollback"). Tag `v0.3.2` only after the validation and the production
    deployment are complete.
 
+### Outstanding rollout checks
+
+Each item stays open until it has been done once with its result (date,
+counts, outputs) recorded here.
+
+- [ ] py311 test suite in a separate VM24 checkout (step 2): passed,
+      skipped, and warning counts.
+- [ ] Certificate SAN hostname recorded (canary part B, step 1).
+- [ ] `conf/replace_runtime_files.sh` rehearsed on a scratch copy (see
+      "Production deployment procedure").
+- [ ] Canary parts A, B, and C passed for the TPXO10 and TPXO9 stores.
+- [ ] PM2 environment validation passed with an isolated `PM2_HOME`.
+- [ ] Owner authorization for the production deployment (step 4).
+
 ## Production deployment procedure
 
 Run this only at release sequence step 5, with the owner's authorization.
@@ -141,52 +155,53 @@ Docs, tests, and notebooks are not deployed. They have no runtime role, and
 each extra write into the release directory is avoidable risk.
 
 Gunicorn runs with `--reload`, so it can reload while a file is being
-written. Never copy over a runtime file in place. Stage each file outside
-the release directory on the same filesystem, verify its hash against the
-merged commit, then replace the target with a single `mv` (an atomic
-`rename(2)`). The target path then only ever holds a complete file.
+written. Never copy over a runtime file in place; use
+`conf/replace_runtime_files.sh` from the merged-commit checkout. It runs
+under `set -euo pipefail`, exits non-zero on any failure, and:
+
+- refuses a `--work` directory that already exists, so earlier backups are
+  never overwritten;
+- checks that the checkout is at `--commit` and that `--work` is on the
+  release filesystem (`rename(2)` is atomic only within one filesystem);
+- backs up the manifest files with their hashes (`backup/`,
+  `backup.sha256`) and records all runtime hashes
+  (`runtime-before.sha256`);
+- stages every manifest file and verifies it against its blob at the commit
+  before replacing any, so a mismatch replaces nothing; then swaps each in
+  with one rename and re-verifies it;
+- confirms that the other runtime files are unchanged.
+
+`tests/test_ops_scripts.py` exercises these refusals, the two-phase
+behavior, the rename, and `restore` locally.
 
 ```bash
-: "${SHA:?set SHA to the merged commit short hash}"
-: "${DEPLOY_DATE:?set DEPLOY_DATE, for example 20261101}"
 REL=/home/odbadmin/python/tide_tpxo10_atlas_v2
-SRC=/home/odbadmin/tmp/tide-v0.3.2-$SHA                  # checkout of the merged commit
-WORK=/home/odbadmin/tmp/tide-v0.3.2-deploy-$DEPLOY_DATE  # backups and staging, outside $REL
-mkdir -p "$WORK/backup/src" "$WORK/backup/conf" "$WORK/staging"
-
-# rename(2) is atomic only within one filesystem: the two device numbers
-# must match, otherwise stop.
-stat -c '%d %n' "$WORK/staging" "$REL/src" "$REL/conf"
-
-# Record runtime hashes and back up the manifest files.
-(cd "$REL" && sha256sum tide_app.py __init__.py src/*.py conf/start_app.sh \
-  conf/ecosystem.config.js) > "$WORK/runtime-before.sha256"
-for f in conf/start_app.sh src/dask_client_manager.py; do
-  cp -p "$REL/$f" "$WORK/backup/$f"
-done
-
-deploy() {  # $1: manifest path relative to the release directory
-  stage="$WORK/staging/$(basename "$1")"
-  cp "$SRC/$1" "$stage" && chmod --reference="$REL/$1" "$stage" || return 1
-  if [ "$(sha256sum < "$stage")" != "$(git -C "$SRC" show "HEAD:$1" | sha256sum)" ]; then
-    echo "hash mismatch: $1" >&2
-    return 1
-  fi
-  mv -f "$stage" "$REL/$1"
-}
-deploy conf/start_app.sh            # not imported; used at the next restart
-deploy src/dask_client_manager.py   # triggers one --reload of the live workers
+SRC=/home/odbadmin/tmp/tide-v0.3.2-$SHA                  # merged-commit checkout
+WORK=/home/odbadmin/tmp/tide-v0.3.2-deploy-$DEPLOY_DATE  # must not exist yet
+"$SRC/conf/replace_runtime_files.sh" deploy --rel "$REL" --src "$SRC" \
+  --commit "$SHA" --work "$WORK"
 ```
 
-The block uses GNU `stat -c` and `chmod --reference`. Rehearse it once
-before step 5 with `REL` pointing at a scratch copy of the release
-directory's runtime files (the drift-detection list above) under
-`/home/odbadmin/tmp/`, and confirm that
-the replacement happens and that a tampered staged file is refused.
+`src/dask_client_manager.py` is replaced last and triggers one `--reload`
+of the live workers. The launcher change takes effect at the next `tide`
+restart, which is part of the same authorized deployment.
 
-The launcher change takes effect at the next `tide` restart, which is part
-of the same authorized deployment. To back out, replace the manifest files
-with the copies in `$WORK/backup/` the same way.
+To back out, `restore` puts back the backups from that `WORK` directory
+with the same staging, verification, and rename:
+
+```bash
+"$SRC/conf/replace_runtime_files.sh" restore --rel "$REL" --work "$WORK"
+```
+
+Rehearse before step 5 on VM24, with `REL` set to a scratch copy of the
+release directory's runtime files (the drift-detection list above) under
+`/home/odbadmin/tmp/`:
+
+1. `deploy` succeeds and the files match the commit.
+2. Re-running `deploy` with the same `WORK` is refused.
+3. `deploy` from a scratch clone whose manifest file was edited fails with
+   "nothing was replaced", and the scratch copy is unchanged.
+4. `restore` puts back the original files.
 
 Post-deploy checks:
 
@@ -196,7 +211,8 @@ Post-deploy checks:
   `Dask client connection failed` warning.
 - The scheduler client list shows one `Client-tideapi-*` entry per Gunicorn
   worker.
-- The HTTPS smoke from canary part B, run against port 8040, returns 200.
+- `conf/https_smoke.sh --mode prod` (canary part B) passes against port
+  8040.
 
 ## Rollback
 
@@ -305,26 +321,21 @@ verification; never use `curl -k`.
    `openssl x509 -in <release>/conf/fullchain.pem -noout -ext subjectAltName`.
    The commands below assume `eco.odb.ntu.edu.tw`; if the certificate lists
    a different name, use that name.
-2. Query the canary and production (a read-only GET) through local
-   resolution. `--fail-with-body` (curl 7.76 or later) makes any HTTP 4xx or
-   5xx fail the command, and `-w` prints the status, which must be `200`.
-   Write the bodies outside the release directory.
+2. Run `conf/https_smoke.sh` from the canary checkout. It queries the canary
+   (8041) and production (8040, a read-only GET) through
+   `curl --resolve HOST:PORT:127.0.0.1` with verification on and
+   `--fail-with-body`, and stops at the first failure. Every response must be
+   HTTP 200 with a body that is non-empty and not `{}`. The bodies are kept
+   in `--out`, which must be a new directory outside the release directory.
+   The query fixes `start` and `end`, so the body is deterministic.
 
    ```bash
-   Q='api/tide?lon0=-157.86453&lat0=21.303333&start=2023-07-25&end=2023-07-26'
-   : "${SHA:?set SHA to the commit under test}"
-   OUT=/home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke; mkdir -p "$OUT"
-   curl -sS --fail-with-body -o "$OUT/canary.json" -w '%{http_code}\n' \
-     --resolve eco.odb.ntu.edu.tw:8041:127.0.0.1 "https://eco.odb.ntu.edu.tw:8041/$Q"
-   curl -sS --fail-with-body -o "$OUT/prod.json" -w '%{http_code}\n' \
-     --resolve eco.odb.ntu.edu.tw:8040:127.0.0.1 "https://eco.odb.ntu.edu.tw:8040/$Q"
-   cmp "$OUT/canary.json" "$OUT/prod.json"
+   SMOKE=/home/odbadmin/tmp/tide-v0.3.2-$SHA/conf/https_smoke.sh
+   # TPXO10 canary: body must be identical to production.
+   "$SMOKE" --host eco.odb.ntu.edu.tw --mode same --out /home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke-tpxo10
+   # TPXO9 canary: both 200, bodies must differ.
+   "$SMOKE" --host eco.odb.ntu.edu.tw --mode different --out /home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke-tpxo9
    ```
-
-3. The query fixes `start` and `end`, so the body is deterministic. With
-   the TPXO10 store, `cmp` must succeed (identical to production). With the
-   TPXO9 store, both requests must still return 200, and `cmp` must report a
-   difference.
 
 C. Production unaffected. The production `tide` PID and restart count
 (`pm2 jlist`) and the release directory's file hashes are unchanged from
