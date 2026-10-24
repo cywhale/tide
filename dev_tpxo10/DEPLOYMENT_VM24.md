@@ -121,8 +121,9 @@ workers.
    the production PM2 daemon.
 4. The owner gives separate authorization for the production update.
 5. **Production deployment.** This changes the live service. Deploy only
-   the v0.3.2 runtime manifest, using atomic replacement as described in
-   "Production deployment procedure" below.
+   the v0.3.2 runtime manifest by atomic replacement, then restart `tide`
+   and run the post-deploy checks, as described in "Production deployment
+   procedure" below.
 6. Update this file with the outcome: rollback status "components
    validated" if the TPXO9 canary and the PM2 validation passed (see
    "Rollback"). Tag `v0.3.2` only after the validation and the production
@@ -185,8 +186,11 @@ WORK=/home/odbadmin/tmp/tide-v0.3.2-deploy-$DEPLOY_DATE  # must not exist yet
 ```
 
 `src/dask_client_manager.py` is replaced last and triggers one `--reload`
-of the live workers. The launcher change takes effect at the next `tide`
-restart, which is part of the same authorized deployment.
+of the live workers. The launcher change takes effect only when the PM2
+process restarts, so the restart under "Restart and post-deploy checks" is a
+required part of the same authorized deployment. Each rename is atomic, but
+the two together are not one transaction: if `deploy` fails between them,
+run `restore` (below) before anything else.
 
 To back out, including after a deploy that failed partway (for example
 after the first rename), `restore` puts back the backups from that `WORK`
@@ -209,16 +213,51 @@ release directory's runtime files (the drift-detection list above) under
    "nothing was replaced", and the scratch copy is unchanged.
 4. `restore` puts back the original files.
 
-Post-deploy checks:
+### Restart and post-deploy checks
 
-- The two manifest files match the merged commit, and every other runtime
-  hash matches `runtime-before.sha256`.
-- `tide` is online in PM2, and the log since the deployment has no
-  `Dask client connection failed` warning.
-- The scheduler client list shows one `Client-tideapi-*` entry per Gunicorn
-  worker.
-- `conf/https_smoke.sh --mode prod` (canary part B) passes against port
-  8040.
+Run these in the same shell as the deploy block, so that `SRC` and `SHA`
+are still set. Restart without `--update-env`: that flag would copy this
+shell's variables (for example `SHA` or a stray `TIDE_ZARR_PATH`) into the
+production process. Run `https_smoke.sh` from the merged checkout, because
+it is not part of the runtime manifest and does not exist in the release
+directory.
+
+```bash
+PM2=$HOME/.npm-global/bin/pm2
+HOST=eco.odb.ntu.edu.tw   # the SAN hostname recorded before the canary
+tide_state() {
+  "$PM2" jlist | python3 -c 'import json, sys
+for p in json.load(sys.stdin):
+    if p["name"] == "tide":
+        e = p["pm2_env"]
+        print("status=%s pid=%s restarts=%s" % (e["status"], p["pid"], e["restart_time"]))'
+}
+
+tide_state                                  # before: record status, PID, restarts
+"$PM2" restart tide                         # stored environment; no --update-env
+sleep 10
+tide_state                                  # after: online, new PID, restarts + 1
+ps -o pid,args -p "$("$PM2" pid tide)"      # must be the py311 Gunicorn
+
+"$SRC/conf/https_smoke.sh" --host "$HOST" --mode prod \
+  --out "/home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke-postdeploy"
+```
+
+The deployment is complete only if all of the following hold:
+
+- `deploy` printed `OK deploy`. It has already verified both manifest files
+  against the commit and that every other runtime file is unchanged.
+- After the restart, `tide` is `online` with a new PID and a restart count
+  exactly one higher, and `ps` shows
+  `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn`.
+- The `tide` log since the restart has no `Dask client connection failed`
+  warning.
+- The scheduler client list (method in canary part A, step 1) shows one
+  `Client-tideapi-*` entry per Gunicorn worker, which is two.
+- `https_smoke.sh --mode prod` prints `PASS prod`.
+
+If any check fails, run `restore`, restart `tide` the same way, and repeat
+the checks against the restored files.
 
 ## Rollback
 

@@ -101,7 +101,11 @@ runtime manifest files, each staged outside the release directory, verified
 by hash, and swapped in with an atomic rename (Gunicorn runs with
 `--reload`); use `conf/replace_runtime_files.sh` (`deploy`/`restore`) rather
 than hand-typed commands. It and `conf/https_smoke.sh` are fail-fast and
-covered by `tests/test_ops_scripts.py`. Rollback status is "components validated" at best until an
+covered by `tests/test_ops_scripts.py`. Run both from the merged checkout
+(they are not deployed). A deployment is not complete until
+`pm2 restart tide` has been run with the stored environment (no
+`--update-env`) and the post-deploy checks pass, because launcher changes
+apply only on restart. Rollback status is "components validated" at best until an
 owner-authorized production rollback drill is run.
 
 For deployment scripts, do not assume an interactive shell PATH.
