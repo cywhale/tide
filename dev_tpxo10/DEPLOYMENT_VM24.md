@@ -135,7 +135,8 @@ counts, outputs) recorded here.
 
 - [ ] py311 test suite in a separate VM24 checkout (step 2): passed,
       skipped, and warning counts.
-- [ ] Certificate SAN hostname recorded (canary part B, step 1).
+- [ ] Before the canary: certificate SAN hostname (canary part B, step 1)
+      and VM24 `curl --version` (7.76 or later) recorded.
 - [ ] `conf/replace_runtime_files.sh` rehearsed on a scratch copy (see
       "Production deployment procedure").
 - [ ] Canary parts A, B, and C passed for the TPXO10 and TPXO9 stores.
@@ -172,7 +173,8 @@ under `set -euo pipefail`, exits non-zero on any failure, and:
 - confirms that the other runtime files are unchanged.
 
 `tests/test_ops_scripts.py` exercises these refusals, the two-phase
-behavior, the rename, and `restore` locally.
+behavior, the rename, recovery by `restore` after a failure between the two
+renames, and `restore`'s record checks locally.
 
 ```bash
 REL=/home/odbadmin/python/tide_tpxo10_atlas_v2
@@ -186,8 +188,12 @@ WORK=/home/odbadmin/tmp/tide-v0.3.2-deploy-$DEPLOY_DATE  # must not exist yet
 of the live workers. The launcher change takes effect at the next `tide`
 restart, which is part of the same authorized deployment.
 
-To back out, `restore` puts back the backups from that `WORK` directory
-with the same staging, verification, and rename:
+To back out, including after a deploy that failed partway (for example
+after the first rename), `restore` puts back the backups from that `WORK`
+directory with the same staging, verification, and rename. It first
+requires `backup.sha256` to list exactly the two manifest paths, once each
+and well formed, and refuses a truncated, duplicated, or altered record
+before touching any file:
 
 ```bash
 "$SRC/conf/replace_runtime_files.sh" restore --rel "$REL" --work "$WORK"
@@ -325,8 +331,10 @@ verification; never use `curl -k`.
    (8041) and production (8040, a read-only GET) through
    `curl --resolve HOST:PORT:127.0.0.1` with verification on and
    `--fail-with-body`, and stops at the first failure. Every response must be
-   HTTP 200 with a body that is non-empty and not `{}`. The bodies are kept
-   in `--out`, which must be a new directory outside the release directory.
+   HTTP 200 with a body that is non-empty and not `{}`. It requires curl
+   7.76 or later (for `--fail-with-body`) and refuses an older curl before
+   sending any request. The bodies are kept in `--out`, which must be a new
+   directory outside the release directory.
    The query fixes `start` and `end`, so the body is deterministic.
 
    ```bash

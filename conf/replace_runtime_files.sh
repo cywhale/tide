@@ -8,7 +8,8 @@
 # deploy: SRC must be a checkout at COMMIT. The expected hash of each file is
 #   its blob at that commit. WORK must not exist yet (earlier backups are never
 #   overwritten) and must be on the release filesystem.
-# restore: puts back the backups recorded in WORK/backup.sha256.
+# restore: puts back the backups recorded in WORK/backup.sha256, which must
+#   list exactly the manifest paths (see load_backup_record).
 #
 # Each file is staged inside WORK, verified against its expected SHA-256, and
 # only then moved over the target with one rename(2), so the --reload Gunicorn
@@ -21,7 +22,7 @@ shopt -s inherit_errexit 2>/dev/null || true
 MANIFEST=(conf/start_app.sh src/dask_client_manager.py)
 
 die() { echo "ERROR: $*" >&2; exit 1; }
-usage() { sed -n '2,16p' "$0" >&2; exit 2; }
+usage() { sed -n '2,17p' "$0" >&2; exit 2; }
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
@@ -48,6 +49,34 @@ runtime_hashes() {  # run inside the release directory
   local f
   for f in tide_app.py __init__.py src/*.py conf/start_app.sh conf/ecosystem.config.js; do
     if [ -f "$f" ]; then echo "$(sha256_file "$f")  $f"; fi
+  done
+}
+
+# Load WORK/backup.sha256 into BACKUP_HASH (indexed like MANIFEST). The record
+# must hold exactly one well-formed "<sha256>  <path>" line per manifest path
+# and nothing else, so a truncated, duplicated, or tampered record (including
+# paths outside the manifest, such as ../ traversal) is refused.
+load_backup_record() {
+  local re='^([0-9a-f]{64})  (.+)$' line h f i n=0 matched
+  BACKUP_HASH=()
+  for i in "${!MANIFEST[@]}"; do BACKUP_HASH[$i]=""; done
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    [[ $line =~ $re ]] || die "malformed line $n in backup record: $line"
+    h=${BASH_REMATCH[1]}
+    f=${BASH_REMATCH[2]}
+    matched=""
+    for i in "${!MANIFEST[@]}"; do
+      if [ "${MANIFEST[$i]}" = "$f" ]; then
+        [ -z "${BACKUP_HASH[$i]}" ] || die "duplicate path in backup record: $f"
+        BACKUP_HASH[$i]=$h
+        matched=yes
+      fi
+    done
+    [ -n "$matched" ] || die "unexpected path in backup record: $f"
+  done < "$1"
+  for i in "${!MANIFEST[@]}"; do
+    [ -n "${BACKUP_HASH[$i]}" ] || die "backup record is missing ${MANIFEST[$i]}"
   done
 }
 
@@ -127,17 +156,20 @@ cmd_deploy() {
 }
 
 cmd_restore() {
-  local sdir h f s entry staged_list
+  local sdir h f i s entry staged_list
   [ -n "$REL" ] && [ -n "$WORK" ] || usage
   [ -f "$WORK/backup.sha256" ] || die "no backup record in $WORK"
+  load_backup_record "$WORK/backup.sha256"
   sdir=$(mktemp -d "$WORK/restore-staging.XXXXXX")
   same_fs "$sdir" "$REL/src" "$REL/conf"
 
   staged_list=()
-  while read -r h f; do
+  for i in "${!MANIFEST[@]}"; do
+    f=${MANIFEST[$i]}
+    h=${BACKUP_HASH[$i]}
     s=$(stage "$WORK/backup/$f" "$h" "$REL/$f" "$sdir")
     staged_list+=("$s|$h|$f")
-  done < "$WORK/backup.sha256"
+  done
 
   for entry in "${staged_list[@]}"; do
     IFS='|' read -r s h f <<< "$entry"

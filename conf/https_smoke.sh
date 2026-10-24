@@ -11,11 +11,24 @@
 # different: both must return 200 and the bodies must differ (TPXO9 canary).
 # prod:      production alone must return 200 (post-deploy check).
 # Every response must be HTTP 200 with a non-empty body other than "{}".
-# Bodies are kept in NEW_DIR, which must not exist yet.
+# Bodies are kept in NEW_DIR, which must not exist yet. Requires curl >= 7.76
+# (--fail-with-body); older curl is refused before any request.
 set -euo pipefail
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-usage() { sed -n '2,14p' "$0" >&2; exit 2; }
+usage() { sed -n '2,15p' "$0" >&2; exit 2; }
+
+require_curl_7_76() {
+  local ver major minor
+  ver=$(curl --version | awk 'NR == 1 {print $2}')   # awk reads all input: no SIGPIPE
+  IFS=. read -r major minor _ <<< "$ver"
+  case "$major$minor" in
+    ''|*[!0-9]*) die "cannot parse curl version '$ver'; need curl >= 7.76" ;;
+  esac
+  if [ "$major" -lt 7 ] || { [ "$major" -eq 7 ] && [ "$minor" -lt 76 ]; }; then
+    die "curl $ver lacks --fail-with-body; need curl >= 7.76"
+  fi
+}
 
 HOST="" OUT="" MODE="" CANARY_PORT=8041 PROD_PORT=8040
 QUERY='api/tide?lon0=-157.86453&lat0=21.303333&start=2023-07-25&end=2023-07-26'
@@ -33,6 +46,7 @@ done
 [ -n "$HOST" ] && [ -n "$OUT" ] || usage
 case "$MODE" in same|different|prod) ;; *) usage ;; esac
 [ ! -e "$OUT" ] || die "output directory already exists: $OUT"
+require_curl_7_76
 mkdir -p "$OUT"
 
 fetch() {  # PORT FILE

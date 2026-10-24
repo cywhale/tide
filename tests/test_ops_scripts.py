@@ -52,7 +52,7 @@ def sb(tmp_path):
             "work": tmp_path / "ops" / "deploy-1"}
 
 
-def _replace(sb, mode, path_prefix=None, **over):
+def _replace(sb, mode, path_prefix=None, env_extra=None, **over):
     args = {"rel": sb["rel"], "work": sb["work"]}
     if mode == "deploy":
         args.update(src=sb["src"], commit=sb["commit"])
@@ -60,10 +60,18 @@ def _replace(sb, mode, path_prefix=None, **over):
     cmd = ["bash", str(REPLACE), mode]
     for k, v in args.items():
         cmd += [f"--{k}", str(v)]
-    env = dict(os.environ)
+    env = dict(os.environ, **(env_extra or {}))
     if path_prefix:
         env["PATH"] = f"{path_prefix}:{env['PATH']}"
     return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+
+
+def _stub(dirpath: Path, name: str, body: str) -> Path:
+    dirpath.mkdir(parents=True, exist_ok=True)
+    p = dirpath / name
+    p.write_text(body)
+    p.chmod(0o755)
+    return dirpath
 
 
 def _contents(root):
@@ -141,6 +149,73 @@ def test_restore_puts_back_backups(sb):
     assert stat.S_IMODE((sb["rel"] / "conf/start_app.sh").stat().st_mode) == 0o755
 
 
+# Second `mv` (the src/dask_client_manager.py swap) fails outright, or
+# "succeeds" but leaves wrong content, after conf/start_app.sh was replaced.
+STUB_MV = r'''#!/bin/bash
+n=$(( $(cat "$MV_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$MV_COUNT"
+if [ "$n" -eq 2 ]; then
+  case "$MV_MODE" in
+    fail) echo "mv: simulated failure" >&2; exit 1 ;;
+    corrupt) for a in "$@"; do last=$a; done; printf 'CORRUPT\n' > "$last"; exit 0 ;;
+  esac
+fi
+exec /bin/mv "$@"
+'''
+
+
+@pytest.mark.parametrize("mv_mode", ["fail", "corrupt"])
+def test_partial_replacement_failure_is_recoverable_by_restore(sb, tmp_path, mv_mode):
+    stub_dir = _stub(tmp_path / "mvstub", "mv", STUB_MV)
+    r = _replace(sb, "deploy", path_prefix=stub_dir,
+                 env_extra={"MV_COUNT": str(tmp_path / "mv.count"), "MV_MODE": mv_mode})
+    assert r.returncode != 0
+    assert "restore --rel" in r.stderr          # the error names the recovery
+    # Mixed state: the launcher was replaced, the client was not (or is bad).
+    assert (sb["rel"] / "conf/start_app.sh").read_text() == NEW["conf/start_app.sh"]
+    assert (sb["rel"] / "src/dask_client_manager.py").read_text() != NEW["src/dask_client_manager.py"]
+
+    r = _replace(sb, "restore")                 # normal mv again
+    assert r.returncode == 0, r.stderr
+    for f in MANIFEST:
+        assert (sb["rel"] / f).read_text() == OLD[f]
+    assert stat.S_IMODE((sb["rel"] / "conf/start_app.sh").stat().st_mode) == 0o755
+
+
+def _record_lines(sb):
+    return (sb["work"] / "backup.sha256").read_text().splitlines()
+
+
+@pytest.mark.parametrize("case,expect", [
+    ("truncated", "missing"),
+    ("duplicate", "duplicate"),
+    ("traversal", "unexpected path"),
+    ("extra", "unexpected path"),
+    ("malformed", "malformed"),
+    ("empty", "missing"),
+])
+def test_restore_rejects_bad_backup_record(sb, tmp_path, case, expect):
+    assert _replace(sb, "deploy").returncode == 0
+    lines = _record_lines(sb)
+    h0 = lines[0].split()[0]
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n")
+    record = {
+        "truncated": lines[:1],
+        "duplicate": [lines[0], lines[0]],
+        "traversal": [lines[0], f"{h0}  ../../outside.txt"],
+        "extra": [*lines, f"{h0}  src/store_adapter.py"],
+        "malformed": [lines[0], lines[1][:20] + lines[1][64:]],
+        "empty": [],
+    }[case]
+    (sb["work"] / "backup.sha256").write_text("".join(f"{x}\n" for x in record))
+    r = _replace(sb, "restore")
+    assert r.returncode != 0
+    assert expect in r.stderr
+    for f in MANIFEST:                            # nothing restored, not even partly
+        assert (sb["rel"] / f).read_text() == NEW[f]
+    assert outside.read_text() == "outside\n"
+
+
 def test_restore_refuses_tampered_backup(sb):
     assert _replace(sb, "deploy").returncode == 0
     (sb["work"] / "backup/src/dask_client_manager.py").write_text("BAD = 1\n")
@@ -154,6 +229,11 @@ def test_restore_refuses_tampered_backup(sb):
 # --- https_smoke.sh -------------------------------------------------------
 
 FAKE_CURL = r'''#!/bin/bash
+if [ "$1" = "--version" ]; then
+  echo "curl ${FAKE_CURL_VERSION:-8.5.0} (fake)"
+  echo "Release-Date: fake"
+  exit 0
+fi
 echo "$*" >> "$CURL_LOG"
 out=""; url=""
 while [ $# -gt 0 ]; do
@@ -181,8 +261,9 @@ def smoke(tmp_path):
     (bindir / "curl").chmod(0o755)
     log = tmp_path / "curl.log"
 
-    def run(mode, **resp):
-        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CURL_LOG=str(log))
+    def run(mode, curl_version="8.5.0", **resp):
+        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", CURL_LOG=str(log),
+                   FAKE_CURL_VERSION=curl_version)
         for port, (code, body) in resp.items():
             env[f"FAKE_{port[1:]}_CODE"] = str(code)
             env[f"FAKE_{port[1:]}_BODY"] = body
@@ -246,6 +327,20 @@ def test_smoke_prod_mode(smoke):
     assert len(calls) == 1 and ":8040/" in calls[0]
     r, _ = smoke("prod", p8040=(503, "down"))
     assert r.returncode != 0
+
+
+@pytest.mark.parametrize("version", ["7.68.0", "7.75.9", "6.99.0", "garbage"])
+def test_smoke_refuses_old_or_unknown_curl_before_any_request(smoke, version):
+    r, calls = smoke("same", curl_version=version, p8041=(200, BODY_A), p8040=(200, BODY_A))
+    assert r.returncode != 0
+    assert "7.76" in r.stderr
+    assert calls == []
+
+
+@pytest.mark.parametrize("version", ["7.76.0", "7.88.1", "8.5.0"])
+def test_smoke_accepts_curl_7_76_and_later(smoke, version):
+    r, _ = smoke("same", curl_version=version, p8041=(200, BODY_A), p8040=(200, BODY_A))
+    assert r.returncode == 0, r.stderr
 
 
 def test_ops_scripts_syntax():
