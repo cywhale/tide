@@ -4,6 +4,7 @@ import threading
 import uuid
 
 from dask.distributed import Client
+from distributed.security import Security
 
 class DaskClientManager:
     """
@@ -28,10 +29,32 @@ class DaskClientManager:
             self.client = None
             return None
         try:
+            tls_settings = (
+                os.getenv("DASK_TLS_CA_FILE"),
+                os.getenv("DASK_TLS_CLIENT_CERT"),
+                os.getenv("DASK_TLS_CLIENT_KEY"),
+            )
+            if any(tls_settings) and not all(tls_settings):
+                raise ValueError("DASK TLS requires CA, client certificate, and client key")
+            if self.scheduler_address.startswith("tls://") and not all(tls_settings):
+                raise ValueError("TLS scheduler configured without complete DASK TLS credentials")
+            if all(tls_settings) and not self.scheduler_address.startswith("tls://"):
+                raise ValueError("DASK TLS credentials configured for a non-TLS scheduler address")
+            security = (
+                Security(
+                    tls_ca_file=tls_settings[0],
+                    tls_client_cert=tls_settings[1],
+                    tls_client_key=tls_settings[2],
+                    require_encryption=True,
+                )
+                if all(tls_settings)
+                else None
+            )
             self.client = Client(
                 self.scheduler_address,
                 name=self.service_name,
                 set_as_default=True,
+                security=security,
                 timeout="5s",   # fail fast if no scheduler (was ~30s default)
             )
 
