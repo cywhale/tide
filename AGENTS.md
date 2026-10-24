@@ -109,11 +109,14 @@ covered by `tests/test_ops_scripts.py`. Run both from the merged checkout
 passed, because launcher changes apply only on restart. The restart check
 ignores an inherited `PM2_HOME`; always name the target daemon with
 `--pm2-home`. If it reports "no running PM2 daemon" or "died or changed
-during the run", run no `pm2` command at all (a `pm2` CLI that cannot reach
-a daemon starts one); inspect with `pm2_restart_check.sh --daemon-only`,
-which never calls `pm2`. Any PM2 recovery, including `pm2 resurrect`, needs
-the owner's approval. `https_smoke.sh --out-root` gives every attempt its own
-directory. Rollback status is "components validated" at best until an
+during the run", stop and report to the owner. Run no `pm2` command at all
+(a `pm2` CLI that cannot reach a daemon starts one), and do not run
+`restore` or rerun the restart and smoke on your own: `restore` does not
+call `pm2`, but it rewrites release files and can trigger a Gunicorn
+`--reload`. Inspect read-only with `pm2_restart_check.sh --daemon-only`,
+which never calls `pm2`, and `ps`. Any recovery, including `restore` and
+`pm2 resurrect`, follows the owner's decision. `https_smoke.sh --out-root`
+gives every attempt its own directory. Rollback status is "components validated" at best until an
 owner-authorized production rollback drill is run.
 
 For deployment scripts, do not assume an interactive shell PATH.

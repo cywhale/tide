@@ -198,7 +198,12 @@ after the first rename), `restore` puts back the backups from that `WORK`
 directory with the same staging, verification, and rename. It first
 requires `backup.sha256` to list exactly the two manifest paths, once each
 and well formed, and refuses a truncated, duplicated, or altered record
-before touching any file:
+before touching any file.
+
+Like `deploy`, `restore` is a production change. It rewrites runtime files
+in the live release directory, and replacing `src/dask_client_manager.py`
+can trigger a Gunicorn `--reload` of the live workers. It runs only within
+the authorized deployment, or later on the owner's decision:
 
 ```bash
 "$SRC/conf/replace_runtime_files.sh" restore --rel "$REL" --work "$WORK"
@@ -295,9 +300,13 @@ the earlier one is kept.
 #### Daemon failures
 
 This applies when the restart check fails with "no running PM2 daemon" or
-"died or changed during the run". Stop. Do not run `pm2 ls` or any other
-`pm2` command, and do not rerun the chain: a `pm2` CLI that cannot reach a
-daemon starts a new one. Inspect without `pm2`:
+"died or changed during the run". Stop and report to the owner.
+
+- Do not run `pm2 ls`, any other `pm2` command, or `pm2 resurrect`: a `pm2`
+  CLI that cannot reach a daemon starts a new one.
+- Do not run `restore` or rerun the restart-and-smoke chain on your own.
+
+Inspect read-only, without `pm2`:
 
 ```bash
 "$SRC/conf/pm2_restart_check.sh" --daemon-only --pm2-home /home/odbadmin/.pm2
@@ -305,8 +314,13 @@ ps -eo pid,args | grep '[G]od Daemon'
 ```
 
 `--daemon-only` runs only the liveness check, prints the live daemon's PID
-or the reason it is not alive, and never calls `pm2`. `restore` only swaps
-files and does not call `pm2`, so it is still safe to run.
+or the reason it is not alive, and never calls `pm2`.
+
+`restore` does not call the `pm2` CLI, so it cannot start a PM2 daemon by
+itself. It still rewrites release files, which can trigger a Gunicorn
+`--reload`, so it is not a no-op for production. If the owner decides to
+roll the files back, run `restore` then, and handle the service state that
+follows by the procedure the owner approves.
 
 Any PM2 recovery is a separate procedure that needs the owner's approval
 first; it is not a routine fix. That includes letting `pm2` start a
