@@ -1,9 +1,11 @@
-"""v0.3.2 operator scripts: atomic manifest replacement and HTTPS smoke.
+"""v0.3.2 operator scripts: atomic manifest replacement, HTTPS smoke, and the
+verified PM2 restart.
 
-Both scripts run for real against sandboxes (a temp release directory and a
-temp git checkout; a `curl` stub on PATH), so the fail-fast control flow is
-exercised, not just the syntax.
+All three run for real against sandboxes (a temp release directory and a
+temp git checkout; `curl`, `pm2`, `ps`, `stat`, and `mv` stubs on PATH), so
+the fail-fast control flow is exercised, not just the syntax.
 """
+import json
 import os
 import stat
 import subprocess
@@ -343,6 +345,94 @@ def test_smoke_accepts_curl_7_76_and_later(smoke, version):
     assert r.returncode == 0, r.stderr
 
 
+# --- pm2_restart_check.sh -------------------------------------------------
+
+RESTART = REPO_ROOT / "conf" / "pm2_restart_check.sh"
+PY311_GUNICORN = "/home/odbadmin/.pyenv/versions/py311/bin/gunicorn"
+GOOD_ARGS = ("/home/odbadmin/.pyenv/versions/py311/bin/python3.11 "
+             f"{PY311_GUNICORN} tide_app:app -w 2 -b 127.0.0.1:8040")
+
+# State lives in a JSON file; `restart` changes it per scenario, and in "flap"
+# the app keeps restarting after the first post-restart poll (crash loop).
+FAKE_PM2 = r'''#!/usr/bin/env python3
+import json, os, sys
+path = os.environ["FAKE_PM2_STATE"]
+with open(os.environ["FAKE_PM2_LOG"], "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+st = json.load(open(path))
+if sys.argv[1] == "jlist":
+    if st["restarted"]:
+        st["post"] += 1
+        if st["mode"] == "flap" and st["post"] >= 2:
+            st["pid"] += 1
+            st["restarts"] += 1
+    apps = [{"name": "gateway", "pid": 7, "pm2_env": {"status": "online", "restart_time": 0}}]
+    if st["mode"] != "missing":
+        apps.append({"name": "tide", "pid": st["pid"],
+                     "pm2_env": {"status": st["status"], "restart_time": st["restarts"]}})
+    print(json.dumps(apps))
+elif sys.argv[1] == "restart":
+    if st["mode"] == "fail":
+        sys.exit(1)
+    st["restarted"] = True
+    st["pid"] += {"samepid": 0}.get(st["mode"], 100)
+    st["restarts"] += {"double": 2}.get(st["mode"], 1)
+    if st["mode"] == "errored":
+        st["status"] = "errored"
+json.dump(st, open(path, "w"))
+'''
+
+
+@pytest.fixture
+def restart(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "pm2").write_text(FAKE_PM2)
+    (bindir / "pm2").chmod(0o755)
+    (bindir / "ps").write_text('#!/bin/bash\necho "$FAKE_PS_ARGS"\n')
+    (bindir / "ps").chmod(0o755)
+    state, log = tmp_path / "pm2.json", tmp_path / "pm2.log"
+
+    def run(mode, ps_args=GOOD_ARGS, chain=False):
+        state.write_text(json.dumps({"mode": mode, "pid": 4242, "restarts": 3,
+                                     "status": "online", "restarted": False, "post": 0}))
+        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
+                   FAKE_PM2_STATE=str(state), FAKE_PM2_LOG=str(log), FAKE_PS_ARGS=ps_args)
+        cmd = (f'"{RESTART}" --pm2 "{bindir / "pm2"}" --timeout 2 --settle 1')
+        if chain:
+            cmd += " && echo SMOKE_WOULD_RUN"
+        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True,
+                           env=env, timeout=60)
+        return r, log.read_text().splitlines()
+    return run
+
+
+def test_restart_check_passes_on_effective_restart(restart):
+    r, calls = restart("ok", chain=True)
+    assert r.returncode == 0, r.stderr
+    assert "OK restart: tide pid 4242 -> 4342, restarts 3 -> 4" in r.stdout
+    assert "SMOKE_WOULD_RUN" in r.stdout
+    assert "restart tide" in calls          # stored environment only
+    assert not any("--update-env" in c for c in calls)
+
+
+@pytest.mark.parametrize("mode,ps_args,expect", [
+    ("fail", GOOD_ARGS, "exited non-zero"),
+    ("samepid", GOOD_ARGS, "not online with a new PID"),     # old process still serving
+    ("errored", GOOD_ARGS, "not online with a new PID"),
+    ("double", GOOD_ARGS, "expected exactly +1"),
+    ("flap", GOOD_ARGS, "not stable"),
+    ("ok", "/usr/bin/python3 /usr/local/bin/gunicorn tide_app:app", "expected " + PY311_GUNICORN),
+    ("missing", GOOD_ARGS, "cannot read PM2 state"),
+])
+def test_restart_check_fails_and_blocks_chained_smoke(restart, mode, ps_args, expect):
+    r, _ = restart(mode, ps_args=ps_args, chain=True)
+    assert r.returncode != 0
+    assert expect in r.stderr
+    assert "SMOKE_WOULD_RUN" not in r.stdout
+    assert "OK restart" not in r.stdout
+
+
 def test_ops_scripts_syntax():
-    for script in (REPLACE, SMOKE):
+    for script in (REPLACE, SMOKE, RESTART):
         subprocess.run(["bash", "-n", str(script)], check=True)

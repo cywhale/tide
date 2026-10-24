@@ -141,7 +141,8 @@ counts, outputs) recorded here.
 - [ ] `conf/replace_runtime_files.sh` rehearsed on a scratch copy (see
       "Production deployment procedure").
 - [ ] Canary parts A, B, and C passed for the TPXO10 and TPXO9 stores.
-- [ ] PM2 environment validation passed with an isolated `PM2_HOME`.
+- [ ] PM2 environment validation passed with an isolated `PM2_HOME`,
+      including the `pm2_restart_check.sh` rehearsal on the dummy app.
 - [ ] Owner authorization for the production deployment (step 4).
 
 ## Production deployment procedure
@@ -215,49 +216,50 @@ release directory's runtime files (the drift-detection list above) under
 
 ### Restart and post-deploy checks
 
-Run these in the same shell as the deploy block, so that `SRC` and `SHA`
-are still set. Restart without `--update-env`: that flag would copy this
-shell's variables (for example `SHA` or a stray `TIDE_ZARR_PATH`) into the
-production process. Run `https_smoke.sh` from the merged checkout, because
-it is not part of the runtime manifest and does not exist in the release
-directory.
+Run this only after `deploy` printed `OK deploy`, in the same shell, so
+that `SRC` and `SHA` are still set. Both scripts come from the merged
+checkout; neither is part of the runtime manifest, so neither exists in the
+release directory.
+
+`conf/pm2_restart_check.sh` runs `pm2 restart tide` with the stored
+environment. It never passes `--update-env`, which would copy this shell's
+variables (for example `SHA` or a stray `TIDE_ZARR_PATH`) into the
+production process. It then fails unless all of the following hold:
+
+- the restart command exits 0;
+- within `--timeout` (default 60 s), `tide` is `online` with a new PID;
+- the restart count rose by exactly one;
+- after `--settle` (default 10 s), the PID and restart count are unchanged,
+  so there is no crash loop;
+- the process command line contains the py311 Gunicorn path.
+
+The smoke is chained with `&&`, so it runs only after `OK restart`. A
+smoke `PASS` without a preceding `OK restart` in the same run is not
+deployment evidence. Each attempt writes a new timestamped `--out`
+directory, so a retry is never blocked, and a failed attempt's output is
+kept as evidence.
 
 ```bash
-PM2=$HOME/.npm-global/bin/pm2
 HOST=eco.odb.ntu.edu.tw   # the SAN hostname recorded before the canary
-tide_state() {
-  "$PM2" jlist | python3 -c 'import json, sys
-for p in json.load(sys.stdin):
-    if p["name"] == "tide":
-        e = p["pm2_env"]
-        print("status=%s pid=%s restarts=%s" % (e["status"], p["pid"], e["restart_time"]))'
-}
-
-tide_state                                  # before: record status, PID, restarts
-"$PM2" restart tide                         # stored environment; no --update-env
-sleep 10
-tide_state                                  # after: online, new PID, restarts + 1
-ps -o pid,args -p "$("$PM2" pid tide)"      # must be the py311 Gunicorn
-
-"$SRC/conf/https_smoke.sh" --host "$HOST" --mode prod \
-  --out "/home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke-postdeploy"
+"$SRC/conf/pm2_restart_check.sh" --name tide \
+  && "$SRC/conf/https_smoke.sh" --host "$HOST" --mode prod \
+       --out "/home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke-postdeploy-$(date +%Y%m%dT%H%M%S)"
 ```
 
 The deployment is complete only if all of the following hold:
 
 - `deploy` printed `OK deploy`. It has already verified both manifest files
   against the commit and that every other runtime file is unchanged.
-- After the restart, `tide` is `online` with a new PID and a restart count
-  exactly one higher, and `ps` shows
-  `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn`.
+- `pm2_restart_check.sh` printed `OK restart`, and `https_smoke.sh`, in the
+  same chain, printed `PASS prod`.
 - The `tide` log since the restart has no `Dask client connection failed`
   warning.
 - The scheduler client list (method in canary part A, step 1) shows one
   `Client-tideapi-*` entry per Gunicorn worker, which is two.
-- `https_smoke.sh --mode prod` prints `PASS prod`.
 
-If any check fails, run `restore`, restart `tide` the same way, and repeat
-the checks against the restored files.
+If any check fails, run `restore`, then run the same restart-and-smoke
+chain again. The new attempt gets a new `--out` directory, and the earlier
+one is kept.
 
 ## Rollback
 
@@ -373,15 +375,19 @@ verification; never use `curl -k`.
    HTTP 200 with a body that is non-empty and not `{}`. It requires curl
    7.76 or later (for `--fail-with-body`) and refuses an older curl before
    sending any request. The bodies are kept in `--out`, which must be a new
-   directory outside the release directory.
+   directory outside the release directory. Use a new timestamped directory
+   for every attempt: the script refuses an existing one, and a failed
+   attempt's directory is kept as evidence and never reused.
    The query fixes `start` and `end`, so the body is deterministic.
 
    ```bash
    SMOKE=/home/odbadmin/tmp/tide-v0.3.2-$SHA/conf/https_smoke.sh
    # TPXO10 canary: body must be identical to production.
-   "$SMOKE" --host eco.odb.ntu.edu.tw --mode same --out /home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke-tpxo10
+   "$SMOKE" --host eco.odb.ntu.edu.tw --mode same \
+     --out "/home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke-tpxo10-$(date +%Y%m%dT%H%M%S)"
    # TPXO9 canary: both 200, bodies must differ.
-   "$SMOKE" --host eco.odb.ntu.edu.tw --mode different --out /home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke-tpxo9
+   "$SMOKE" --host eco.odb.ntu.edu.tw --mode different \
+     --out "/home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke-tpxo9-$(date +%Y%m%dT%H%M%S)"
    ```
 
 C. Production unaffected. The production `tide` PID and restart count
@@ -436,6 +442,21 @@ PM2_HOME="$PROBE" "$PM2" kill
 Record each `probe` output. This part of "rollback components validated"
 passes only if each explicit start shows the requested path and the
 save/kill/resurrect cycle preserves it.
+
+Before the final `pm2 kill`, rehearse the restart check on the dummy app
+with the same isolated daemon. This runs `pm2_restart_check.sh` with GNU
+`ps` and real PM2 without touching production:
+
+```bash
+# The dummy's command line may start with bash, /usr/bin/bash, or sleep;
+# take the executable from the running process instead of guessing.
+EXE=$(ps -o args= -p "$(PM2_HOME="$PROBE" "$PM2" pid envprobe)" | awk '{print $1}')
+PM2_HOME="$PROBE" /home/odbadmin/tmp/tide-v0.3.2-$SHA/conf/pm2_restart_check.sh \
+  --pm2 "$PM2" --name envprobe --expect-exec "$EXE" --settle 3
+```
+
+It must print `OK restart`. Record the output, and also confirm that
+`pm2_restart_check.sh` fails when run with a wrong `--expect-exec`.
 
 ## Runtime environment
 
