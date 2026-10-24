@@ -8,8 +8,13 @@ the fail-fast control flow is exercised, not just the syntax.
 import json
 import os
 import re
+import shutil
+import socket
 import stat
 import subprocess
+import sys
+import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -366,9 +371,9 @@ PY311_GUNICORN = "/home/odbadmin/.pyenv/versions/py311/bin/gunicorn"
 GOOD_ARGS = ("/home/odbadmin/.pyenv/versions/py311/bin/python3.11 "
              f"{PY311_GUNICORN} tide_app:app -w 2 -b 127.0.0.1:8040")
 
-# Each fake daemon is a PM2_HOME directory holding rpc.sock, state.json, and
-# calls.log; the fake pm2 acts on whichever PM2_HOME it is given (KeyError if
-# none). `restart` changes the state per scenario, and in "flap" the app keeps
+# Each fake daemon is a PM2_HOME directory holding state.json and calls.log;
+# the fake pm2 acts on whichever PM2_HOME it is given (KeyError if none).
+# `restart` changes the state per scenario, and in "flap" the app keeps
 # restarting after the first post-restart poll (crash loop).
 FAKE_PM2 = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -400,18 +405,72 @@ json.dump(st, open(path, "w"))
 '''
 
 
-def _daemon(home: Path, mode: str) -> Path:
-    home.mkdir(parents=True, exist_ok=True)
-    (home / "rpc.sock").write_text("")
-    (home / "state.json").write_text(json.dumps({
-        "mode": mode, "pid": 4242, "restarts": 3, "status": "online",
-        "restarted": False, "post": 0}))
-    return home
-
-
 def _calls(home: Path):
     log = home / "calls.log"
     return log.read_text().splitlines() if log.exists() else []
+
+
+def _state(home: Path, mode: str):
+    (home / "state.json").write_text(json.dumps({
+        "mode": mode, "pid": 4242, "restarts": 3, "status": "online",
+        "restarted": False, "post": 0}))
+
+
+# A stand-in PM2 daemon: a real process listening on rpc.sock.
+LISTENER = ("import socket, sys\n"
+            "s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(8)\n"
+            "while True:\n    c, _ = s.accept(); c.close()\n")
+
+
+@pytest.fixture
+def pm2_home():
+    """Factory for PM2_HOME dirs. Short paths under /tmp keep rpc.sock within
+    the Unix-socket path limit. sock: live | stale | file | none;
+    pid: daemon (the listener) | dead | other (a live non-daemon) | none."""
+    made, procs = [], []
+
+    def make(mode=None, sock="live", pid="daemon"):
+        home = Path(tempfile.mkdtemp(prefix="pm2t-", dir="/tmp"))
+        made.append(home)
+        if mode:
+            _state(home, mode)
+        listener = None
+        if sock == "live":
+            listener = subprocess.Popen([sys.executable, "-c", LISTENER, str(home / "rpc.sock")])
+            procs.append(listener)
+            deadline = time.time() + 5
+            while not (home / "rpc.sock").exists():
+                assert time.time() < deadline, "listener did not bind"
+                time.sleep(0.05)
+        elif sock == "stale":           # a real socket file nobody listens on
+            s = socket.socket(socket.AF_UNIX)
+            s.bind(str(home / "rpc.sock"))
+            s.close()
+        elif sock == "file":
+            (home / "rpc.sock").write_text("")
+        daemon_pid = None
+        if pid == "daemon":
+            if listener is None:        # a live process that claims the title
+                listener = subprocess.Popen(["sleep", "60"])
+                procs.append(listener)
+            daemon_pid = listener.pid
+            (home / "pm2.pid").write_text(f"{daemon_pid}\n")
+        elif pid == "dead":
+            p = subprocess.Popen(["true"])
+            p.wait()
+            (home / "pm2.pid").write_text(f"{p.pid}\n")
+        elif pid == "other":
+            p = subprocess.Popen(["sleep", "60"])
+            procs.append(p)
+            (home / "pm2.pid").write_text(f"{p.pid}\n")
+        return home, daemon_pid
+
+    yield make
+    for p in procs:
+        p.kill()
+        p.wait()
+    for h in made:
+        shutil.rmtree(h, ignore_errors=True)
 
 
 @pytest.fixture
@@ -420,15 +479,22 @@ def restart(tmp_path):
     bindir.mkdir()
     (bindir / "pm2").write_text(FAKE_PM2)
     (bindir / "pm2").chmod(0o755)
-    (bindir / "ps").write_text('#!/bin/bash\necho "$FAKE_PS_ARGS"\n')
+    # ps: the stand-in daemon's PID shows the daemon title, anything else the
+    # Gunicorn command line under test.
+    (bindir / "ps").write_text(
+        '#!/bin/bash\npid=""\n'
+        'while [ $# -gt 0 ]; do case "$1" in -p) pid=$2; shift 2 ;; *) shift ;; esac; done\n'
+        'if [ -n "${FAKE_DAEMON_PID:-}" ] && [ "$pid" = "$FAKE_DAEMON_PID" ]; then\n'
+        '  echo "$FAKE_DAEMON_ARGS"\nelse\n  echo "$FAKE_PS_ARGS"\nfi\n')
     (bindir / "ps").chmod(0o755)
-    target = tmp_path / "pm2-target"
 
-    def run(mode=None, ps_args=GOOD_ARGS, chain=False, inherited_home=None, home=target):
-        if mode is not None:
-            _daemon(home, mode)
-        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_PS_ARGS=ps_args)
+    def run(home, daemon_pid=None, ps_args=GOOD_ARGS, chain=False,
+            inherited_home=None, daemon_title=None):
+        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_PS_ARGS=ps_args,
+                   FAKE_DAEMON_ARGS=daemon_title or f"PM2 v5.4.2: God Daemon ({home})")
         env.pop("PM2_HOME", None)
+        if daemon_pid is not None:
+            env["FAKE_DAEMON_PID"] = str(daemon_pid)
         if inherited_home is not None:
             env["PM2_HOME"] = str(inherited_home)
         cmd = (f'"{RESTART}" --pm2 "{bindir / "pm2"}" --pm2-home "{home}" '
@@ -441,8 +507,9 @@ def restart(tmp_path):
     return run
 
 
-def test_restart_check_passes_on_effective_restart(restart):
-    r, calls = restart("ok", chain=True)
+def test_restart_check_passes_on_effective_restart(restart, pm2_home):
+    home, dpid = pm2_home("ok")
+    r, calls = restart(home, dpid, chain=True)
     assert r.returncode == 0, r.stderr
     assert "OK restart: tide pid 4242 -> 4342, restarts 3 -> 4" in r.stdout
     assert "SMOKE_WOULD_RUN" in r.stdout
@@ -459,35 +526,47 @@ def test_restart_check_passes_on_effective_restart(restart):
     ("ok", "/usr/bin/python3 /usr/local/bin/gunicorn tide_app:app", "expected " + PY311_GUNICORN),
     ("missing", GOOD_ARGS, "cannot read PM2 state"),
 ])
-def test_restart_check_fails_and_blocks_chained_smoke(restart, mode, ps_args, expect):
-    r, _ = restart(mode, ps_args=ps_args, chain=True)
+def test_restart_check_fails_and_blocks_chained_smoke(restart, pm2_home, mode, ps_args, expect):
+    home, dpid = pm2_home(mode)
+    r, _ = restart(home, dpid, ps_args=ps_args, chain=True)
     assert r.returncode != 0
     assert expect in r.stderr
     assert "SMOKE_WOULD_RUN" not in r.stdout
     assert "OK restart" not in r.stdout
 
 
-def test_restart_check_ignores_inherited_pm2_home(restart, tmp_path):
+def test_restart_check_ignores_inherited_pm2_home(restart, pm2_home):
     # The shell still points at a test daemon that also has a "tide" app; the
     # checker must restart the --pm2-home daemon and leave the decoy alone.
-    decoy = _daemon(tmp_path / "pm2-decoy", "ok")
+    home, dpid = pm2_home("ok")
+    decoy, _ = pm2_home("ok")
     decoy_state = (decoy / "state.json").read_text()
-    r, calls = restart("ok", inherited_home=decoy)
+    r, calls = restart(home, dpid, inherited_home=decoy)
     assert r.returncode == 0, r.stderr
     assert "restart tide" in calls
-    assert f"daemon: PM2_HOME={tmp_path / 'pm2-target'}" in r.stdout
+    assert f"daemon: PM2_HOME={home}" in r.stdout
     assert "ignoring inherited PM2_HOME" in r.stderr
     assert _calls(decoy) == []
     assert (decoy / "state.json").read_text() == decoy_state
 
 
-def test_restart_check_refuses_target_without_daemon(restart, tmp_path):
-    empty = tmp_path / "pm2-none"
-    empty.mkdir()
-    r, calls = restart(home=empty, chain=True)
+@pytest.mark.parametrize("sock,pid,title,expect", [
+    ("none", "none", None, "not a socket"),
+    ("file", "daemon", None, "not a socket"),                # plain file named rpc.sock
+    ("stale", "daemon", None, "refuses connections"),        # socket left by a dead daemon
+    ("live", "none", None, "pm2.pid is missing"),
+    ("live", "dead", None, "is not running"),
+    ("live", "other", None, "is not the PM2 daemon"),        # PID reused by another process
+    ("live", "daemon", "PM2 v5.4.2: God Daemon (/home/someone/.pm2)",
+     "is not the PM2 daemon"),                               # another home's daemon
+])
+def test_restart_check_refuses_without_live_daemon_and_never_calls_pm2(
+        restart, pm2_home, sock, pid, title, expect):
+    home, dpid = pm2_home("ok", sock=sock, pid=pid)
+    r, calls = restart(home, dpid, chain=True, daemon_title=title)
     assert r.returncode != 0
-    assert "no running PM2 daemon" in r.stderr
-    assert calls == []                      # pm2 never invoked, so no new daemon
+    assert "no running PM2 daemon" in r.stderr and expect in r.stderr
+    assert calls == []                      # pm2 CLI never invoked: no new daemon
     assert "SMOKE_WOULD_RUN" not in r.stdout
 
 

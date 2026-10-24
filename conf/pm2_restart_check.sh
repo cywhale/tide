@@ -8,8 +8,9 @@
 #
 # The target daemon is always --pm2-home (default: production
 # /home/odbadmin/.pm2). An inherited PM2_HOME is ignored, so a shell left
-# pointing at a test daemon cannot redirect the restart. A target without a
-# running daemon (no rpc.sock) is refused, so pm2 never starts a new one.
+# pointing at a test daemon cannot redirect the restart. Before any pm2 call
+# the daemon must be proven alive (see daemon_alive); otherwise the script
+# stops, because a pm2 CLI that cannot reach a daemon starts a new one.
 #
 # Checks: `pm2 restart` exits 0 (no --update-env, so the operator's shell
 # variables never reach production); within --timeout seconds the app is
@@ -20,7 +21,7 @@ set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-usage() { sed -n '2,18p' "$0" >&2; exit 2; }
+usage() { sed -n '2,19p' "$0" >&2; exit 2; }
 
 PM2=$HOME/.npm-global/bin/pm2
 TARGET_HOME=/home/odbadmin/.pm2
@@ -40,8 +41,36 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -e "$TARGET_HOME/rpc.sock" ] \
-  || die "no running PM2 daemon at $TARGET_HOME (missing rpc.sock); refusing to start a new one"
+TARGET_HOME=${TARGET_HOME%/}
+
+# Fail-closed liveness check that never runs pm2: rpc.sock is a socket, the
+# PID in pm2.pid is alive, that process is the PM2 God Daemon for this exact
+# PM2_HOME (PM2 titles it "PM2 vX: God Daemon (<PM2_HOME>)"), and rpc.sock
+# accepts a connection. A stale socket, a plain file, a dead or reused PID,
+# or another home's daemon all fail. Prints the reason on failure.
+daemon_alive() {
+  local home=$1 pid args
+  [ -S "$home/rpc.sock" ] || { echo "rpc.sock is missing or not a socket"; return 1; }
+  [ -r "$home/pm2.pid" ] || { echo "pm2.pid is missing"; return 1; }
+  pid=$(tr -dc '0-9' < "$home/pm2.pid")
+  [ -n "$pid" ] || { echo "pm2.pid holds no PID"; return 1; }
+  kill -0 "$pid" 2>/dev/null || { echo "PID $pid from pm2.pid is not running"; return 1; }
+  args=$(ps -o args= -p "$pid") || { echo "cannot read the command line of PID $pid"; return 1; }
+  case "$args" in
+    *"God Daemon ($home)"*) ;;
+    *) echo "PID $pid is not the PM2 daemon for $home: $args"; return 1 ;;
+  esac
+  python3 -I -c '
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(3)
+s.connect(sys.argv[1])
+s.close()
+' "$home/rpc.sock" 2>/dev/null || { echo "rpc.sock refuses connections"; return 1; }
+}
+
+reason=$(daemon_alive "$TARGET_HOME") \
+  || die "no running PM2 daemon at $TARGET_HOME ($reason); refusing to call pm2"
 if [ -n "${PM2_HOME:-}" ] && [ "$PM2_HOME" != "$TARGET_HOME" ]; then
   echo "note: ignoring inherited PM2_HOME=$PM2_HOME" >&2
 fi

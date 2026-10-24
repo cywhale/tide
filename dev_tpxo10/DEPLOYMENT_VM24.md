@@ -229,9 +229,20 @@ production process.
 It always acts on the daemon given by `--pm2-home`, which defaults to
 production `/home/odbadmin/.pm2` and is passed explicitly below. An
 inherited `PM2_HOME` is ignored, so a shell left pointing at the isolated
-test daemon cannot redirect the restart. A target without a running daemon
-(no `rpc.sock`) is refused, so pm2 is never left starting a new, empty
-daemon. It then fails unless all of the following hold:
+test daemon cannot redirect the restart.
+
+Before any `pm2` call, it proves the daemon is alive without running `pm2`:
+
+- `rpc.sock` is a socket;
+- the PID in `pm2.pid` is running;
+- that process's command line is the PM2 God Daemon title for this exact
+  home (`PM2 vX: God Daemon (<PM2_HOME>)`);
+- `rpc.sock` accepts a connection.
+
+A stale socket, a plain file, a dead or reused PID, or another home's daemon
+is refused, and `pm2` is never invoked, because a `pm2` CLI that cannot
+reach a daemon starts a new one. It then fails unless all of the following
+hold:
 
 - the restart command exits 0;
 - within `--timeout` (default 60 s), `tide` is `online` with a new PID;
@@ -464,9 +475,14 @@ EXE=$(ps -o args= -p "$(PM2_HOME="$PROBE" "$PM2" pid envprobe)" | awk '{print $1
 ```
 
 It must print `daemon: PM2_HOME=` followed by the `$PROBE` path, then
-`OK restart`. Record the output. Also confirm that the script fails when
-run with a wrong `--expect-exec`, and that it fails with "no running PM2
-daemon" for a `--pm2-home` directory that has no daemon.
+`OK restart`. Passing the liveness check also confirms that this PM2
+version titles its daemon `God Daemon (<PM2_HOME>)`. Record the output.
+
+Also confirm that the script fails when run with a wrong `--expect-exec`.
+After the final `PM2_HOME="$PROBE" "$PM2" kill`, run it once more with
+`--pm2-home "$PROBE"`: it must fail with "no running PM2 daemon", and no new
+`God Daemon ($PROBE)` process may appear in `ps`. This proves a dead
+daemon's leftovers never lead to `pm2` starting a new one.
 
 ## Runtime environment
 
