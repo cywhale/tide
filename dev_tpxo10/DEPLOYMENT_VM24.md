@@ -13,8 +13,10 @@ plus a hot patch of two Tide files). API version: v1.1.0.
 - Host: VM24 (`odb24`, `192.168.2.24`).
 - PM2 process: `tide`.
 - Runtime cwd: `/home/odbadmin/python/tide_tpxo10_atlas_v2` (a release copy,
-  not a git checkout; detect drift by comparing file hashes with the
-  deployed commit).
+  not a git checkout). Detect drift by comparing the hashes of the runtime
+  files (`tide_app.py`, `__init__.py`, `src/*.py`, `conf/start_app.sh`,
+  `conf/ecosystem.config.js`) with the deployed commit. Docs, tests, and
+  notebooks are not deployed and may lag.
 - Code: v0.3.1 plus the 2026-10-24 Dask TLS hot patch of `conf/start_app.sh`
   and `src/dask_client_manager.py`. The hot-patched files are recorded
   verbatim in the repository as the first commit of PR #2. The hardened
@@ -118,23 +120,95 @@ workers.
    environment validation (below). Neither touches the release directory or
    the production PM2 daemon.
 4. The owner gives separate authorization for the production update.
-5. **Production deployment.** This changes the live service. Copy the files
-   changed by PR #2 from the merged commit into the release directory: the
-   two runtime files plus the tests and docs, so that hash parity holds.
-   Writing `src/dask_client_manager.py` reloads the live Gunicorn workers
-   immediately; the launcher change takes effect at the next `tide` restart,
-   which belongs to the same authorized deployment. Then confirm hash parity
-   of all tracked files with the merged commit, the scheduler client list
-   showing the `tideapi` clients, the API smoke (below), and `tide` online in
-   PM2.
-6. If the canary and PM2 validation passed, mark the rollback verified in
-   this file. Tag `v0.3.2` only after the validation and the production
+5. **Production deployment.** This changes the live service. Deploy only
+   the v0.3.2 runtime manifest, using atomic replacement as described in
+   "Production deployment procedure" below.
+6. Update this file with the outcome: rollback status "components
+   validated" if the TPXO9 canary and the PM2 validation passed (see
+   "Rollback"). Tag `v0.3.2` only after the validation and the production
    deployment are complete.
+
+## Production deployment procedure
+
+Run this only at release sequence step 5, with the owner's authorization.
+
+Deployment manifest for v0.3.2 (runtime files only):
+
+- `conf/start_app.sh`
+- `src/dask_client_manager.py`
+
+Docs, tests, and notebooks are not deployed. They have no runtime role, and
+each extra write into the release directory is avoidable risk.
+
+Gunicorn runs with `--reload`, so it can reload while a file is being
+written. Never copy over a runtime file in place. Stage each file outside
+the release directory on the same filesystem, verify its hash against the
+merged commit, then replace the target with a single `mv` (an atomic
+`rename(2)`). The target path then only ever holds a complete file.
+
+```bash
+: "${SHA:?set SHA to the merged commit short hash}"
+: "${DEPLOY_DATE:?set DEPLOY_DATE, for example 20261101}"
+REL=/home/odbadmin/python/tide_tpxo10_atlas_v2
+SRC=/home/odbadmin/tmp/tide-v0.3.2-$SHA                  # checkout of the merged commit
+WORK=/home/odbadmin/tmp/tide-v0.3.2-deploy-$DEPLOY_DATE  # backups and staging, outside $REL
+mkdir -p "$WORK/backup/src" "$WORK/backup/conf" "$WORK/staging"
+
+# rename(2) is atomic only within one filesystem: the two device numbers
+# must match, otherwise stop.
+stat -c '%d %n' "$WORK/staging" "$REL/src" "$REL/conf"
+
+# Record runtime hashes and back up the manifest files.
+(cd "$REL" && sha256sum tide_app.py __init__.py src/*.py conf/start_app.sh \
+  conf/ecosystem.config.js) > "$WORK/runtime-before.sha256"
+for f in conf/start_app.sh src/dask_client_manager.py; do
+  cp -p "$REL/$f" "$WORK/backup/$f"
+done
+
+deploy() {  # $1: manifest path relative to the release directory
+  stage="$WORK/staging/$(basename "$1")"
+  cp "$SRC/$1" "$stage" && chmod --reference="$REL/$1" "$stage" || return 1
+  if [ "$(sha256sum < "$stage")" != "$(git -C "$SRC" show "HEAD:$1" | sha256sum)" ]; then
+    echo "hash mismatch: $1" >&2
+    return 1
+  fi
+  mv -f "$stage" "$REL/$1"
+}
+deploy conf/start_app.sh            # not imported; used at the next restart
+deploy src/dask_client_manager.py   # triggers one --reload of the live workers
+```
+
+The block uses GNU `stat -c` and `chmod --reference`. Rehearse it once
+before step 5 with `REL` pointing at a scratch copy of the release
+directory's runtime files (the drift-detection list above) under
+`/home/odbadmin/tmp/`, and confirm that
+the replacement happens and that a tampered staged file is refused.
+
+The launcher change takes effect at the next `tide` restart, which is part
+of the same authorized deployment. To back out, replace the manifest files
+with the copies in `$WORK/backup/` the same way.
+
+Post-deploy checks:
+
+- The two manifest files match the merged commit, and every other runtime
+  hash matches `runtime-before.sha256`.
+- `tide` is online in PM2, and the log since the deployment has no
+  `Dask client connection failed` warning.
+- The scheduler client list shows one `Client-tideapi-*` entry per Gunicorn
+  worker.
+- The HTTPS smoke from canary part B, run against port 8040, returns 200.
 
 ## Rollback
 
-Status: **unverified**. Mark it verified here only after the canary against
-the TPXO9 store and the PM2 environment validation pass.
+Status: **unverified**.
+
+- Once the TPXO9 canary and the isolated PM2 environment validation pass,
+  record "rollback components validated (<date>)". Those tests cover the
+  TPXO9 data path through the current runtime and how PM2 passes
+  `TIDE_ZARR_PATH`, using a canary and a dummy app.
+- They do not switch the production `tide` entry, so record "production
+  rollback not exercised" alongside, including after the v0.3.2
+  deployment. Only an owner-authorized production drill can change that.
 
 Rollback keeps the current release runtime and switches only the store, by
 absolute path in both directions. `TIDE_ZARR_PATH` is read from the process
@@ -151,13 +225,13 @@ cd /home/odbadmin/python/tide_tpxo10_atlas_v2
 $PM2 delete tide
 TIDE_ZARR_PATH=/home/odbadmin/python/tide/data/tpxo9.zarr \
   $PM2 start conf/ecosystem.config.js
-$PM2 env <tide-id> | grep TIDE_ZARR_PATH    # id from `$PM2 status`
+$PM2 env "$($PM2 id tide | tr -dc '0-9')" | grep TIDE_ZARR_PATH
 
 # Switch forward to TPXO10.
 $PM2 delete tide
 TIDE_ZARR_PATH=/home/odbadmin/python/tide_tpxo10_atlas_v2/data/tpxo10.zarr \
   $PM2 start conf/ecosystem.config.js
-$PM2 env <tide-id> | grep TIDE_ZARR_PATH
+$PM2 env "$($PM2 id tide | tr -dc '0-9')" | grep TIDE_ZARR_PATH
 ```
 
 To make either state survive a reboot, the PM2 dump must be updated. `pm2
@@ -231,17 +305,26 @@ verification; never use `curl -k`.
    `openssl x509 -in <release>/conf/fullchain.pem -noout -ext subjectAltName`.
    The commands below assume `eco.odb.ntu.edu.tw`; if the certificate lists
    a different name, use that name.
-2. Query the canary through local resolution:
+2. Query the canary and production (a read-only GET) through local
+   resolution. `--fail-with-body` (curl 7.76 or later) makes any HTTP 4xx or
+   5xx fail the command, and `-w` prints the status, which must be `200`.
+   Write the bodies outside the release directory.
 
    ```bash
-   curl -sS --resolve eco.odb.ntu.edu.tw:8041:127.0.0.1 \
-     "https://eco.odb.ntu.edu.tw:8041/api/tide?lon0=-157.86453&lat0=21.303333&start=2023-07-25&end=2023-07-26"
+   Q='api/tide?lon0=-157.86453&lat0=21.303333&start=2023-07-25&end=2023-07-26'
+   : "${SHA:?set SHA to the commit under test}"
+   OUT=/home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke; mkdir -p "$OUT"
+   curl -sS --fail-with-body -o "$OUT/canary.json" -w '%{http_code}\n' \
+     --resolve eco.odb.ntu.edu.tw:8041:127.0.0.1 "https://eco.odb.ntu.edu.tw:8041/$Q"
+   curl -sS --fail-with-body -o "$OUT/prod.json" -w '%{http_code}\n' \
+     --resolve eco.odb.ntu.edu.tw:8040:127.0.0.1 "https://eco.odb.ntu.edu.tw:8040/$Q"
+   cmp "$OUT/canary.json" "$OUT/prod.json"
    ```
 
-3. Run the same query against production (`--resolve
-   eco.odb.ntu.edu.tw:8040:127.0.0.1` and port 8040, a read-only GET). The
-   TPXO10 canary must match production; the TPXO9 canary must return 200
-   with values that differ from production.
+3. The query fixes `start` and `end`, so the body is deterministic. With
+   the TPXO10 store, `cmp` must succeed (identical to production). With the
+   TPXO9 store, both requests must still return 200, and `cmp` must report a
+   difference.
 
 C. Production unaffected. The production `tide` PID and restart count
 (`pm2 jlist`) and the release directory's file hashes are unchanged from
@@ -292,8 +375,8 @@ PM2_HOME="$PROBE" "$PM2" resurrect; probe
 PM2_HOME="$PROBE" "$PM2" kill
 ```
 
-Record each `probe` output. The rollback section can be marked verified
-only if each explicit start shows the requested path and the
+Record each `probe` output. This part of "rollback components validated"
+passes only if each explicit start shows the requested path and the
 save/kill/resurrect cycle preserves it.
 
 ## Runtime environment

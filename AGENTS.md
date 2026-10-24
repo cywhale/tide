@@ -96,7 +96,11 @@ v0.3.2 is a pending release: VM24 still runs v0.3.1 plus the 2026-10-24
 Dask TLS hot patch. Release order: merge, then py311 tests and canary from a
 separate checkout on VM24, then a production deployment only with the
 owner's separate authorization, then the `v0.3.2` tag. Never modify the
-release directory before the canary passes.
+release directory before the canary passes. A deployment writes only the
+runtime manifest files, each staged outside the release directory, verified
+by hash, and swapped in with an atomic rename (Gunicorn runs with
+`--reload`). Rollback status is "components validated" at best until an
+owner-authorized production rollback drill is run.
 
 For deployment scripts, do not assume an interactive shell PATH.
 `conf/start_app.sh` runs only an explicitly set absolute `GUNICORN_BIN` or
@@ -113,8 +117,9 @@ into the release directory (production runs with `--reload`, so any edit
 there reloads the live workers). Run it with the py311 Gunicorn on
 `127.0.0.1:8041`, without PM2, `conf/start_app.sh`, or `--reload`, with an
 absolute `TIDE_ZARR_PATH`, and stop it by PID. Smoke HTTPS against the
-certificate's hostname with `curl --resolve <host>:8041:127.0.0.1`; never
-disable verification with `curl -k`. Report Dask transport evidence
+certificate's hostname with `curl --resolve <host>:8041:127.0.0.1` and
+`--fail-with-body` so HTTP errors fail the command; never disable
+verification with `curl -k`. Report Dask transport evidence
 (scheduler client registration, a trivial task with the same credentials)
 separately from the Tide API/store smoke. PM2 environment tests must use a
 separate `PM2_HOME` on every `pm2` command, with a dummy app that has no
