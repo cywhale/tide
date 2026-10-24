@@ -103,10 +103,13 @@ by hash, and swapped in with an atomic rename (Gunicorn runs with
 than hand-typed commands. It and `conf/https_smoke.sh` are fail-fast and
 covered by `tests/test_ops_scripts.py`. Run both from the merged checkout
 (they are not deployed). A deployment is not complete until
-`conf/pm2_restart_check.sh` has restarted `tide` with the stored environment
-(no `--update-env`) and printed `OK restart`, and the production smoke
-chained after it with `&&` has passed, because launcher changes apply only
-on restart. Give every smoke attempt a new timestamped `--out` directory. Rollback status is "components validated" at best until an
+`conf/pm2_restart_check.sh --pm2-home /home/odbadmin/.pm2` has restarted
+`tide` with the stored environment (no `--update-env`) and printed
+`OK restart`, and the production smoke chained after it with `&&` has
+passed, because launcher changes apply only on restart. The restart check
+ignores an inherited `PM2_HOME`; always name the target daemon with
+`--pm2-home`. `https_smoke.sh --out-root` gives every attempt its own
+directory. Rollback status is "components validated" at best until an
 owner-authorized production rollback drill is run.
 
 For deployment scripts, do not assume an interactive shell PATH.

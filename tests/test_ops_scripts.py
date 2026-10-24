@@ -7,6 +7,7 @@ the fail-fast control flow is exercised, not just the syntax.
 """
 import json
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -269,9 +270,8 @@ def smoke(tmp_path):
         for port, (code, body) in resp.items():
             env[f"FAKE_{port[1:]}_CODE"] = str(code)
             env[f"FAKE_{port[1:]}_BODY"] = body
-        out = tmp_path / f"out-{len(list(tmp_path.glob('out-*')))}"
         r = subprocess.run(["bash", str(SMOKE), "--host", "eco.odb.ntu.edu.tw",
-                            "--out", str(out), "--mode", mode],
+                            "--out-root", str(tmp_path / "smoke-root"), "--mode", mode],
                            capture_output=True, text=True, env=env, timeout=30)
         calls = log.read_text().splitlines() if log.exists() else []
         return r, calls
@@ -331,6 +331,20 @@ def test_smoke_prod_mode(smoke):
     assert r.returncode != 0
 
 
+def test_smoke_each_attempt_gets_a_new_directory(smoke, tmp_path):
+    # A failed attempt followed by an immediate (same-second) retry: the retry
+    # is not blocked and the failed attempt's output is kept.
+    r1, _ = smoke("same", p8041=(500, "oops"), p8040=(200, BODY_A))
+    r2, _ = smoke("same", p8041=(200, BODY_A), p8040=(200, BODY_A))
+    assert r1.returncode != 0
+    assert r2.returncode == 0, r2.stderr
+    d1 = Path(re.search(r"^attempt: (.+)$", r1.stdout, re.M).group(1))
+    d2 = Path(re.search(r"^attempt: (.+)$", r2.stdout, re.M).group(1))
+    assert d1 != d2 and d1.parent == d2.parent == tmp_path / "smoke-root"
+    assert (d1 / "canary.json").read_text() == "oops"
+    assert (d2 / "prod.json").read_text() == BODY_A
+
+
 @pytest.mark.parametrize("version", ["7.68.0", "7.75.9", "6.99.0", "garbage"])
 def test_smoke_refuses_old_or_unknown_curl_before_any_request(smoke, version):
     r, calls = smoke("same", curl_version=version, p8041=(200, BODY_A), p8040=(200, BODY_A))
@@ -352,12 +366,15 @@ PY311_GUNICORN = "/home/odbadmin/.pyenv/versions/py311/bin/gunicorn"
 GOOD_ARGS = ("/home/odbadmin/.pyenv/versions/py311/bin/python3.11 "
              f"{PY311_GUNICORN} tide_app:app -w 2 -b 127.0.0.1:8040")
 
-# State lives in a JSON file; `restart` changes it per scenario, and in "flap"
-# the app keeps restarting after the first post-restart poll (crash loop).
+# Each fake daemon is a PM2_HOME directory holding rpc.sock, state.json, and
+# calls.log; the fake pm2 acts on whichever PM2_HOME it is given (KeyError if
+# none). `restart` changes the state per scenario, and in "flap" the app keeps
+# restarting after the first post-restart poll (crash loop).
 FAKE_PM2 = r'''#!/usr/bin/env python3
 import json, os, sys
-path = os.environ["FAKE_PM2_STATE"]
-with open(os.environ["FAKE_PM2_LOG"], "a") as f:
+home = os.environ["PM2_HOME"]
+path = os.path.join(home, "state.json")
+with open(os.path.join(home, "calls.log"), "a") as f:
     f.write(" ".join(sys.argv[1:]) + "\n")
 st = json.load(open(path))
 if sys.argv[1] == "jlist":
@@ -383,6 +400,20 @@ json.dump(st, open(path, "w"))
 '''
 
 
+def _daemon(home: Path, mode: str) -> Path:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "rpc.sock").write_text("")
+    (home / "state.json").write_text(json.dumps({
+        "mode": mode, "pid": 4242, "restarts": 3, "status": "online",
+        "restarted": False, "post": 0}))
+    return home
+
+
+def _calls(home: Path):
+    log = home / "calls.log"
+    return log.read_text().splitlines() if log.exists() else []
+
+
 @pytest.fixture
 def restart(tmp_path):
     bindir = tmp_path / "bin"
@@ -391,19 +422,22 @@ def restart(tmp_path):
     (bindir / "pm2").chmod(0o755)
     (bindir / "ps").write_text('#!/bin/bash\necho "$FAKE_PS_ARGS"\n')
     (bindir / "ps").chmod(0o755)
-    state, log = tmp_path / "pm2.json", tmp_path / "pm2.log"
+    target = tmp_path / "pm2-target"
 
-    def run(mode, ps_args=GOOD_ARGS, chain=False):
-        state.write_text(json.dumps({"mode": mode, "pid": 4242, "restarts": 3,
-                                     "status": "online", "restarted": False, "post": 0}))
-        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
-                   FAKE_PM2_STATE=str(state), FAKE_PM2_LOG=str(log), FAKE_PS_ARGS=ps_args)
-        cmd = (f'"{RESTART}" --pm2 "{bindir / "pm2"}" --timeout 2 --settle 1')
+    def run(mode=None, ps_args=GOOD_ARGS, chain=False, inherited_home=None, home=target):
+        if mode is not None:
+            _daemon(home, mode)
+        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_PS_ARGS=ps_args)
+        env.pop("PM2_HOME", None)
+        if inherited_home is not None:
+            env["PM2_HOME"] = str(inherited_home)
+        cmd = (f'"{RESTART}" --pm2 "{bindir / "pm2"}" --pm2-home "{home}" '
+               "--timeout 2 --settle 1")
         if chain:
             cmd += " && echo SMOKE_WOULD_RUN"
         r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True,
                            env=env, timeout=60)
-        return r, log.read_text().splitlines()
+        return r, _calls(home)
     return run
 
 
@@ -431,6 +465,30 @@ def test_restart_check_fails_and_blocks_chained_smoke(restart, mode, ps_args, ex
     assert expect in r.stderr
     assert "SMOKE_WOULD_RUN" not in r.stdout
     assert "OK restart" not in r.stdout
+
+
+def test_restart_check_ignores_inherited_pm2_home(restart, tmp_path):
+    # The shell still points at a test daemon that also has a "tide" app; the
+    # checker must restart the --pm2-home daemon and leave the decoy alone.
+    decoy = _daemon(tmp_path / "pm2-decoy", "ok")
+    decoy_state = (decoy / "state.json").read_text()
+    r, calls = restart("ok", inherited_home=decoy)
+    assert r.returncode == 0, r.stderr
+    assert "restart tide" in calls
+    assert f"daemon: PM2_HOME={tmp_path / 'pm2-target'}" in r.stdout
+    assert "ignoring inherited PM2_HOME" in r.stderr
+    assert _calls(decoy) == []
+    assert (decoy / "state.json").read_text() == decoy_state
+
+
+def test_restart_check_refuses_target_without_daemon(restart, tmp_path):
+    empty = tmp_path / "pm2-none"
+    empty.mkdir()
+    r, calls = restart(home=empty, chain=True)
+    assert r.returncode != 0
+    assert "no running PM2 daemon" in r.stderr
+    assert calls == []                      # pm2 never invoked, so no new daemon
+    assert "SMOKE_WOULD_RUN" not in r.stdout
 
 
 def test_ops_scripts_syntax():

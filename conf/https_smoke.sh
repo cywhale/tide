@@ -3,7 +3,7 @@
 # certificate verification on (never -k). Exits non-zero unless every check
 # passes.
 #
-#   https_smoke.sh --host HOST --out NEW_DIR --mode same|different|prod
+#   https_smoke.sh --host HOST --out-root DIR --mode same|different|prod
 #                  [--canary-port 8041] [--prod-port 8040] [--query PATH?QUERY]
 #
 # same:      canary and production must both return 200 with identical bodies
@@ -11,12 +11,14 @@
 # different: both must return 200 and the bodies must differ (TPXO9 canary).
 # prod:      production alone must return 200 (post-deploy check).
 # Every response must be HTTP 200 with a non-empty body other than "{}".
-# Bodies are kept in NEW_DIR, which must not exist yet. Requires curl >= 7.76
-# (--fail-with-body); older curl is refused before any request.
+# Each run writes its bodies to a new unique directory under DIR (mktemp -d,
+# printed as "attempt:"), so retries never collide and earlier attempts are
+# kept. Requires curl >= 7.76 (--fail-with-body); older curl is refused
+# before any request.
 set -euo pipefail
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-usage() { sed -n '2,15p' "$0" >&2; exit 2; }
+usage() { sed -n '2,17p' "$0" >&2; exit 2; }
 
 require_curl_7_76() {
   local ver major minor
@@ -30,12 +32,12 @@ require_curl_7_76() {
   fi
 }
 
-HOST="" OUT="" MODE="" CANARY_PORT=8041 PROD_PORT=8040
+HOST="" OUT_ROOT="" MODE="" CANARY_PORT=8041 PROD_PORT=8040
 QUERY='api/tide?lon0=-157.86453&lat0=21.303333&start=2023-07-25&end=2023-07-26'
 while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST=${2:?--host needs a value}; shift 2 ;;
-    --out) OUT=${2:?--out needs a value}; shift 2 ;;
+    --out-root) OUT_ROOT=${2:?--out-root needs a value}; shift 2 ;;
     --mode) MODE=${2:?--mode needs a value}; shift 2 ;;
     --canary-port) CANARY_PORT=${2:?}; shift 2 ;;
     --prod-port) PROD_PORT=${2:?}; shift 2 ;;
@@ -43,11 +45,13 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
-[ -n "$HOST" ] && [ -n "$OUT" ] || usage
+[ -n "$HOST" ] && [ -n "$OUT_ROOT" ] || usage
 case "$MODE" in same|different|prod) ;; *) usage ;; esac
-[ ! -e "$OUT" ] || die "output directory already exists: $OUT"
 require_curl_7_76
-mkdir -p "$OUT"
+mkdir -p "$OUT_ROOT"
+OUT=$(mktemp -d "$OUT_ROOT/$(date +%Y%m%dT%H%M%S)-$MODE-XXXXXX") \
+  || die "cannot create an attempt directory under $OUT_ROOT"
+echo "attempt: $OUT"
 
 fetch() {  # PORT FILE
   local code

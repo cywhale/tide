@@ -3,8 +3,13 @@
 # effect. Exits non-zero unless every check passes, so a following command
 # chained with && never runs after a failed or ineffective restart.
 #
-#   pm2_restart_check.sh [--pm2 PATH] [--name tide] [--expect-exec PATH]
-#                        [--timeout 60] [--settle 10]
+#   pm2_restart_check.sh [--pm2 PATH] [--pm2-home DIR] [--name tide]
+#                        [--expect-exec PATH] [--timeout 60] [--settle 10]
+#
+# The target daemon is always --pm2-home (default: production
+# /home/odbadmin/.pm2). An inherited PM2_HOME is ignored, so a shell left
+# pointing at a test daemon cannot redirect the restart. A target without a
+# running daemon (no rpc.sock) is refused, so pm2 never starts a new one.
 #
 # Checks: `pm2 restart` exits 0 (no --update-env, so the operator's shell
 # variables never reach production); within --timeout seconds the app is
@@ -15,9 +20,10 @@ set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-usage() { sed -n '2,13p' "$0" >&2; exit 2; }
+usage() { sed -n '2,18p' "$0" >&2; exit 2; }
 
 PM2=$HOME/.npm-global/bin/pm2
+TARGET_HOME=/home/odbadmin/.pm2
 NAME=tide
 EXPECT_EXEC=/home/odbadmin/.pyenv/versions/py311/bin/gunicorn
 TIMEOUT=60
@@ -25,6 +31,7 @@ SETTLE=10
 while [ $# -gt 0 ]; do
   case "$1" in
     --pm2) PM2=${2:?--pm2 needs a value}; shift 2 ;;
+    --pm2-home) TARGET_HOME=${2:?--pm2-home needs a value}; shift 2 ;;
     --name) NAME=${2:?--name needs a value}; shift 2 ;;
     --expect-exec) EXPECT_EXEC=${2:?--expect-exec needs a value}; shift 2 ;;
     --timeout) TIMEOUT=${2:?--timeout needs a value}; shift 2 ;;
@@ -32,6 +39,14 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
+
+[ -e "$TARGET_HOME/rpc.sock" ] \
+  || die "no running PM2 daemon at $TARGET_HOME (missing rpc.sock); refusing to start a new one"
+if [ -n "${PM2_HOME:-}" ] && [ "$PM2_HOME" != "$TARGET_HOME" ]; then
+  echo "note: ignoring inherited PM2_HOME=$PM2_HOME" >&2
+fi
+export PM2_HOME=$TARGET_HOME
+echo "daemon: PM2_HOME=$PM2_HOME"
 
 # Prints "STATUS PID RESTARTS" for exactly one app named NAME.
 state() {
