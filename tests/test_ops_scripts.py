@@ -482,26 +482,39 @@ def restart(tmp_path):
     bindir.mkdir()
     (bindir / "pm2").write_text(FAKE_PM2)
     (bindir / "pm2").chmod(0o755)
-    # ps: the stand-in daemon's PID shows the daemon title, anything else the
-    # Gunicorn command line under test.
-    (bindir / "ps").write_text(
-        '#!/bin/bash\npid=""\n'
-        'while [ $# -gt 0 ]; do case "$1" in -p) pid=$2; shift 2 ;; *) shift ;; esac; done\n'
-        'if [ -n "${FAKE_DAEMON_PID:-}" ] && [ "$pid" = "$FAKE_DAEMON_PID" ]; then\n'
-        '  echo "$FAKE_DAEMON_ARGS"\nelse\n  echo "$FAKE_PS_ARGS"\nfi\n')
+    # ps: the stand-in daemon's PID (and a swap-in daemon's) shows the daemon
+    # title, anything else the Gunicorn command line under test. With
+    # FAKE_SWAP_TO, the first look at the original daemon rewrites pm2.pid to
+    # the swap-in PID: a daemon replaced right after the pre-check verified it.
+    (bindir / "ps").write_text(r'''#!/bin/bash
+pid=""
+while [ $# -gt 0 ]; do case "$1" in -p) pid=$2; shift 2 ;; *) shift ;; esac; done
+if [ -n "${FAKE_SWAP_TO:-}" ] && [ "$pid" = "${FAKE_DAEMON_PID:-}" ] && [ ! -e "$FAKE_SWAP_MARK" ]; then
+  echo "$FAKE_SWAP_TO" > "$FAKE_PIDFILE"
+  : > "$FAKE_SWAP_MARK"
+fi
+if [ -n "${FAKE_DAEMON_PID:-}" ] && { [ "$pid" = "$FAKE_DAEMON_PID" ] || [ "$pid" = "${FAKE_SWAP_TO:-}" ]; }; then
+  echo "$FAKE_DAEMON_ARGS"
+else
+  echo "$FAKE_PS_ARGS"
+fi
+''')
     (bindir / "ps").chmod(0o755)
 
     def run(home, daemon_pid=None, ps_args=GOOD_ARGS, chain=False,
-            inherited_home=None, daemon_title=None):
+            inherited_home=None, daemon_title=None, swap_to=None, extra=""):
         env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", FAKE_PS_ARGS=ps_args,
                    FAKE_DAEMON_ARGS=daemon_title or f"PM2 v5.4.2: God Daemon ({home})")
         env.pop("PM2_HOME", None)
         if daemon_pid is not None:
             env["FAKE_DAEMON_PID"] = str(daemon_pid)
+        if swap_to is not None:
+            env.update(FAKE_SWAP_TO=str(swap_to), FAKE_PIDFILE=str(home / "pm2.pid"),
+                       FAKE_SWAP_MARK=str(tmp_path / "swap.mark"))
         if inherited_home is not None:
             env["PM2_HOME"] = str(inherited_home)
         cmd = (f'"{RESTART}" --pm2 "{bindir / "pm2"}" --pm2-home "{home}" '
-               "--timeout 2 --settle 1")
+               f"--timeout 2 --settle 1 {extra}")
         if chain:
             cmd += " && echo SMOKE_WOULD_RUN"
         r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True,
@@ -572,6 +585,41 @@ def test_restart_check_refuses_without_live_daemon_and_never_calls_pm2(
     assert "no running PM2 daemon" in r.stderr and expect in r.stderr
     assert calls == []                      # pm2 CLI never invoked: no new daemon
     assert "SMOKE_WOULD_RUN" not in r.stdout
+
+
+def test_restart_check_detects_daemon_replaced_right_after_precheck(restart, pm2_home):
+    # pm2.pid is rewritten to another live daemon the moment the pre-check has
+    # verified the original one. The baseline must be the verified PID, so the
+    # end-of-run comparison catches the swap.
+    home, dpid = pm2_home("ok")
+    other = subprocess.Popen(["sleep", "60"])
+    try:
+        r, calls = restart(home, dpid, chain=True, swap_to=other.pid)
+    finally:
+        other.kill()
+        other.wait()
+    assert r.returncode != 0
+    assert f"daemon alive: PID {dpid} at {home}" in r.stdout
+    assert f"changed during the run (PID {dpid} -> {other.pid})" in r.stderr
+    assert "OK restart" not in r.stdout and "SMOKE_WOULD_RUN" not in r.stdout
+
+
+def test_daemon_only_reports_live_daemon_without_calling_pm2(restart, pm2_home):
+    home, dpid = pm2_home("ok")
+    r, calls = restart(home, dpid, extra="--daemon-only")
+    assert r.returncode == 0, r.stderr
+    assert f"daemon alive: PID {dpid} at {home}" in r.stdout
+    assert "OK daemon-only: pm2 was not called" in r.stdout
+    assert calls == []
+
+
+@pytest.mark.parametrize("sock,pid", [("stale", "daemon"), ("live", "dead"), ("none", "none")])
+def test_daemon_only_fails_closed_without_calling_pm2(restart, pm2_home, sock, pid):
+    home, dpid = pm2_home("ok", sock=sock, pid=pid)
+    r, calls = restart(home, dpid, extra="--daemon-only")
+    assert r.returncode != 0
+    assert "no running PM2 daemon" in r.stderr
+    assert calls == []
 
 
 def test_ops_scripts_syntax():

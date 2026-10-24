@@ -5,6 +5,10 @@
 #
 #   pm2_restart_check.sh [--pm2 PATH] [--pm2-home DIR] [--name tide]
 #                        [--expect-exec PATH] [--timeout 60] [--settle 10]
+#   pm2_restart_check.sh --daemon-only [--pm2-home DIR]
+#
+# --daemon-only runs just the liveness check below and never calls pm2; use it
+# to inspect a daemon whose state is in doubt.
 #
 # The target daemon is always --pm2-home (default: production
 # /home/odbadmin/.pm2). An inherited PM2_HOME is ignored, so a shell left
@@ -25,7 +29,7 @@ set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-usage() { sed -n '2,23p' "$0" >&2; exit 2; }
+usage() { sed -n '2,27p' "$0" >&2; exit 2; }
 
 PM2=$HOME/.npm-global/bin/pm2
 TARGET_HOME=/home/odbadmin/.pm2
@@ -33,8 +37,10 @@ NAME=tide
 EXPECT_EXEC=/home/odbadmin/.pyenv/versions/py311/bin/gunicorn
 TIMEOUT=60
 SETTLE=10
+DAEMON_ONLY=no
 while [ $# -gt 0 ]; do
   case "$1" in
+    --daemon-only) DAEMON_ONLY=yes; shift ;;
     --pm2) PM2=${2:?--pm2 needs a value}; shift 2 ;;
     --pm2-home) TARGET_HOME=${2:?--pm2-home needs a value}; shift 2 ;;
     --name) NAME=${2:?--name needs a value}; shift 2 ;;
@@ -51,7 +57,9 @@ TARGET_HOME=${TARGET_HOME%/}
 # PID in pm2.pid is alive, that process is the PM2 God Daemon for this exact
 # PM2_HOME (PM2 titles it "PM2 vX: God Daemon (<PM2_HOME>)"), and rpc.sock
 # accepts a connection. A stale socket, a plain file, a dead or reused PID,
-# or another home's daemon all fail. Prints the reason on failure.
+# or another home's daemon all fail. Prints the verified PID on success (the
+# one baseline used later, so a daemon swapped in after the check cannot
+# become the baseline) or the reason on failure.
 daemon_alive() {
   local home=$1 pid args
   [ -S "$home/rpc.sock" ] || { echo "rpc.sock is missing or not a socket"; return 1; }
@@ -71,11 +79,17 @@ s.settimeout(3)
 s.connect(sys.argv[1])
 s.close()
 ' "$home/rpc.sock" 2>/dev/null || { echo "rpc.sock refuses connections"; return 1; }
+  echo "$pid"
 }
 
-reason=$(daemon_alive "$TARGET_HOME") \
-  || die "no running PM2 daemon at $TARGET_HOME ($reason); refusing to call pm2"
-DAEMON_PID=$(tr -dc '0-9' < "$TARGET_HOME/pm2.pid")
+out=$(daemon_alive "$TARGET_HOME") \
+  || die "no running PM2 daemon at $TARGET_HOME ($out); refusing to call pm2"
+DAEMON_PID=$out
+echo "daemon alive: PID $DAEMON_PID at $TARGET_HOME"
+if [ "$DAEMON_ONLY" = "yes" ]; then
+  echo "OK daemon-only: pm2 was not called"
+  exit 0
+fi
 if [ -n "${PM2_HOME:-}" ] && [ "$PM2_HOME" != "$TARGET_HOME" ]; then
   echo "note: ignoring inherited PM2_HOME=$PM2_HOME" >&2
 fi
@@ -129,9 +143,9 @@ esac
 
 # Detect (not prevent) the race noted in the header: the daemon must still
 # be the one that passed the initial check.
-reason=$(daemon_alive "$TARGET_HOME") \
-  || die "PM2 daemon at $TARGET_HOME died or changed during the run ($reason); inspect it before trusting this restart"
-now_pid=$(tr -dc '0-9' < "$TARGET_HOME/pm2.pid")
+out=$(daemon_alive "$TARGET_HOME") \
+  || die "PM2 daemon at $TARGET_HOME died or changed during the run ($out); inspect it before trusting this restart"
+now_pid=$out
 [ "$now_pid" = "$DAEMON_PID" ] \
   || die "PM2 daemon at $TARGET_HOME changed during the run (PID $DAEMON_PID -> $now_pid); inspect it before trusting this restart"
 echo "OK restart: $NAME pid $pid0 -> $pid, restarts $restarts0 -> $restarts, stable ${SETTLE}s"

@@ -246,11 +246,11 @@ daemon that exists before the run.
 
 It cannot close a narrow race: if the daemon exits after the check but
 before a `pm2` call reaches it, `pm2` may still start a new daemon. To catch
-that case, the script re-checks at the end and fails ("died or changed
-during the run") unless the same daemon PID is still alive, so such a run is
-never reported as `OK restart`. If that failure appears, inspect `pm2 ls`
-and the daemon (`pm2.pid`, `ps`) with the owner before doing anything else.
-Production apps may need `pm2 resurrect` from the saved dump.
+that case, the check returns the PID it verified, which becomes the
+baseline. At the end the script re-checks and fails ("died or changed during
+the run") unless that same PID is still the live daemon, so such a run is
+never reported as `OK restart`. Handling that failure is described under
+"Daemon failures" below.
 
 After the liveness check, the script fails unless all of the following
 hold:
@@ -287,9 +287,32 @@ The deployment is complete only if all of the following hold:
 - The scheduler client list (method in canary part A, step 1) shows one
   `Client-tideapi-*` entry per Gunicorn worker, which is two.
 
-If any check fails, run `restore`, then run the same restart-and-smoke
+If a check fails while the daemon is alive (any failure except the two
+daemon failures below), run `restore`, then run the same restart-and-smoke
 chain again. The new attempt gets its own directory under `--out-root`, and
 the earlier one is kept.
+
+#### Daemon failures
+
+This applies when the restart check fails with "no running PM2 daemon" or
+"died or changed during the run". Stop. Do not run `pm2 ls` or any other
+`pm2` command, and do not rerun the chain: a `pm2` CLI that cannot reach a
+daemon starts a new one. Inspect without `pm2`:
+
+```bash
+"$SRC/conf/pm2_restart_check.sh" --daemon-only --pm2-home /home/odbadmin/.pm2
+ps -eo pid,args | grep '[G]od Daemon'
+```
+
+`--daemon-only` runs only the liveness check, prints the live daemon's PID
+or the reason it is not alive, and never calls `pm2`. `restore` only swaps
+files and does not call `pm2`, so it is still safe to run.
+
+Any PM2 recovery is a separate procedure that needs the owner's approval
+first; it is not a routine fix. That includes letting `pm2` start a
+daemon, `pm2 resurrect` (it restores the entire saved process list, and
+saved states can differ from what was running; see the host runbook's note
+on `gateway`), and restarting other apps.
 
 ## Rollback
 
@@ -489,10 +512,12 @@ It must print `daemon: PM2_HOME=` followed by the `$PROBE` path, then
 `OK restart`. Passing the liveness check also confirms that this PM2
 version titles its daemon `God Daemon (<PM2_HOME>)`. Record the output.
 
-Also confirm that the script fails when run with a wrong `--expect-exec`.
-After the final `PM2_HOME="$PROBE" "$PM2" kill`, run it once more with
-`--pm2-home "$PROBE"`: it must fail with "no running PM2 daemon", and no new
-`God Daemon ($PROBE)` process may appear in `ps`. This shows that leftovers
+Also confirm that the script fails when run with a wrong `--expect-exec`,
+and that `--daemon-only --pm2-home "$PROBE"` reports the probe daemon's PID
+while it runs. After the final `PM2_HOME="$PROBE" "$PM2" kill`, run it once
+more with `--pm2-home "$PROBE"`, and once with `--daemon-only`: both must
+fail with "no running PM2 daemon", and no new `God Daemon ($PROBE)` process
+may appear in `ps`. This shows that leftovers
 of a daemon that died before the run never lead to `pm2` starting a new
 one. The narrower race during a run is only detected, as described under
 "Restart and post-deploy checks".
