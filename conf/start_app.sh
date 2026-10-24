@@ -14,11 +14,28 @@ for tls_file in "$DASK_TLS_CA_FILE" "$DASK_TLS_CLIENT_CERT" "$DASK_TLS_CLIENT_KE
   fi
 done
 
-# Preserve this VM's existing production runtime: the active Tide process used
-# the py311 Gunicorn environment. Do not let `uv run` create/sync a new .venv
-# merely because PM2's updated PATH happens to include uv.
-if [ -z "${GUNICORN_BIN:-}" ] && [ -x /home/odbadmin/.pyenv/versions/py311/bin/gunicorn ]; then
-  GUNICORN_BIN=/home/odbadmin/.pyenv/versions/py311/bin/gunicorn
+# Production runs only the VM24 py311 Gunicorn, or an explicitly configured
+# absolute GUNICORN_BIN. There is deliberately no `uv run` or PATH fallback:
+# a PM2 start must never create/sync a uv environment or pick up another
+# interpreter by accident.
+PY311_GUNICORN=/home/odbadmin/.pyenv/versions/py311/bin/gunicorn
+if [ -n "${GUNICORN_BIN:-}" ]; then
+  case "$GUNICORN_BIN" in
+    /*) ;;
+    *)
+      echo "GUNICORN_BIN must be an absolute path: $GUNICORN_BIN" >&2
+      exit 127
+      ;;
+  esac
+elif [ -x "$PY311_GUNICORN" ]; then
+  GUNICORN_BIN=$PY311_GUNICORN
+else
+  echo "VM24 py311 Gunicorn not found: $PY311_GUNICORN (set an absolute GUNICORN_BIN)" >&2
+  exit 127
+fi
+if [ ! -x "$GUNICORN_BIN" ]; then
+  echo "GUNICORN_BIN is not executable: $GUNICORN_BIN" >&2
+  exit 127
 fi
 
 GUNICORN_ARGS=(
@@ -32,15 +49,4 @@ GUNICORN_ARGS=(
   --reload
 )
 
-if [ -n "${GUNICORN_BIN:-}" ]; then
-  exec "$GUNICORN_BIN" "${GUNICORN_ARGS[@]}"
-elif command -v uv >/dev/null 2>&1 && [ -f uv.lock ]; then
-  exec uv run gunicorn "${GUNICORN_ARGS[@]}"
-elif command -v gunicorn >/dev/null 2>&1; then
-  exec gunicorn "${GUNICORN_ARGS[@]}"
-elif [ -x /home/odbadmin/.pyenv/versions/py311/bin/gunicorn ]; then
-  exec /home/odbadmin/.pyenv/versions/py311/bin/gunicorn "${GUNICORN_ARGS[@]}"
-else
-  echo "gunicorn not found. Set GUNICORN_BIN or install runtime dependencies." >&2
-  exit 127
-fi
+exec "$GUNICORN_BIN" "${GUNICORN_ARGS[@]}"

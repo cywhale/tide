@@ -1,10 +1,21 @@
+import ipaddress
 import logging
 import os
 import threading
 import uuid
 
 from dask.distributed import Client
+from distributed.comm.addressing import parse_address, parse_host_port
 from distributed.security import Security
+
+
+def _is_loopback_ip(host: str) -> bool:
+    # IP literals only: a hostname (even "localhost") is rejected so name
+    # resolution cannot point the client at a routable scheduler.
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 class DaskClientManager:
     """
@@ -34,21 +45,26 @@ class DaskClientManager:
                 os.getenv("DASK_TLS_CLIENT_CERT"),
                 os.getenv("DASK_TLS_CLIENT_KEY"),
             )
-            if any(tls_settings) and not all(tls_settings):
+            # v0.3.2: mutual TLS to a loopback scheduler is mandatory. Missing,
+            # partial, or mismatched settings never fall back to plaintext
+            # tcp:// or a routable host; the API keeps serving without a
+            # client (data paths are direct). The address is parsed with
+            # Dask's own helpers so the checked host is the one it would use.
+            if not any(tls_settings):
+                raise ValueError("DASK TLS is not configured; refusing plaintext Dask connection")
+            if not all(tls_settings):
                 raise ValueError("DASK TLS requires CA, client certificate, and client key")
-            if self.scheduler_address.startswith("tls://") and not all(tls_settings):
-                raise ValueError("TLS scheduler configured without complete DASK TLS credentials")
-            if all(tls_settings) and not self.scheduler_address.startswith("tls://"):
+            scheme, location = parse_address(self.scheduler_address)
+            if scheme != "tls":
                 raise ValueError("DASK TLS credentials configured for a non-TLS scheduler address")
-            security = (
-                Security(
-                    tls_ca_file=tls_settings[0],
-                    tls_client_cert=tls_settings[1],
-                    tls_client_key=tls_settings[2],
-                    require_encryption=True,
-                )
-                if all(tls_settings)
-                else None
+            host, _ = parse_host_port(location, default_port=8786)
+            if not _is_loopback_ip(host):
+                raise ValueError("Dask scheduler address must be a loopback IP (tls://127.0.0.1:8786)")
+            security = Security(
+                tls_ca_file=tls_settings[0],
+                tls_client_cert=tls_settings[1],
+                tls_client_key=tls_settings[2],
+                require_encryption=True,
             )
             self.client = Client(
                 self.scheduler_address,
