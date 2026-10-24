@@ -1,8 +1,12 @@
 # VM24 TPXO10 Deployment Notes
 
 Initial TPXO10 cutover: 2026-06-18. Formal v0.3.1 release-directory
-cleanup: 2026-07-08. Shared Dask mutual TLS: 2026-10-24 (v0.3.2).
-API version: v1.1.0. Project release: v0.3.2.
+cleanup: 2026-07-08. Shared Dask mutual TLS on VM24: 2026-10-24 (host change
+plus a hot patch of two Tide files). API version: v1.1.0.
+
+- Released (tagged): v0.3.1.
+- Target/pending release: v0.3.2. Not tagged and not deployed; see
+  "v0.3.2 release sequence".
 
 ## Current Production Layout
 
@@ -10,7 +14,11 @@ API version: v1.1.0. Project release: v0.3.2.
 - PM2 process: `tide`.
 - Runtime cwd: `/home/odbadmin/python/tide_tpxo10_atlas_v2` (a release copy,
   not a git checkout; detect drift by comparing file hashes with the
-  released commit).
+  deployed commit).
+- Code: v0.3.1 plus the 2026-10-24 Dask TLS hot patch of `conf/start_app.sh`
+  and `src/dask_client_manager.py`. The hot-patched files are recorded
+  verbatim in the repository as the first commit of PR #2. The hardened
+  v0.3.2 versions are not deployed yet.
 - Python runtime: VM24 pyenv `py311` (Python 3.11.4) via
   `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn`. See "Runtime
   environment" below: this environment is not managed by `uv.lock`.
@@ -44,35 +52,89 @@ longer representative; the current rollback procedure is below.
 The temporary release directory was later renamed to the formal runtime cwd
 `~/python/tide_tpxo10_atlas_v2`; PM2 was restarted from that cwd and saved.
 
-## Shared Dask TLS (v0.3.2)
+## Shared Dask TLS
 
 The shared scheduler and worker are mutual-TLS only and bind loopback. Host
 operations (certificate issuance/renewal, scheduler/worker restarts, PM2
 dump handling) are documented in the VM24 runbook
 `/home/odbadmin/python/conf/DASK_TLS_RUNBOOK.md`, not in this repository.
 
+Tide keeps its Dask client in v0.3.2; this release only hardens the client's
+TLS behavior. The Tide API never submits Dask tasks: reads use the direct
+adapter path (`chunks=None`), and the client only holds a connection to the
+scheduler. Removing the client is a separate follow-up slice.
+
+What VM24 runs now (2026-10-24 hot patch):
+
 - `conf/start_app.sh` exports `DASK_SCHEDULER_ADDRESS=tls://127.0.0.1:8786`
   and the `tide-client` CA/certificate/key paths under
   `/home/odbadmin/.config/dask/tls`, and exits if any of them is unreadable.
-  Because PM2 re-runs the launcher on every restart and resurrect, the TLS
-  settings do not depend on the PM2 saved environment.
-- `src/dask_client_manager.py` connects only when the address is `tls://`
-  with a loopback IP literal (`127.0.0.0/8` or `::1`; hostnames, even
-  `localhost`, are rejected) and all three credential paths are set, and
-  always passes `require_encryption=True`. Missing, partial, or mismatched
-  settings create no client; the API keeps serving because TPXO10 reads use
-  the direct adapter path (`chunks=None`). It never falls back to plaintext
-  `tcp://` or connects to a routable scheduler.
-- The Tide API itself never submits Dask tasks; it only holds a client
-  connection to the scheduler.
-- Dask client credentials are separate from the HTTPS
-  `conf/privkey.pem`/`fullchain.pem`. Neither is committed to the repository.
+  It prefers the py311 Gunicorn but still falls back to `uv run` and PATH
+  when py311 is missing.
+- `src/dask_client_manager.py` passes `Security(...,
+  require_encryption=True)` when all three credential paths are set. With
+  none set it would still try plaintext `tcp://localhost:8786`; the launcher
+  always sets them, so this path is not taken on VM24.
+
+v0.3.2 target (this repository, pending deployment):
+
+- The client connects only when the address is `tls://` with a loopback IP
+  literal (`127.0.0.0/8` or `::1`; hostnames, even `localhost`, are
+  rejected) and all three credential paths are set, and always passes
+  `require_encryption=True`. Missing, partial, or mismatched settings create
+  no client and never fall back to plaintext `tcp://` or a routable
+  scheduler; the API keeps serving.
+- The launcher keeps the same TLS exports and runs only an explicitly set
+  absolute `GUNICORN_BIN` or the VM24 py311 Gunicorn, exiting with code 127
+  otherwise. The `uv run` and PATH fallbacks are removed. `--reload` is
+  unchanged.
+
+The launcher re-runs on every PM2 restart and resurrect, so the TLS settings
+do not depend on the PM2 saved environment. Dask client credentials are
+separate from the HTTPS `conf/privkey.pem`/`fullchain.pem`. Neither is
+committed to the repository.
+
+## v0.3.2 release sequence
+
+The production release directory must not be modified until step 5. Its
+Gunicorn runs with `--reload`, so any file written there reloads the live
+workers.
+
+1. PR #2 is reviewed and the owner merges it into `main`. No tag; no
+   production change.
+2. Codex creates a separate checkout or worktree of the merged commit on
+   VM24 (for example `~/tmp/tide-v0.3.2-<sha>`). Link `data/tpxo10.zarr` and
+   `data/tpxo9.zarr` there to the existing stores as read-only symlinks
+   (never copy them). Run the test suite with the VM24 py311 interpreter,
+   for example
+   `TIDE_DASK_DISABLE=1 /home/odbadmin/.pyenv/versions/py311/bin/python -m pytest -rs`,
+   and record the passed, skipped, and warning counts. If pytest is not
+   installed in py311, do not install it into that shared environment; use
+   a throwaway venv created from py311 with `--system-site-packages` and
+   install pytest only there. Local `uv.lock` runs do not count as py311
+   verification.
+3. From the same checkout, Codex runs the canary (below) against both
+   stores, TPXO10 for the target runtime and TPXO9 for rollback, and the PM2
+   environment validation (below). Neither touches the release directory or
+   the production PM2 daemon.
+4. The owner gives separate authorization for the production update.
+5. **Production deployment.** This changes the live service. Copy the files
+   changed by PR #2 from the merged commit into the release directory: the
+   two runtime files plus the tests and docs, so that hash parity holds.
+   Writing `src/dask_client_manager.py` reloads the live Gunicorn workers
+   immediately; the launcher change takes effect at the next `tide` restart,
+   which belongs to the same authorized deployment. Then confirm hash parity
+   of all tracked files with the merged commit, the scheduler client list
+   showing the `tideapi` clients, the API smoke (below), and `tide` online in
+   PM2.
+6. If the canary and PM2 validation passed, mark the rollback verified in
+   this file. Tag `v0.3.2` only after the validation and the production
+   deployment are complete.
 
 ## Rollback
 
-Status: **unverified** with the v0.3.2 runtime. Mark it verified here only
-after the canary procedure below passes and the PM2 environment
-propagation/resurrect behavior is confirmed.
+Status: **unverified**. Mark it verified here only after the canary against
+the TPXO9 store and the PM2 environment validation pass.
 
 Rollback keeps the current release runtime and switches only the store, by
 absolute path in both directions. `TIDE_ZARR_PATH` is read from the process
@@ -115,73 +177,124 @@ scheduler, and test it first.
 
 ## Canary procedure
 
-Use a canary to verify a release or the rollback store without touching the
-production process.
+A canary verifies a commit or the rollback store before any production
+change. It must leave the production process and the release directory
+untouched.
 
 Constraints:
 
-- Start it from a separate checkout or worktree of the commit under test
-  (for example under `~/tmp/`), never by writing new code into the release
-  directory: production runs with `--reload`, so any edit there reloads the
-  live workers.
+- Run it from a separate checkout or worktree of the commit under test
+  (release sequence step 2). Never write new code into the release directory
+  for a canary.
 - Never start it through PM2: the `tide` entry's `pre_stop` kills every
   process whose command line contains `tide_app`, which would hit both the
   canary and production. Do not use `conf/start_app.sh` either: it binds
   `127.0.0.1:8040` and enables `--reload`.
-- The canary checkout has no `data/` stores; select the store under test
-  with an absolute `TIDE_ZARR_PATH` (the TPXO9 or TPXO10 path above).
-  Reference the HTTPS key/cert of the release directory by absolute path;
-  never copy them into the canary checkout.
+- Always select the store under test with an absolute `TIDE_ZARR_PATH` (the
+  TPXO9 or TPXO10 path above); do not rely on `data/` in the checkout.
+- Reference the release directory's HTTPS key/cert by absolute path; never
+  copy them into the canary checkout.
 
 Start and stop:
 
 - Export the same Dask TLS variables as `conf/start_app.sh` plus the
-  absolute `TIDE_ZARR_PATH`, then run
+  absolute `TIDE_ZARR_PATH`, then from the canary checkout run
   `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn tide_app:app -w 1
-  -k uvicorn.workers.UvicornWorker -b 127.0.0.1:8041 --timeout 180` with the
-  HTTPS key/cert options and without `--reload`. Record the PID; stop the
-  canary with `kill <PID>` only.
+  --worker-class uvicorn.workers.UvicornWorker -b 127.0.0.1:8041
+  --timeout 180 --keyfile <release>/conf/privkey.pem
+  --certfile <release>/conf/fullchain.pem`, without `--reload`. Record the
+  PID; stop the canary with `kill <PID>` only.
 
-Acceptance:
+Acceptance has three separate parts.
 
-1. Before starting, record the production `tide` PID and restart count
-   (`pm2 jlist`), and, with a one-off client that uses the same exported TLS
-   variables, the scheduler's client list:
+A. Dask transport (TLS). This shows the canary's TLS settings and the
+`tide-client` identity work with the scheduler and worker. It does not test
+Tide computation, because the Tide API never submits Dask tasks.
+
+1. Before starting, use a one-off client with the same exported TLS
+   variables to record the scheduler's client list:
    `client.run_on_scheduler(lambda dask_scheduler: sorted(dask_scheduler.clients))`.
    Production holds one `Client-tideapi-*` entry per Gunicorn worker.
 2. While the canary runs, the list gains exactly one `Client-tideapi-*`
-   entry, the scheduler log shows
-   `Receive client connection: Client-tideapi-*` at the canary start time,
-   and the canary log has no `Dask client connection failed` warning. This
-   shows the canary's TLS settings were accepted by the scheduler.
-3. The same one-off client completes a trivial task, for example
-   `client.submit(lambda x: x + 1, 41).result()` returning `42`. This shows
-   the same TLS settings and `tide-client` identity can reach the worker.
-   The Tide API never submits tasks itself; do not read an API response as
-   Dask evidence.
-4. API smoke on `https://127.0.0.1:8041` passes and shows the intended store
-   is served (use a query whose TPXO9 and TPXO10 answers differ).
-5. After `kill <PID>`, the client list returns to the step 1 baseline, and
-   the production `tide` PID and restart count are unchanged.
+   entry, the scheduler log shows `Receive client connection:
+   Client-tideapi-*` at the canary start time, and the canary log has no
+   `Dask client connection failed` warning.
+3. The same one-off client completes a trivial worker task, for example
+   `client.submit(lambda x: x + 1, 41).result()` returning `42`.
+4. After `kill <PID>`, the client list returns to the step 1 baseline.
+
+B. Tide API and store. This shows the canary serves the intended store.
+Verify HTTPS against the certificate's hostname instead of disabling
+verification; never use `curl -k`.
+
+1. Confirm the certificate hostname:
+   `openssl x509 -in <release>/conf/fullchain.pem -noout -ext subjectAltName`.
+   The commands below assume `eco.odb.ntu.edu.tw`; if the certificate lists
+   a different name, use that name.
+2. Query the canary through local resolution:
+
+   ```bash
+   curl -sS --resolve eco.odb.ntu.edu.tw:8041:127.0.0.1 \
+     "https://eco.odb.ntu.edu.tw:8041/api/tide?lon0=-157.86453&lat0=21.303333&start=2023-07-25&end=2023-07-26"
+   ```
+
+3. Run the same query against production (`--resolve
+   eco.odb.ntu.edu.tw:8040:127.0.0.1` and port 8040, a read-only GET). The
+   TPXO10 canary must match production; the TPXO9 canary must return 200
+   with values that differ from production.
+
+C. Production unaffected. The production `tide` PID and restart count
+(`pm2 jlist`) and the release directory's file hashes are unchanged from
+before the canary.
 
 ## PM2 environment validation
 
-The rollback depends on how PM2 captures `TIDE_ZARR_PATH` at `pm2 start` and
-whether `pm2 save`/`pm2 resurrect` preserve it. Validate this without the
-production PM2 daemon and without the `tide` entry:
+The rollback depends on how PM2 captures `TIDE_ZARR_PATH` at `pm2 start`
+and whether `pm2 save`/`pm2 resurrect` preserve it. Validate this with an
+isolated PM2 daemon and a dummy app, never with the production daemon or
+the `tide` entry:
 
-- Use a separate `PM2_HOME` (for example `~/tmp/pm2-envprobe`) so the
-  production daemon and dump are untouched.
-- Use a dummy ecosystem file whose app is not a `tide_app` process (for
-  example `bash -c 'echo "$TIDE_ZARR_PATH"; sleep 3600'`) and has no
-  `pre_stop`. A separate `PM2_HOME` does not sandbox commands run by
-  `pre_stop`; the production entry's `pre_stop` would still kill real
-  `tide_app` processes. Never use the production `conf/ecosystem.config.js`
-  for this test.
-- Check with `pm2 env <id>` after: a start with the TPXO9 path; a delete and
-  start with the TPXO10 path; a restart from a shell where the variable is
-  unset (to observe whether PM2 keeps the old value); and `pm2 save`,
-  `pm2 kill`, `pm2 resurrect`. Finish with `pm2 kill` for that `PM2_HOME`.
+- Every `pm2` command in this test must carry the isolated `PM2_HOME`. A
+  `pm2` command without it acts on the production daemon; `pm2 kill`
+  without it would stop every production service.
+- The dummy app is not a `tide_app` process and has no `pre_stop`. A
+  separate `PM2_HOME` does not sandbox commands run by `pre_stop`, so never
+  use the production `conf/ecosystem.config.js` for this test.
+
+```bash
+PROBE=/home/odbadmin/tmp/pm2-envprobe
+PM2=$HOME/.npm-global/bin/pm2
+mkdir -p "$PROBE"
+cat > "$PROBE/envprobe.config.js" <<'JS'
+module.exports = { apps: [{
+  name: 'envprobe',
+  script: 'bash',
+  args: ['-c', 'echo "TIDE_ZARR_PATH=$TIDE_ZARR_PATH"; sleep 3600'],
+  autorestart: false
+}] };
+JS
+# What PM2 stored, and what the process itself printed at its last start.
+probe() {
+  PM2_HOME="$PROBE" "$PM2" env "$(PM2_HOME="$PROBE" "$PM2" id envprobe | tr -dc '0-9')" | grep TIDE_ZARR_PATH
+  PM2_HOME="$PROBE" "$PM2" logs envprobe --nostream --raw --lines 1
+}
+
+PM2_HOME="$PROBE" TIDE_ZARR_PATH=/home/odbadmin/python/tide/data/tpxo9.zarr \
+  "$PM2" start "$PROBE/envprobe.config.js"; probe
+PM2_HOME="$PROBE" "$PM2" delete envprobe
+PM2_HOME="$PROBE" TIDE_ZARR_PATH=/home/odbadmin/python/tide_tpxo10_atlas_v2/data/tpxo10.zarr \
+  "$PM2" start "$PROBE/envprobe.config.js"; probe
+# Does PM2 keep the old value when the variable is unset in the shell?
+env -u TIDE_ZARR_PATH PM2_HOME="$PROBE" "$PM2" restart envprobe --update-env; probe
+PM2_HOME="$PROBE" "$PM2" save
+PM2_HOME="$PROBE" "$PM2" kill
+PM2_HOME="$PROBE" "$PM2" resurrect; probe
+PM2_HOME="$PROBE" "$PM2" kill
+```
+
+Record each `probe` output. The rollback section can be marked verified
+only if each explicit start shows the requested path and the
+save/kill/resurrect cycle preserves it.
 
 ## Runtime environment
 
@@ -190,22 +303,22 @@ from `uv.lock`. On 2026-10-24, 12 of 18 runtime packages differed from
 `uv.lock`; for example dask/distributed 2025.3.0 vs 2025.11.0, numpy 2.2.4
 vs 2.3.4, xarray 2025.3.1 vs 2025.10.1, fastapi 0.115.12 vs 0.121.1. pyTMD
 2.2.8, scipy, numcodecs, and netCDF4 match. Repository tests run in the
-`uv.lock` environment, so changes that depend on package behavior must also
-be checked in py311 (for example in a canary).
+`uv.lock` environment, so passing them locally does not verify py311;
+release sequence step 2 runs them with py311.
 
-The launcher runs only the py311 Gunicorn (or an explicit absolute
-`GUNICORN_BIN`), so a PM2 start can never pick `uv run`. On 2026-10-24,
-before this rule, a PM2 restart whose PATH included `uv` started a `uv` sync that
-created an incomplete `.venv` in the release directory; it was moved
-(not deleted) to `/home/odbadmin/tmp/tide-uv-venv-incomplete-20261024`.
+On 2026-10-24, a PM2 restart whose PATH included `uv` started a `uv` sync
+that created an incomplete `.venv` in the release directory; it was moved
+(not deleted) to `/home/odbadmin/tmp/tide-uv-venv-incomplete-20261024`. The
+hot patch made the launcher prefer py311, and the v0.3.2 target removes the
+`uv run` and PATH fallbacks entirely.
 
 ## Operational Notes
 
-- `conf/start_app.sh` runs only an explicitly set absolute `GUNICORN_BIN` or
-  the VM24 py311 Gunicorn, and exits with code 127 if neither is usable.
-  There is no `uv run` or PATH fallback.
-- The launcher runs Gunicorn with `--reload`, so editing Python sources in
-  the release directory reloads the workers immediately.
+- Launcher selection: see "Shared Dask TLS". The v0.3.2 target runs only an
+  explicit absolute `GUNICORN_BIN` or the VM24 py311 Gunicorn; the hot patch
+  currently on VM24 still has the `uv run` and PATH fallbacks.
+- The launcher runs Gunicorn with `--reload`, so writing Python sources into
+  the release directory reloads the live workers immediately.
 - TPXO10 coastline reclassification can return no value where TPXO9 used to
   serve extrapolated values.
 - Large bbox maps are capped by `MAX_BBOX_CELLS=500000` after applying
@@ -214,9 +327,9 @@ created an incomplete `.venv` in the release directory; it was moved
 
 ## Open Operational Items
 
-- Decide whether Tide needs a Dask client at all. No Tide runtime path uses
-  it (reads are direct); removing it would also allow retiring the
-  `tide-client` identity.
+- Follow-up slice (separate PR): remove Tide's Dask client. No Tide runtime
+  path uses it (reads are direct); removing it would also allow retiring
+  the `tide-client` identity.
 - Make the py311 runtime reproducible (a lock or recorded freeze) or move
   production to an environment built from `uv.lock`.
 - Parameterize host-specific paths in `conf/start_app.sh` (the launcher

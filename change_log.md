@@ -89,7 +89,7 @@
     -- TPXO9-atlas-v5 is deprecated for public API users. It remains an operator rollback store only and is documented in deployment/operator notes.
     -- `conf/start_app.sh` made robust for PM2 non-interactive environments by resolving gunicorn through `GUNICORN_BIN`, `uv run`, PATH, or the VM24 py311 fallback.
 
-#### ver 0.3.2 / API v1.1.0 Shared Dask mutual TLS
+#### ver 0.3.2 / API v1.1.0 (pending release) Shared Dask mutual TLS
 
     -- The Dask client connects only over mutual TLS to a loopback scheduler (`tls://` with a loopback IP, plus CA, client certificate, and key, with `require_encryption=True`); missing, partial, or mismatched settings or a non-loopback address create no client instead of falling back to plaintext, and the API keeps serving.
     -- `conf/start_app.sh` exports the VM24 Tide Dask TLS identity and runs only an explicit absolute `GUNICORN_BIN` or the VM24 py311 Gunicorn; the `uv run` and PATH fallbacks are removed, so a PM2 start never triggers a `uv` environment sync.
