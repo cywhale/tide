@@ -484,12 +484,42 @@ Constraints:
 
 Start and stop:
 
-- Export the same Dask TLS variables as `conf/start_app.sh` plus the
-  absolute `TIDE_ZARR_PATH`, then from the canary checkout run
-  `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn tide_app:app -w 1
-  --worker-class uvicorn.workers.UvicornWorker -b 127.0.0.1:8041
-  --timeout 180 --keyfile <le-privkey> --certfile <le-fullchain>`, without
-  `--reload`. Record the PID; stop the canary with `kill <PID>` only.
+- Set `LE_PRIVKEY` and `LE_FULLCHAIN` to the valid Let's Encrypt key and
+  certificate (the same paths checked in part B, step 1), then start the
+  canary from the canary checkout. It exports the same Dask TLS variables
+  as `conf/start_app.sh` plus the absolute `TIDE_ZARR_PATH`, checks that
+  every file is readable, and starts Gunicorn without `--reload` only if
+  they all are:
+
+  ```bash
+  cd "/home/odbadmin/tmp/tide-v0.3.2-$SHA"   # the canary checkout
+  DASK_TLS_DIR=/home/odbadmin/.config/dask/tls   # as in conf/start_app.sh
+  export DASK_SCHEDULER_ADDRESS=tls://127.0.0.1:8786
+  export DASK_TLS_CA_FILE="$DASK_TLS_DIR/certs/ca.crt"
+  export DASK_TLS_CLIENT_CERT="$DASK_TLS_DIR/certs/tide-client.crt"
+  export DASK_TLS_CLIENT_KEY="$DASK_TLS_DIR/private/tide-client.key"
+  # Store under test: TPXO10 here; for the rollback canary use
+  # /home/odbadmin/python/tide/data/tpxo9.zarr.
+  export TIDE_ZARR_PATH=/home/odbadmin/python/tide_tpxo10_atlas_v2/data/tpxo10.zarr
+  : "${LE_PRIVKEY:?set LE_PRIVKEY to the LE private key path}"
+  : "${LE_FULLCHAIN:?set LE_FULLCHAIN to the LE fullchain path}"
+  ok=yes
+  for f in "$DASK_TLS_CA_FILE" "$DASK_TLS_CLIENT_CERT" "$DASK_TLS_CLIENT_KEY" \
+           "$TIDE_ZARR_PATH" "$LE_PRIVKEY" "$LE_FULLCHAIN"; do
+    [ -r "$f" ] || { echo "not readable: $f" >&2; ok=no; }
+  done
+  CANARY_LOG=/home/odbadmin/tmp/tide-v0.3.2-$SHA-canary.log
+  [ "$ok" = yes ] && {
+    /home/odbadmin/.pyenv/versions/py311/bin/gunicorn tide_app:app -w 1 \
+      --worker-class uvicorn.workers.UvicornWorker -b 127.0.0.1:8041 \
+      --timeout 180 --keyfile "$LE_PRIVKEY" --certfile "$LE_FULLCHAIN" \
+      > "$CANARY_LOG" 2>&1 &
+    CANARY_PID=$!
+    echo "canary PID $CANARY_PID, log $CANARY_LOG"
+  }
+  ```
+
+  Record the PID, and stop the canary with `kill "$CANARY_PID"` only.
 - After the canary, remove the symlinks created for it (certificate links,
   and store links from step 2 if they are no longer needed). Confirm the
   removal read-only, for example with `ls -l` on the canary checkout, and
@@ -511,15 +541,16 @@ Tide computation, because the Tide API never submits Dask tasks.
    `Dask client connection failed` warning.
 3. The same one-off client completes a trivial worker task, for example
    `client.submit(lambda x: x + 1, 41).result()` returning `42`.
-4. After `kill <PID>`, the client list returns to the step 1 baseline.
+4. After `kill "$CANARY_PID"`, the client list returns to the step 1
+   baseline.
 
 B. Tide API and store. This shows the canary serves the intended store.
 Verify HTTPS against the certificate's hostname instead of disabling
 verification; never use `curl -k`.
 
 1. Check the canary certificate: its hostname, its expiry, and that the key
-   matches it. Set `LE_FULLCHAIN` and `LE_PRIVKEY` to the certificate and
-   key paths the canary uses.
+   matches it. Use the same `LE_FULLCHAIN` and `LE_PRIVKEY` as the canary
+   start command; run this check before starting the canary.
 
    ```bash
    openssl x509 -in "$LE_FULLCHAIN" -noout -ext subjectAltName -enddate

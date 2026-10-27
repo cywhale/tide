@@ -53,6 +53,21 @@ def test_no_tls_verification_bypass_in_commands():
             assert not re.search(r"(^|\s)(-k|--insecure)(\s|$)", c), c
 
 
+def test_no_angle_bracket_placeholders_in_commands():
+    # `<name>` pasted into a shell is a redirection, not a placeholder.
+    for c in ALL_COMMANDS:
+        assert not re.search(r"<[A-Za-z][\w.-]*>", c), c
+
+
+def test_canary_start_is_a_runnable_block():
+    starts = [c for c in ALL_COMMANDS
+              if "gunicorn tide_app:app" in c and "127.0.0.1:8041" in c]
+    assert len(starts) == 1
+    c = starts[0]
+    assert '--keyfile "$LE_PRIVKEY" --certfile "$LE_FULLCHAIN"' in c, c
+    assert "--reload" not in c, c
+
+
 def test_pm2_dummy_config_is_cjs():
     assert "envprobe.config.cjs" in TEXT
     assert not re.search(r"envprobe\.config\.js\b", TEXT)
