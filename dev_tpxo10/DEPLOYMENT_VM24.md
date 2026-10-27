@@ -5,8 +5,8 @@ cleanup: 2026-07-08. Shared Dask mutual TLS on VM24: 2026-10-24 (host change
 plus a hot patch of two Tide files). API version: v1.1.0.
 
 - Released (tagged): v0.3.1.
-- Target/pending release: v0.3.2. Not tagged and not deployed; see
-  "v0.3.2 release sequence".
+- Target/pending release: v0.3.2 (PR #2, merge commit `ef780ea`). Not tagged
+  and not deployed; see "v0.3.2 release sequence" and "Validation record".
 
 ## Current Production Layout
 
@@ -24,7 +24,14 @@ plus a hot patch of two Tide files). API version: v1.1.0.
 - Python runtime: VM24 pyenv `py311` (Python 3.11.4) via
   `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn`. See "Runtime
   environment" below: this environment is not managed by `uv.lock`.
-- HTTPS bind: `127.0.0.1:8040`.
+- Public HTTPS frontend: port 443 for `eco.odb.ntu.edu.tw`, with a valid
+  certificate. Verified-TLS checks of production go through 443.
+- Internal Gunicorn listener: `127.0.0.1:8040`, HTTPS with the release
+  directory's `conf/privkey.pem`/`fullchain.pem`. At the 2026-10-27
+  validation it still served a certificate that expired on 2023-08-25. A
+  verified-TLS request straight to 8040 therefore fails; do not point smoke
+  checks at 8040, and never work around it with `curl -k`. Replacing that
+  certificate is an open owner decision (see "Open Operational Items").
 - Runtime store: `data/tpxo10.zarr` (TPXO10-atlas-v2).
 - Rollback store: `/home/odbadmin/python/tide/data/tpxo9.zarr`
   (TPXO9-atlas-v5), served by the current runtime (see "Rollback").
@@ -118,7 +125,8 @@ workers.
 3. From the same checkout, Codex runs the canary (below) against both
    stores, TPXO10 for the target runtime and TPXO9 for rollback, and the PM2
    environment validation (below). Neither touches the release directory or
-   the production PM2 daemon.
+   the production PM2 daemon. Canary comparisons go through the public 443
+   frontend (`--prod-port 443`), not the internal 8040 listener.
 4. The owner gives separate authorization for the production update.
 5. **Production deployment.** This changes the live service. Deploy only
    the v0.3.2 runtime manifest by atomic replacement, then restart `tide`
@@ -131,19 +139,69 @@ workers.
 
 ### Outstanding rollout checks
 
-Each item stays open until it has been done once with its result (date,
-counts, outputs) recorded here.
+Each item stays open until it has been done once with its result recorded.
+Results so far are in "Validation record" below.
 
-- [ ] py311 test suite in a separate VM24 checkout (step 2): passed,
-      skipped, and warning counts.
-- [ ] Before the canary: certificate SAN hostname (canary part B, step 1)
-      and VM24 `curl --version` (7.76 or later) recorded.
+- [ ] py311 test suite in a separate VM24 checkout (step 2). **Run; not
+      green**: one failure (Zarr pin) plus known warnings. Needs an owner
+      decision; see the record.
+- [x] Canary certificate: SAN, expiry, and key match recorded. The curl
+      version is implied by `https_smoke.sh` passing, since it refuses curl
+      older than 7.76; the exact version was not recorded.
 - [ ] `conf/replace_runtime_files.sh` rehearsed on a scratch copy (see
-      "Production deployment procedure").
-- [ ] Canary parts A, B, and C passed for the TPXO10 and TPXO9 stores.
-- [ ] PM2 environment validation passed with an isolated `PM2_HOME`,
-      including the `pm2_restart_check.sh` rehearsal on the dummy app.
+      "Production deployment procedure"). Not yet reported.
+- [ ] Canary for the TPXO10 and TPXO9 stores. Parts B and C passed;
+      **part A (Dask transport) evidence not yet recorded**.
+- [x] PM2 environment validation with an isolated `PM2_HOME`, including
+      the `pm2_restart_check.sh` rehearsal on the dummy app.
+- [ ] Production daemon liveness, read-only:
+      `pm2_restart_check.sh --daemon-only --pm2-home /home/odbadmin/.pm2`
+      reports the production daemon's PID. It never calls `pm2`, and it
+      confirms that daemon's title is not truncated (see "PM2 environment
+      validation").
+- [ ] Canary symlink cleanup confirmed read-only. The cleanup command was
+      sent, but its completion was not confirmed.
 - [ ] Owner authorization for the production deployment (step 4).
+
+### Validation record
+
+Isolated validation of merge commit `ef780ea` on VM24 by Codex, reported
+2026-10-27. Nothing was installed or upgraded, and production was not
+changed.
+
+- **py311 suite: not green.** One failure:
+  `tests/test_app_smoke.py::test_pinned_runtime_versions` expects Zarr
+  2.18.7 (the `uv.lock` pin), but production py311 has 2.18.6. Existing
+  NumPy ABI (`numpy.ndarray size changed`) and Polars CPU-feature warnings
+  also appear. The pin and py311 were deliberately left unchanged. Whether
+  to accept this documented divergence, or align py311 through a separate
+  approved change, is an owner decision.
+- **Canary certificate:** the Let's Encrypt certificate used for the canary
+  (through a symlink in the canary checkout) is valid. Its SAN is
+  `eco.odb.ntu.edu.tw`, it is valid until 2026-12-10, its private key
+  matches, and `odbadmin` can read both.
+- **HTTPS canary (part B), both passed with `conf/https_smoke.sh` from the
+  merged commit**, with TLS verified throughout and no `curl -k`:
+  - TPXO10: `--mode same --canary-port 8041 --prod-port 443`. HTTP 200, and
+    the body is identical to the production 443 frontend.
+  - TPXO9: `--mode different --canary-port 8041 --prod-port 443`. HTTP 200,
+    and the body differs.
+- **Production unaffected (part C):** the production Tide Gunicorn PIDs
+  stayed 97326/97327/97328, release files were not modified, port 8041 was
+  released, and no production PM2 operation was run.
+- **Dask transport (part A):** no evidence recorded yet.
+- **PM2 environment validation:** isolated daemon, short `PM2_HOME`, and a
+  `.cjs` dummy config (see "PM2 environment validation"). All of these
+  passed:
+  - The TPXO9 and TPXO10 `TIDE_ZARR_PATH` values were passed through
+    correctly.
+  - After the variable was unset, `restart --update-env` kept the old value.
+    This confirms that rollback must always set the store explicitly.
+  - `save`, `kill`, and `resurrect` preserved the value.
+  - `pm2_restart_check.sh` succeeded, refused a wrong executable, passed
+    `--daemon-only`, and failed closed after the daemon was stopped.
+- **Canary symlinks:** a cleanup command was sent, but its completion was
+  not confirmed. Treat them as possibly present until checked read-only.
 
 ## Production deployment procedure
 
@@ -274,10 +332,16 @@ directory under `--out-root` (created with `mktemp -d` and printed as
 `attempt:`), so a retry is never blocked, even within the same second, and
 a failed attempt's output is kept as evidence.
 
+The production smoke goes through the public HTTPS frontend
+(`--prod-port 443`). The internal 8040 listener still serves an expired
+certificate (see "Current Production Layout"), so a verified request to
+8040 would fail; do not use `--prod-port 8040`, which is the script's
+default.
+
 ```bash
 HOST=eco.odb.ntu.edu.tw   # the SAN hostname recorded before the canary
 "$SRC/conf/pm2_restart_check.sh" --pm2-home /home/odbadmin/.pm2 --name tide \
-  && "$SRC/conf/https_smoke.sh" --host "$HOST" --mode prod \
+  && "$SRC/conf/https_smoke.sh" --host "$HOST" --mode prod --prod-port 443 \
        --out-root "/home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke"
 ```
 
@@ -331,6 +395,12 @@ on `gateway`), and restarting other apps.
 ## Rollback
 
 Status: **unverified**.
+
+Progress from the 2026-10-27 validation: the TPXO9 data path through the
+current runtime passed canary parts B and C, and PM2 propagation of
+`TIDE_ZARR_PATH`, including save/kill/resurrect, passed on the isolated
+dummy app. Canary part A evidence is not recorded yet, so the status is not
+yet "components validated".
 
 - Once the TPXO9 canary and the isolated PM2 environment validation pass,
   record "rollback components validated (<date>)". Those tests cover the
@@ -396,8 +466,12 @@ Constraints:
   `127.0.0.1:8040` and enables `--reload`.
 - Always select the store under test with an absolute `TIDE_ZARR_PATH` (the
   TPXO9 or TPXO10 path above); do not rely on `data/` in the checkout.
-- Reference the release directory's HTTPS key/cert by absolute path; never
-  copy them into the canary checkout.
+- Use a currently valid certificate and key for `eco.odb.ntu.edu.tw` (the
+  Let's Encrypt certificate used in the 2026-10-27 validation), referenced
+  by absolute path or a symlink in the canary checkout; never copy the key.
+  Do not use the release directory's `conf/privkey.pem`/`fullchain.pem`:
+  that certificate expired on 2023-08-25, so verified smoke requests to the
+  canary would fail.
 
 Start and stop:
 
@@ -405,9 +479,12 @@ Start and stop:
   absolute `TIDE_ZARR_PATH`, then from the canary checkout run
   `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn tide_app:app -w 1
   --worker-class uvicorn.workers.UvicornWorker -b 127.0.0.1:8041
-  --timeout 180 --keyfile <release>/conf/privkey.pem
-  --certfile <release>/conf/fullchain.pem`, without `--reload`. Record the
-  PID; stop the canary with `kill <PID>` only.
+  --timeout 180 --keyfile <le-privkey> --certfile <le-fullchain>`, without
+  `--reload`. Record the PID; stop the canary with `kill <PID>` only.
+- After the canary, remove the symlinks created for it (certificate links,
+  and store links from step 2 if they are no longer needed). Confirm the
+  removal read-only, for example with `ls -l` on the canary checkout, and
+  record it. A cleanup command without a confirmed result does not count.
 
 Acceptance has three separate parts.
 
@@ -431,13 +508,24 @@ B. Tide API and store. This shows the canary serves the intended store.
 Verify HTTPS against the certificate's hostname instead of disabling
 verification; never use `curl -k`.
 
-1. Confirm the certificate hostname:
-   `openssl x509 -in <release>/conf/fullchain.pem -noout -ext subjectAltName`.
+1. Check the canary certificate: its hostname, its expiry, and that the key
+   matches it. Set `LE_FULLCHAIN` and `LE_PRIVKEY` to the certificate and
+   key paths the canary uses.
+
+   ```bash
+   openssl x509 -in "$LE_FULLCHAIN" -noout -ext subjectAltName -enddate
+   openssl x509 -in "$LE_FULLCHAIN" -noout -pubkey | openssl sha256
+   openssl pkey -in "$LE_PRIVKEY" -pubout | openssl sha256   # must match
+   ```
+
    The commands below assume `eco.odb.ntu.edu.tw`; if the certificate lists
    a different name, use that name.
 2. Run `conf/https_smoke.sh` from the canary checkout. It queries the canary
-   (8041) and production (8040, a read-only GET) through
-   `curl --resolve HOST:PORT:127.0.0.1` with verification on and
+   (8041) and production through the public HTTPS frontend
+   (`--prod-port 443`, a read-only GET). Always pass `--prod-port 443`
+   explicitly: the script defaults to 8040, whose certificate has expired.
+   Both requests go through `curl --resolve HOST:PORT:127.0.0.1` with
+   verification on and
    `--fail-with-body`, and stops at the first failure. Every response must be
    HTTP 200 with a body that is non-empty and not `{}`. It requires curl
    7.76 or later (for `--fail-with-body`) and refuses an older curl before
@@ -450,10 +538,12 @@ verification; never use `curl -k`.
    ```bash
    SMOKE=/home/odbadmin/tmp/tide-v0.3.2-$SHA/conf/https_smoke.sh
    ROOT=/home/odbadmin/tmp/tide-v0.3.2-$SHA-smoke
-   # TPXO10 canary: body must be identical to production.
-   "$SMOKE" --host eco.odb.ntu.edu.tw --mode same --out-root "$ROOT"
+   # TPXO10 canary: body must be identical to production (443 frontend).
+   "$SMOKE" --host eco.odb.ntu.edu.tw --mode same \
+     --canary-port 8041 --prod-port 443 --out-root "$ROOT"
    # TPXO9 canary: both 200, bodies must differ.
-   "$SMOKE" --host eco.odb.ntu.edu.tw --mode different --out-root "$ROOT"
+   "$SMOKE" --host eco.odb.ntu.edu.tw --mode different \
+     --canary-port 8041 --prod-port 443 --out-root "$ROOT"
    ```
 
 C. Production unaffected. The production `tide` PID and restart count
@@ -473,12 +563,21 @@ the `tide` entry:
 - The dummy app is not a `tide_app` process and has no `pre_stop`. A
   separate `PM2_HOME` does not sandbox commands run by `pre_stop`, so never
   use the production `conf/ecosystem.config.js` for this test.
+- Name the dummy config `envprobe.config.cjs`, not `.js`.
+  `/home/odbadmin/tmp/package.json` puts `.js` files under
+  `/home/odbadmin/tmp` in ES module scope, and PM2 loads ecosystem files with
+  `require()`. A `.js` config there fails with `ERR_REQUIRE_ESM`, which the
+  2026-10-27 validation hit.
+- Keep `PM2_HOME` short. The liveness check matches the daemon title
+  `God Daemon (<PM2_HOME>)`, and with a long path that title appears
+  truncated in `ps`, so the check refuses the daemon. That refusal is safe;
+  fix it by using a shorter path, never by loosening the check.
 
 ```bash
-PROBE=/home/odbadmin/tmp/pm2-envprobe
+PROBE=/home/odbadmin/tmp/pm2p   # keep short: see above
 PM2=$HOME/.npm-global/bin/pm2
 mkdir -p "$PROBE"
-cat > "$PROBE/envprobe.config.js" <<'JS'
+cat > "$PROBE/envprobe.config.cjs" <<'JS'
 module.exports = { apps: [{
   name: 'envprobe',
   script: 'bash',
@@ -493,10 +592,10 @@ probe() {
 }
 
 PM2_HOME="$PROBE" TIDE_ZARR_PATH=/home/odbadmin/python/tide/data/tpxo9.zarr \
-  "$PM2" start "$PROBE/envprobe.config.js"; probe
+  "$PM2" start "$PROBE/envprobe.config.cjs"; probe
 PM2_HOME="$PROBE" "$PM2" delete envprobe
 PM2_HOME="$PROBE" TIDE_ZARR_PATH=/home/odbadmin/python/tide_tpxo10_atlas_v2/data/tpxo10.zarr \
-  "$PM2" start "$PROBE/envprobe.config.js"; probe
+  "$PM2" start "$PROBE/envprobe.config.cjs"; probe
 # Does PM2 keep the old value when the variable is unset in the shell?
 env -u TIDE_ZARR_PATH PM2_HOME="$PROBE" "$PM2" restart envprobe --update-env; probe
 PM2_HOME="$PROBE" "$PM2" save
@@ -524,7 +623,14 @@ EXE=$(ps -o args= -p "$(PM2_HOME="$PROBE" "$PM2" pid envprobe)" | awk '{print $1
 
 It must print `daemon: PM2_HOME=` followed by the `$PROBE` path, then
 `OK restart`. Passing the liveness check also confirms that this PM2
-version titles its daemon `God Daemon (<PM2_HOME>)`. Record the output.
+version titles its daemon `God Daemon (<PM2_HOME>)`; the 2026-10-27
+validation confirmed this with a short `PM2_HOME`. Record the output.
+
+Before step 5, run the same read-only check against the production daemon:
+`pm2_restart_check.sh --daemon-only --pm2-home /home/odbadmin/.pm2`. It
+never calls `pm2`, and it must report the production daemon's PID. That
+confirms the production title is not truncated, so the real restart check
+will accept it.
 
 Also confirm that the script fails when run with a wrong `--expect-exec`,
 and that `--daemon-only --pm2-home "$PROBE"` reports the probe daemon's PID
@@ -546,6 +652,12 @@ vs 2.3.4, xarray 2025.3.1 vs 2025.10.1, fastapi 0.115.12 vs 0.121.1. pyTMD
 `uv.lock` environment, so passing them locally does not verify py311;
 release sequence step 2 runs them with py311.
 
+The 2026-10-27 py311 run (step 2) was **not green**: the Zarr version pin
+test failed (py311 has 2.18.6, `uv.lock` pins 2.18.7), with the known NumPy
+ABI and Polars CPU-feature warnings. Do not hide this by changing the pin
+or installing packages into the shared py311. Resolving the divergence is
+part of the reproducible-runtime item below.
+
 On 2026-10-24, a PM2 restart whose PATH included `uv` started a `uv` sync
 that created an incomplete `.venv` in the release directory; it was moved
 (not deleted) to `/home/odbadmin/tmp/tide-uv-venv-incomplete-20261024`. The
@@ -559,6 +671,11 @@ hot patch made the launcher prefer py311, and the v0.3.2 target removes the
   currently on VM24 still has the `uv run` and PATH fallbacks.
 - The launcher runs Gunicorn with `--reload`, so writing Python sources into
   the release directory reloads the live workers immediately.
+- HTTPS: the public frontend on 443 has a valid certificate; the internal
+  Gunicorn listener on 8040 still serves the release directory's
+  certificate, which expired on 2023-08-25. Point verified-TLS checks at
+  443. A `tide` restart reloads the same expired certificate on 8040; it
+  does not fix it.
 - TPXO10 coastline reclassification can return no value where TPXO9 used to
   serve extrapolated values.
 - Large bbox maps are capped by `MAX_BBOX_CELLS=500000` after applying
@@ -571,7 +688,15 @@ hot patch made the launcher prefer py311, and the v0.3.2 target removes the
   path uses it (reads are direct); removing it would also allow retiring
   the `tide-client` identity.
 - Make the py311 runtime reproducible (a lock or recorded freeze) or move
-  production to an environment built from `uv.lock`.
+  production to an environment built from `uv.lock`. Until then the py311
+  suite fails `test_pinned_runtime_versions` (Zarr 2.18.6 vs 2.18.7); the
+  owner decides whether to accept that or align the environment.
+- The internal 8040 listener's certificate expired on 2023-08-25 (the public
+  443 frontend is valid). Whether and how to replace it is an owner
+  decision; it is not part of the v0.3.2 runtime manifest.
+- `conf/https_smoke.sh` defaults to `--prod-port 8040`; consider changing
+  the default to 443 so the safe choice is the default. For now, the
+  runbook passes `--prod-port 443` explicitly.
 - Parameterize host-specific paths in `conf/start_app.sh` (the launcher
   tests currently rewrite them in a sandbox copy).
 - Remove `--reload` from the production launcher.

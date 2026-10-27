@@ -137,7 +137,12 @@ there reloads the live workers). Run it with the py311 Gunicorn on
 absolute `TIDE_ZARR_PATH`, and stop it by PID. Smoke HTTPS against the
 certificate's hostname with `conf/https_smoke.sh` (`curl --resolve`,
 `--fail-with-body`, HTTP 200 required); never disable verification with
-`curl -k`. Report Dask transport evidence
+`curl -k`. Compare against production through the public HTTPS frontend
+with an explicit `--prod-port 443`. The internal Gunicorn listener on 8040
+still serves an expired certificate, so verified requests to it fail. Use
+a valid certificate for the canary itself, not the release directory's
+`conf/*.pem`. PM2 dummy configs under `/home/odbadmin/tmp` must be `.cjs`,
+because that tree is in ES module scope. Report Dask transport evidence
 (scheduler client registration, a trivial task with the same credentials)
 separately from the Tide API/store smoke. PM2 environment tests must use a
 separate `PM2_HOME` on every `pm2` command, with a dummy app that has no
