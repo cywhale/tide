@@ -1,5 +1,5 @@
-"""v0.3.2 operator scripts: atomic manifest replacement, HTTPS smoke, and the
-verified PM2 restart.
+"""v0.3.2 operator scripts: manifest replacement by per-file atomic rename,
+HTTPS smoke, and the verified PM2 restart.
 
 All three run for real against sandboxes (a temp release directory and a
 temp git checkout; `curl`, `pm2`, `ps`, `stat`, and `mv` stubs on PATH), so
@@ -123,6 +123,67 @@ def test_deploy_hash_mismatch_replaces_nothing(sb):
     assert r.returncode != 0
     assert "hash mismatch" in r.stderr and "nothing was replaced" in r.stderr
     assert _contents(sb["rel"]) == before
+
+
+# `chmod` wrapper: when the second manifest file is staged, alter the first
+# staged copy (already verified) in the same staging directory.
+STUB_CHMOD_TAMPER = r'''#!/bin/bash
+/bin/chmod "$@" || exit $?
+for a in "$@"; do last=$a; done
+case "$last" in
+  *_src_dask_client_manager.py)
+    for s in "$(dirname "$last")"/*_conf_start_app.sh; do
+      printf 'TAMPERED\n' >> "$s"; done ;;
+esac
+'''
+
+
+@pytest.mark.parametrize("mode", ["deploy", "restore"])
+def test_staged_copy_altered_after_its_check_replaces_nothing(sb, tmp_path, mode):
+    # Regression: each copy was checked only when staged, so one altered
+    # while the next file was staged went into the release directory and was
+    # caught only after its rename. All staged copies are re-verified first.
+    if mode == "restore":
+        assert _replace(sb, "deploy").returncode == 0
+    before = _contents(sb["rel"])
+    before_inodes = {f: (sb["rel"] / f).stat().st_ino for f in MANIFEST}
+    stub_dir = _stub(tmp_path / "chmodstub", "chmod", STUB_CHMOD_TAMPER)
+    r = _replace(sb, mode, path_prefix=stub_dir)
+    assert r.returncode != 0
+    assert "changed after verification; nothing was replaced" in r.stderr
+    assert _contents(sb["rel"]) == before
+    assert {f: (sb["rel"] / f).stat().st_ino for f in MANIFEST} == before_inodes
+
+
+# `mv` wrapper: after the first rename, alter the second staged copy.
+STUB_MV_TAMPER = r'''#!/bin/bash
+/bin/mv "$@" || exit $?
+for a in "$@"; do last=$a; done
+case "$last" in
+  */conf/start_app.sh)
+    for s in "$TAMPER_DIR"/staging/*_src_dask_client_manager.py; do
+      [ -e "$s" ] && printf 'TAMPERED\n' >> "$s"; done ;;
+esac
+'''
+
+
+def test_staged_copy_altered_between_renames_is_not_installed(sb, tmp_path):
+    # The renames are atomic one by one, not as a transaction: the launcher
+    # is already replaced, the altered client must not be, and restore
+    # recovers.
+    stub_dir = _stub(tmp_path / "mvstub", "mv", STUB_MV_TAMPER)
+    r = _replace(sb, "deploy", path_prefix=stub_dir,
+                 env_extra={"TAMPER_DIR": str(sb["work"])})
+    assert r.returncode != 0
+    assert "changed before its rename" in r.stderr and "restore --rel" in r.stderr
+    assert (sb["rel"] / "conf/start_app.sh").read_text() == NEW["conf/start_app.sh"]
+    assert (sb["rel"] / "src/dask_client_manager.py").read_text() == OLD["src/dask_client_manager.py"]
+
+    r = _replace(sb, "restore")
+    assert r.returncode == 0, r.stderr
+    for f in MANIFEST:
+        assert (sb["rel"] / f).read_text() == OLD[f]
+    assert stat.S_IMODE((sb["rel"] / "conf/start_app.sh").stat().st_mode) == 0o755
 
 
 def test_deploy_refuses_wrong_commit(sb):

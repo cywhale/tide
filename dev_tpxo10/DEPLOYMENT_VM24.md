@@ -129,7 +129,8 @@ workers.
    frontend (`--prod-port 443`), not the internal 8040 listener.
 4. The owner gives separate authorization for the production update.
 5. **Production deployment.** This changes the live service. Deploy only
-   the v0.3.2 runtime manifest by atomic replacement, then restart `tide`
+   the v0.3.2 runtime manifest, one atomic rename per file (not one
+   transaction across the files), then restart `tide`
    and run the post-deploy checks, as described in "Production deployment
    procedure" below.
 6. Update this file with the outcome: rollback status "components
@@ -149,8 +150,10 @@ Results so far are in "Validation record" below.
 - [x] Canary certificate: SAN, expiry, and key match recorded. The curl
       version is implied by `https_smoke.sh` passing, since it refuses curl
       older than 7.76; the exact version was not recorded.
-- [ ] `conf/replace_runtime_files.sh` rehearsed on a scratch copy (see
-      "Production deployment procedure"). Not yet reported.
+- [ ] `conf/replace_runtime_files.sh` rehearsed on a scratch copy on VM24
+      (see "Production deployment procedure"). A local sandbox rehearsal
+      passed after a fix (see the record); the VM24 run, with GNU
+      coreutils and bash 5, is not yet reported.
 - [x] Canary for the TPXO10 and TPXO9 stores: parts A, B, and C passed.
 - [x] PM2 environment validation with an isolated `PM2_HOME`, including
       the `pm2_restart_check.sh` rehearsal on the dummy app.
@@ -207,6 +210,32 @@ changed.
     `--daemon-only`, and failed closed after the daemon was stopped.
 - **Rollback:** components validated (2026-10-27); production rollback not
   exercised. See "Rollback".
+- **`replace_runtime_files.sh`, local sandbox rehearsal (2026-10-27, not on
+  VM24):** the real script was run against a temporary git checkout and a
+  temporary release directory with manifest modes 750 and 640. It used
+  macOS bash 3.2 and BSD `stat`, so the VM24 run is still required.
+  - It found a defect. Each staged copy was checked only when it was staged.
+    A copy altered after that check, while the next file was being staged
+    or after the first rename, was still renamed into the release directory.
+    Only the post-rename check caught it, with the altered file already
+    live. The script now checks every staged copy again before the first
+    rename, and each one again right before its own rename. Regression
+    tests are in `tests/test_ops_scripts.py`.
+  - With the fix, every scenario behaved as expected:
+    - `deploy`: exit 0. Both files match the commit blobs, the modes are
+      kept, other runtime files are unchanged, and `staging/` is removed.
+    - An existing `--work`: exit 1, "already exists". No release file
+      changed, and the earlier backup was kept.
+    - A staged copy altered during staging: exit 1, "nothing was replaced".
+      No file was renamed.
+    - A checkout file that differs from the commit: exit 1, "nothing was
+      replaced".
+    - A staged copy altered after the first rename: exit 1, naming
+      `restore`. The launcher was replaced and the client was not. `restore`
+      then exited 0 with the original contents and modes.
+    - `restore` after a successful `deploy`: exit 0, with the original
+      contents and modes.
+  - The temporary directory was removed afterwards.
 - **Canary symlinks:** a cleanup command was sent, but its completion was
   not confirmed. Treat them as possibly present until checked read-only.
 
@@ -234,14 +263,17 @@ under `set -euo pipefail`, exits non-zero on any failure, and:
 - backs up the manifest files with their hashes (`backup/`,
   `backup.sha256`) and records all runtime hashes
   (`runtime-before.sha256`);
-- stages every manifest file and verifies it against its blob at the commit
-  before replacing any, so a mismatch replaces nothing; then swaps each in
-  with one rename and re-verifies it;
+- stages every manifest file and verifies it against its blob at the commit,
+  then verifies every staged copy again before replacing any, so a mismatch,
+  including a staged copy altered after its first check, replaces nothing;
+- swaps each file in with its own rename, verifying the staged copy right
+  before the rename and the target after it;
 - confirms that the other runtime files are unchanged.
 
 `tests/test_ops_scripts.py` exercises these refusals, the two-phase
-behavior, the rename, recovery by `restore` after a failure between the two
-renames, and `restore`'s record checks locally.
+behavior, the rename, a staged copy altered after its first check (before
+the first rename, and between the renames), recovery by `restore` after a
+failure between the two renames, and `restore`'s record checks locally.
 
 ```bash
 REL=/home/odbadmin/python/tide_tpxo10_atlas_v2

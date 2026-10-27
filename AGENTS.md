@@ -98,10 +98,12 @@ separate checkout on VM24, then a production deployment only with the
 owner's separate authorization, then the `v0.3.2` tag. Never modify the
 release directory before the canary passes. A deployment writes only the
 runtime manifest files, each staged outside the release directory, verified
-by hash, and swapped in with an atomic rename (Gunicorn runs with
+by hash, and swapped in with its own atomic rename (Gunicorn runs with
 `--reload`); use `conf/replace_runtime_files.sh` (`deploy`/`restore`) rather
-than hand-typed commands. It and `conf/https_smoke.sh` are fail-fast and
-covered by `tests/test_ops_scripts.py`. Run both from the merged checkout
+than hand-typed commands. The renames together are not one transaction: if
+`deploy` fails after the first one, run `restore` before anything else.
+That script and `conf/https_smoke.sh` are fail-fast and covered by
+`tests/test_ops_scripts.py`. Run both from the merged checkout
 (they are not deployed). A deployment is not complete until
 `conf/pm2_restart_check.sh --pm2-home /home/odbadmin/.pm2` has restarted
 `tide` with the stored environment (no `--update-env`) and printed
