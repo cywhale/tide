@@ -88,3 +88,10 @@
     -- Public API documentation updated for TPXO10 default, API v1.1.0, correct z/u/v units, bbox cell cap, Swagger examples, and `/api/tide/forecast` usage.
     -- TPXO9-atlas-v5 is deprecated for public API users. It remains an operator rollback store only and is documented in deployment/operator notes.
     -- `conf/start_app.sh` made robust for PM2 non-interactive environments by resolving gunicorn through `GUNICORN_BIN`, `uv run`, PATH, or the VM24 py311 fallback.
+
+#### ver 0.3.2 / API v1.1.0 (pending release) Shared Dask mutual TLS
+
+    -- The Dask client connects only over mutual TLS to a loopback scheduler (`tls://` with a loopback IP, plus CA, client certificate, and key, with `require_encryption=True`); missing, partial, or mismatched settings or a non-loopback address create no client instead of falling back to plaintext, and the API keeps serving.
+    -- `conf/start_app.sh` exports the VM24 Tide Dask TLS identity and runs only an explicit absolute `GUNICORN_BIN` or the VM24 py311 Gunicorn; the `uv run` and PATH fallbacks are removed, so a PM2 start never triggers a `uv` environment sync.
+    -- Rollback now stays on the current runtime and switches stores by an absolute `TIDE_ZARR_PATH`; the pre-v0.3.0 checkout is no longer a standard rollback path.
+    -- Operator scripts: `conf/replace_runtime_files.sh` deploys or restores the runtime manifest by hash-verified atomic rename, `conf/pm2_restart_check.sh` restarts `tide` with its stored environment and verifies the restart took effect, and `conf/https_smoke.sh` runs a fail-fast HTTPS smoke with certificate verification.
