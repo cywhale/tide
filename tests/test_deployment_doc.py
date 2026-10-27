@@ -195,3 +195,99 @@ def test_rollback_status_keeps_production_caveat():
 def test_canary_does_not_use_expired_release_certificate():
     assert "<release>/conf/privkey.pem" not in TEXT
     assert "<release>/conf/fullchain.pem" not in TEXT
+
+
+# --- Py311 Zarr alignment chains ---------------------------------------------
+
+ALIGN_SCRIPT = DOC.parents[1] / "conf" / "py311_zarr_align.sh"
+STUB_STEP = '#!/bin/bash\necho "$(basename "$0") $*" >> "$STEPS_LOG"\n'
+
+
+def _align_block(mode):
+    blocks = [b for b in BLOCKS if f'"$ALIGN" {mode} --dir "$D"' in b]
+    assert len(blocks) == 1, mode
+    return blocks[0]
+
+
+def test_align_blocks_chain_restart_and_smoke_with_and():
+    assert len([b for b in BLOCKS if '"$ALIGN" prepare --dir "$D"' in b]) == 1
+    for mode in ("apply", "rollback"):
+        cmds = _commands(_align_block(mode))
+        assert len(cmds) == 1, cmds            # one && chain, nothing after it
+        steps = [s.strip() for s in cmds[0].split("&&")]
+        assert steps[0] == f'"$ALIGN" {mode} --dir "$D"'
+        assert "pm2_restart_check.sh" in steps[1]
+        assert "https_smoke.sh" in steps[2] and "--prod-port 443" in steps[2]
+
+
+@pytest.fixture
+def align_chain(tmp_path):
+    from test_ops_scripts import FAKE_PY
+    state = tmp_path / "fakepy"
+    state.mkdir()
+    (state / "zarr").write_text("2.18.6\n")
+    py = state / "python"
+    py.write_text(FAKE_PY)
+    py.chmod(0o755)
+    wrapper = tmp_path / "align"
+    wrapper.write_text(f'#!/bin/bash\nexec bash "{ALIGN_SCRIPT}" "$@" --python "{py}"\n')
+    wrapper.chmod(0o755)
+    src = tmp_path / "src"
+    for name in ("pm2_restart_check.sh", "https_smoke.sh"):
+        p = src / "conf" / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(STUB_STEP)
+        p.chmod(0o755)
+    log = tmp_path / "steps.log"
+    d = tmp_path / "zarr-align-x"
+
+    def run(block, fail=""):
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "SRC": str(src),
+               "ALIGN": str(wrapper), "D": str(d), "FAKE_PY": str(state),
+               "FAKE_FAIL": fail, "STEPS_LOG": str(log)}
+        return subprocess.run(["bash", "-c", block], env=env, cwd=tmp_path,
+                              capture_output=True, text=True, timeout=60)
+
+    r = run('"$ALIGN" prepare --dir "$D"')
+    assert r.returncode == 0, r.stderr
+    return run, log, state
+
+
+def _steps(log):
+    return log.read_text().splitlines() if log.exists() else []
+
+
+@pytest.mark.parametrize("fail", ["install", "install-numpy"])
+def test_align_apply_chain_stops_before_restart_and_smoke(align_chain, fail):
+    run, log, _ = align_chain
+    r = run(_align_block("apply"), fail)
+    assert r.returncode != 0
+    assert _steps(log) == []                     # no restart, no smoke
+
+
+def test_align_apply_chain_stops_when_verification_freeze_fails(align_chain):
+    run, log, state = align_chain
+    fake = (state / "python").read_text()
+    fake = fake.replace('echo "$v" > "$S/zarr"; echo "Successfully',
+                        'echo "$v" > "$S/zarr"; touch "$S/after"; echo "Successfully')
+    fake = fake.replace("  freeze)\n", '  freeze)\n    [ -e "$S/after" ] && exit 1\n')
+    (state / "python").write_text(fake)
+    r = run(_align_block("apply"))
+    assert r.returncode != 0 and _steps(log) == []
+
+
+def test_align_apply_then_rollback_chains_run_restart_and_smoke(align_chain):
+    run, log, state = align_chain
+    r = run(_align_block("apply"))
+    assert r.returncode == 0, r.stderr
+    steps = _steps(log)
+    assert [s.split()[0] for s in steps] == ["pm2_restart_check.sh", "https_smoke.sh"]
+    assert "--prod-port 443" in steps[1]
+    assert (state / "zarr").read_text().strip() == "2.18.7"
+
+    r = run(_align_block("rollback"), "install")  # failed rollback: no restart
+    assert r.returncode != 0 and len(_steps(log)) == 2
+    r = run(_align_block("rollback"))
+    assert r.returncode == 0, r.stderr
+    assert len(_steps(log)) == 4
+    assert (state / "zarr").read_text().strip() == "2.18.6"

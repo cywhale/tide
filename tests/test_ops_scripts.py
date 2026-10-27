@@ -683,6 +683,219 @@ def test_daemon_only_fails_closed_without_calling_pm2(restart, pm2_home, sock, p
     assert calls == []
 
 
+# --- py311_zarr_align.sh --------------------------------------------------
+
+ALIGN = REPO_ROOT / "conf" / "py311_zarr_align.sh"
+
+# Fake py311 interpreter. The installed zarr version lives in
+# $FAKE_PY/zarr; every pip call is logged to $FAKE_PY/calls. FAKE_FAIL
+# picks one failure: freeze (prints a partial list, then fails), freeze-nozarr,
+# download, dryrun-extra (the plan offers another package), install (pip
+# fails after printing, so a following tee still succeeds), install-numpy
+# (succeeds but also changes numpy), check (pip check cannot run).
+FAKE_PY = r'''#!/bin/bash
+S=$FAKE_PY
+[ "$1" = "-I" ] && shift
+if [ "$1" = "-c" ]; then
+  echo "$(cat "$S/zarr")"; exit 0
+fi
+[ "$1 $2 $3" = "-m pip --disable-pip-version-check" ] || { echo "bad call: $*" >&2; exit 9; }
+shift 3
+echo "$*" >> "$S/calls"
+sub=$1; shift
+numpy=$(cat "$S/numpy" 2>/dev/null || echo 2.2.4)
+case "$sub" in
+  freeze)
+    if [ "$FAKE_FAIL" = freeze ]; then echo "asciitree==0.3.3"; echo "boom" >&2; exit 1; fi
+    echo "numpy==$numpy"; echo "asciitree==0.3.3"
+    [ "$FAKE_FAIL" = freeze-nozarr ] || echo "zarr==$(cat "$S/zarr")"
+    echo "netCDF4==1.7.3" ;;
+  check)
+    [ "$FAKE_FAIL" = check ] && exit 2
+    echo "argopy 1.0.0 has requirement xarray<2024.3,>=0.18, but you have xarray 2025.3.1."
+    exit 1 ;;
+  download)
+    [ "$FAKE_FAIL" = download ] && { echo "ERROR: hash mismatch" >&2; exit 1; }
+    while [ $# -gt 0 ]; do
+      case "$1" in -d) d=$2; shift 2 ;; -r) r=$2; shift 2 ;; *) shift ;; esac
+    done
+    v=$(sed -E 's/^zarr==([0-9.]+) .*/\1/' "$r"); mkdir -p "$d"
+    : > "$d/zarr-$v-py3-none-any.whl" ;;
+  install)
+    dry=no
+    while [ $# -gt 0 ]; do
+      case "$1" in --dry-run) dry=yes; shift ;; -r) r=$2; shift 2 ;; *) shift ;; esac
+    done
+    v=$(sed -E 's/^zarr==([0-9.]+) .*/\1/' "$r")
+    if [ "$dry" = yes ]; then
+      echo "Would install zarr-$v"
+      [ "$FAKE_FAIL" = dryrun-extra ] && echo "Would install numpy-2.3.4"
+      exit 0
+    fi
+    if [ "$FAKE_FAIL" = install ]; then echo "Uninstalling zarr..."; echo "ERROR: simulated" >&2; exit 1; fi
+    [ "$FAKE_FAIL" = install-numpy ] && echo 2.3.4 > "$S/numpy"
+    echo "$v" > "$S/zarr"; echo "Successfully installed zarr-$v" ;;
+  *) echo "unexpected pip $sub" >&2; exit 9 ;;
+esac
+'''
+
+
+@pytest.fixture
+def align(tmp_path):
+    state = tmp_path / "fakepy"
+    state.mkdir()
+    (state / "zarr").write_text("2.18.6\n")
+    py = state / "python"
+    py.write_text(FAKE_PY)
+    py.chmod(0o755)
+    work = tmp_path / "ops" / "zarr-align-1"
+
+    def run(mode, fail=None, dirpath=work):
+        env = dict(os.environ, FAKE_PY=str(state), FAKE_FAIL=fail or "")
+        return subprocess.run(["bash", str(ALIGN), mode, "--dir", str(dirpath),
+                               "--python", str(py)],
+                              capture_output=True, text=True, env=env, timeout=60)
+
+    def calls():
+        p = state / "calls"
+        return p.read_text().splitlines() if p.exists() else []
+
+    def zarr():
+        return (state / "zarr").read_text().strip()
+
+    return {"run": run, "calls": calls, "zarr": zarr, "work": work,
+            "state": state, "python": py}
+
+
+def _installs(calls):
+    return [c for c in calls if c.startswith("install") and "--dry-run" not in c]
+
+
+def test_align_prepare_records_and_changes_nothing(align):
+    r = align["run"]("prepare")
+    assert r.returncode == 0, r.stderr
+    w = align["work"]
+    assert "zarr==2.18.6" in (w / "freeze-before.txt").read_text().splitlines()
+    assert (w / "pip-check-before.txt").read_text().endswith("exit 1\n")
+    assert (w / "prepared").exists()
+    for v in ("2.18.6", "2.18.7"):
+        assert (w / "wheels" / f"zarr-{v}-py3-none-any.whl").exists()
+        assert "--hash=sha256:" in (w / f"zarr-{v}.req").read_text()
+    assert _installs(align["calls"]()) == []
+    assert align["zarr"]() == "2.18.6"
+
+
+def test_align_prepare_refuses_existing_dir(align):
+    align["work"].mkdir(parents=True)
+    r = align["run"]("prepare")
+    assert r.returncode != 0 and "already exists" in r.stderr
+    assert align["calls"]() == []
+
+
+@pytest.mark.parametrize("fail,expect", [
+    ("freeze", "pip freeze failed"),
+    ("freeze-nozarr", "listed no zarr"),
+])
+def test_align_failed_snapshot_leaves_no_freeze_file(align, fail, expect):
+    r = align["run"]("prepare", fail)
+    assert r.returncode != 0 and expect in r.stderr
+    w = align["work"]
+    assert not (w / "freeze-before.txt").exists()
+    assert not list(w.glob("*.partial")) and not list(w.glob(".*.partial"))
+    assert not (w / "prepared").exists()
+    assert not any(c.startswith(("download", "install")) for c in align["calls"]())
+
+
+@pytest.mark.parametrize("fail,expect", [
+    ("download", "cannot download"),
+    ("dryrun-extra", "does not offer exactly zarr-2.18.7"),
+    ("check", "pip check failed to run"),
+])
+def test_align_prepare_fails_closed(align, fail, expect):
+    r = align["run"]("prepare", fail)
+    assert r.returncode != 0 and expect in r.stderr
+    assert not (align["work"] / "prepared").exists()
+    assert _installs(align["calls"]()) == []
+
+
+def test_align_apply_refuses_without_prepare(align):
+    align["work"].mkdir(parents=True)
+    r = align["run"]("apply")
+    assert r.returncode != 0 and "not prepared" in r.stderr
+    assert align["calls"]() == []
+
+
+def test_align_apply_refuses_if_py311_changed_since_prepare(align):
+    assert align["run"]("prepare").returncode == 0
+    (align["state"] / "numpy").write_text("2.3.4\n")
+    r = align["run"]("apply")
+    assert r.returncode != 0 and "changed since prepare" in r.stderr
+    assert _installs(align["calls"]()) == []
+    assert align["zarr"]() == "2.18.6"
+
+
+def test_align_apply_and_rollback(align):
+    assert align["run"]("prepare").returncode == 0
+    r = align["run"]("apply")
+    assert r.returncode == 0, r.stderr
+    assert "OK apply" in r.stdout and align["zarr"]() == "2.18.7"
+    w = align["work"]
+    assert "zarr==2.18.7" in (w / "freeze-after.txt").read_text().splitlines()
+    inst = _installs(align["calls"]())
+    assert len(inst) == 1
+    for flag in ("--no-deps", "--no-index", "--require-hashes"):
+        assert flag in inst[0]
+    r = align["run"]("apply")                      # one apply per directory
+    assert r.returncode != 0 and "already used" in r.stderr
+    r = align["run"]("rollback")
+    assert r.returncode == 0, r.stderr
+    assert "OK rollback" in r.stdout and align["zarr"]() == "2.18.6"
+    assert (w / "freeze-rollback.txt").read_text() == (w / "freeze-before.txt").read_text()
+
+
+def test_align_apply_pip_failure_is_not_masked_by_tee(align):
+    assert align["run"]("prepare").returncode == 0
+    r = align["run"]("apply", "install")
+    assert r.returncode != 0
+    assert "pip install failed" in r.stderr and "Do not restart" in r.stderr
+    # tee did run and capture pip's output; the failure still propagated.
+    assert "Uninstalling zarr" in (align["work"] / "install.log").read_text()
+    assert "OK apply" not in r.stdout
+    assert not (align["work"] / "freeze-after.txt").exists()
+
+
+def test_align_apply_rejects_other_package_changes(align):
+    assert align["run"]("prepare").returncode == 0
+    r = align["run"]("apply", "install-numpy")
+    assert r.returncode != 0 and "freeze changed beyond zarr" in r.stderr
+    assert "OK apply" not in r.stdout
+
+
+def test_align_apply_snapshot_failure_after_install_fails(align):
+    assert align["run"]("prepare").returncode == 0
+    # Install works, then the verification freeze fails.
+    fake = align["python"].read_text().replace(
+        'echo "$v" > "$S/zarr"; echo "Successfully',
+        'echo "$v" > "$S/zarr"; touch "$S/after-install"; echo "Successfully')
+    fake = fake.replace(
+        '  freeze)\n',
+        '  freeze)\n    [ -e "$S/after-install" ] && exit 1\n')
+    align["python"].write_text(fake)
+    r = align["run"]("apply")
+    assert r.returncode != 0 and "pip freeze failed" in r.stderr
+    assert not (align["work"] / "freeze-after.txt").exists()
+    assert "OK apply" not in r.stdout
+
+
+def test_align_rollback_pip_failure_is_not_masked_by_tee(align):
+    assert align["run"]("prepare").returncode == 0
+    assert align["run"]("apply").returncode == 0
+    r = align["run"]("rollback", "install")
+    assert r.returncode != 0 and "Do not restart" in r.stderr
+    assert "OK rollback" not in r.stdout
+    assert not (align["work"] / "freeze-rollback.txt").exists()
+
+
 def test_ops_scripts_syntax():
-    for script in (REPLACE, SMOKE, RESTART):
+    for script in (REPLACE, SMOKE, RESTART, ALIGN):
         subprocess.run(["bash", "-n", str(script)], check=True)

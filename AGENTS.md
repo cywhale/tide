@@ -122,6 +122,15 @@ gives every attempt its own directory. Rollback status is "components
 validated" at best until an owner-authorized production rollback drill is
 run.
 
+Never `pip install` into the shared VM24 py311 by hand. It also serves MHW
+and the Dask scheduler and worker, and Tide and MHW run with `--reload`, so
+they reload as soon as package files change. The owner-authorized Zarr
+2.18.7 alignment goes only through `conf/py311_zarr_align.sh`: `prepare`,
+then `apply` or `rollback` chained with `&&` to the restart and smoke. Run
+it in an approved window, after the open items under "Py311 Zarr alignment"
+in `dev_tpxo10/DEPLOYMENT_VM24.md` are confirmed. Do not assume the MHW
+cron uses py311.
+
 For deployment scripts, do not assume an interactive shell PATH.
 `conf/start_app.sh` runs only an explicitly set absolute `GUNICORN_BIN` or
 the VM24 py311 Gunicorn, and exits with an error otherwise. There is no

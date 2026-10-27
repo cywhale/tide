@@ -144,9 +144,9 @@ Each item stays open until it has been done once with its result recorded.
 Results so far are in "Validation record" below.
 
 - [ ] py311 test suite in a separate VM24 checkout (step 2). **Run; not
-      green**: one failure (Zarr pin) plus known warnings. Whether to accept
-      the Zarr divergence or align it separately before deployment is an
-      owner decision; see the record.
+      green**: one failure (Zarr pin) plus known warnings. The owner
+      authorized aligning Zarr only; the procedure is validated in
+      isolation but not run on VM24 (see "Py311 Zarr alignment").
 - [x] Canary certificate: SAN, expiry, and key match recorded. The curl
       version is implied by `https_smoke.sh` passing, since it refuses curl
       older than 7.76; the exact version was not recorded.
@@ -176,9 +176,9 @@ changed.
   `tests/test_app_smoke.py::test_pinned_runtime_versions` expects Zarr
   2.18.7 (the `uv.lock` pin), but production py311 has 2.18.6. Existing
   NumPy ABI (`numpy.ndarray size changed`) and Polars CPU-feature warnings
-  also appear. The pin and py311 were deliberately left unchanged. Whether
-  to accept this documented divergence, or align py311 through a separate
-  approved change, is an owner decision.
+  also appear. The pin and py311 were deliberately left unchanged. The
+  owner has since authorized aligning Zarr only, through a separate
+  approved maintenance step; see "Py311 Zarr alignment" (not executed).
 - **Canary certificate:** the Let's Encrypt certificate used for the canary
   (through a symlink in the canary checkout) is valid. Its SAN is
   `eco.odb.ntu.edu.tw`, it is valid until 2026-12-10, its private key
@@ -748,14 +748,161 @@ release sequence step 2 runs them with py311.
 The 2026-10-27 py311 run (step 2) was **not green**: the Zarr version pin
 test failed (py311 has 2.18.6, `uv.lock` pins 2.18.7), with the known NumPy
 ABI and Polars CPU-feature warnings. Do not hide this by changing the pin
-or installing packages into the shared py311. Resolving the divergence is
-part of the reproducible-runtime item below.
+or installing packages into the shared py311. The owner has authorized
+aligning only Zarr to 2.18.7; the validated procedure and what must still
+be confirmed first are in "Py311 Zarr alignment" below. It has not been
+run on VM24.
 
 On 2026-10-24, a PM2 restart whose PATH included `uv` started a `uv` sync
 that created an incomplete `.venv` in the release directory; it was moved
 (not deleted) to `/home/odbadmin/tmp/tide-uv-venv-incomplete-20261024`. The
 hot patch made the launcher prefer py311, and the v0.3.2 target removes the
 `uv run` and PATH fallbacks entirely.
+
+## Py311 Zarr alignment
+
+Status: **proposed, not executed.** The owner authorized aligning the
+shared py311 Zarr from 2.18.6 to the `uv.lock` pin 2.18.7, changing no
+other package. This is a production change to an interpreter shared by
+several services. Run it only in an approved maintenance window, after
+every item under "Confirm before the window" is settled.
+
+### Isolated validation (2026-10-27, local, not on VM24)
+
+- py311 was read on VM24 without changes: package metadata through
+  `python -I -B` (pip was not run there), `ps`, `/proc`, and
+  `crontab -l`. It is Python 3.11.4 on x86_64 (glibc 2.39, Ubuntu 24.04)
+  with pip 25.3 and 240 distributions. Some are not Tide's (for example a
+  local `odbargo_app` tarball and an editable `woa23`). There are also four
+  orphaned dist-info directories that hold only `REQUESTED`, and duplicate
+  dist-info entries for netCDF4 and h5py.
+- A linux/amd64 `python:3.11.4` container with pip 25.3 reproduced 231 of
+  the 234 named packages at identical versions, installed with `--no-deps`.
+  The three it could not reproduce are `odbargo_app`, the editable `src`,
+  and `connectorx` 0.2.3, which has no Python 3.11 build on PyPI. It
+  reproduced the production failure exactly: the pin test failed, with the
+  same NumPy ABI warning.
+- Production's zarr 2.18.6 files are byte-identical to the PyPI wheel (44
+  file hashes). Between the 2.18.6 and 2.18.7 wheels, the only changed file
+  is `zarr/version.py`, which holds the version string. The only metadata
+  change is a new `numcodecs<0.16` bound, which 0.15.1 satisfies. The 2.18.7
+  wheel matches the `uv.lock` hash.
+- `pip install zarr==2.18.7` with the resolver enabled changed only the
+  zarr line in the freeze. `pip check` showed the same two existing,
+  unrelated conflicts (argopy needs older xarray; dask-expr needs another
+  dask). Test suite results:
+  - before, on 2.18.6: 1 failed (the pin test), 192 passed;
+  - after, on 2.18.7: 193 passed;
+  - after rolling back to 2.18.6: the same result as before, and the freeze
+    identical to the original.
+- An MHW-style round trip passed in both directions: a group written by
+  xarray on 2.18.6, appended with `append_dim` on 2.18.7, and read back on
+  2.18.6.
+- `conf/py311_zarr_align.sh` wraps the procedure. It is fail-closed and
+  covered by `tests/test_ops_scripts.py`, including a pip failure whose
+  output a `tee` still captures, failed and zarr-less snapshots, drift since
+  `prepare`, and changes beyond zarr.
+
+### Confirm before the window
+
+Each item below is open. Evidence from the read-only check is noted where
+there is some; none of it is verified.
+
+- [ ] **MHW API interpreter.** On 2026-10-27, `ps` showed the `mhw_app`
+      Gunicorn running from the py311 Gunicorn with `--reload`, with working
+      directory `/home/odbadmin/proj/marineheatwave/API`. Still to confirm:
+      that its PM2 entry or launcher starts it with py311 again after a
+      restart.
+- [ ] **`update_mhw.sh` cron interpreter.** The crontab runs
+      `/home/odbadmin/backup/script/update_mhw.sh` at 04:50 on the 18th of
+      each month. Which Python it uses is **not known**: the script was not
+      read. Its `update_mhw.py` writes the MHW store with `to_zarr`, so if
+      it uses py311, the window must avoid that run.
+- [ ] **MHW maintenance window, restart, and smoke procedure.** The MHW
+      maintainer has to supply these. Tide's tooling covers only Tide.
+- [ ] **Dask scheduler and worker.** They run on py311 without `--reload`
+      and keep the old Zarr code in memory until they restart. The code is
+      identical, so a later restart under the host runbook is enough.
+      Confirm with the owner.
+- [ ] **Live install or stop/start.** Both Tide and MHW run with
+      `--reload`, so `apply` reloads their workers as soon as the zarr files
+      change, not at the next restart. A worker that reloads while pip is
+      swapping the files could fail to boot. The owner chooses one of:
+      - install live, then restart each service with its verified procedure
+        straight away (assumed below);
+      - stop Tide and MHW, install, then start them, which is not covered
+        by validated tooling.
+
+### Procedure
+
+Use `conf/py311_zarr_align.sh` from a merged checkout that contains it
+(`SRC`). It runs under `set -euo pipefail`, independent of the operator's
+shell. Every step either succeeds or exits non-zero before the next one. A
+failed `pip install` is not hidden by the `tee` that logs it, and a failed
+snapshot leaves no freeze file behind. Nothing chained after it with `&&`
+runs on failure.
+
+1. Before the window, `prepare` changes nothing in py311. It records the
+   sorted `pip freeze --all`, `pip check` with its exit status, and the Zarr
+   version. It downloads the 2.18.7 and 2.18.6 wheels pinned by SHA-256
+   into `$D/wheels`, and dry-runs the install, which must offer exactly
+   `zarr-2.18.7`.
+
+   ```bash
+   SRC=/home/odbadmin/tmp/tide-v0.3.2-$SHA   # merged checkout with the script
+   ALIGN="$SRC/conf/py311_zarr_align.sh"
+   D=/home/odbadmin/tmp/zarr-align-$(date +%Y%m%d)   # must not exist yet
+   "$ALIGN" prepare --dir "$D"
+   ```
+
+2. In the window, `apply` refuses to start unless py311 still matches the
+   `prepare` freeze. It installs 2.18.7 offline with `--no-deps`,
+   `--no-index`, and `--require-hashes`. Then it requires:
+   - the freeze to differ only in `zarr==2.18.6` → `zarr==2.18.7`;
+   - `pip check` to be unchanged;
+   - zarr to import as 2.18.7.
+
+   Only then do Tide's verified restart and smoke run:
+
+   ```bash
+   "$ALIGN" apply --dir "$D" \
+     && "$SRC/conf/pm2_restart_check.sh" --pm2-home /home/odbadmin/.pm2 --name tide \
+     && "$SRC/conf/https_smoke.sh" --host eco.odb.ntu.edu.tw --mode prod \
+          --prod-port 443 --out-root "$D-smoke"
+   ```
+
+3. After `PASS prod`, restart and smoke-test MHW with its own procedure
+   (to be confirmed), then run the py311 test suite from the merged checkout
+   (release sequence step 2). The pin test should now pass.
+
+If `apply` fails, do not restart or smoke anything. Report to the owner
+with `$D/install.log` and the snapshots. The state of py311 after a failed
+install is unknown, and rolling back is the owner's decision.
+
+What to check and record:
+
+- the versions: zarr 2.18.6 → 2.18.7, with numcodecs 0.15.1 and numpy
+  2.2.4 unchanged;
+- that the freeze differs only in the zarr line (`freeze-before.txt` vs
+  `freeze-after.txt`);
+- that `pip check` is unchanged (`pip-check-before.txt` vs
+  `pip-check-after.txt`);
+- Tide's `OK restart` and `PASS prod`, and MHW's smoke result.
+
+Rollback to 2.18.6 uses the same `$D`. It installs the hash-pinned 2.18.6
+wheel saved by `prepare`, offline, and requires the freeze and `pip check`
+to match the `prepare` snapshot exactly. Restart and smoke-test the
+services the same way, MHW included:
+
+```bash
+"$ALIGN" rollback --dir "$D" \
+  && "$SRC/conf/pm2_restart_check.sh" --pm2-home /home/odbadmin/.pm2 --name tide \
+  && "$SRC/conf/https_smoke.sh" --host eco.odb.ntu.edu.tw --mode prod \
+       --prod-port 443 --out-root "$D-rollback-smoke"
+```
+
+A directory accepts one `apply`. To try again after a rollback, run
+`prepare` with a new directory.
 
 ## Operational Notes
 
@@ -782,8 +929,9 @@ hot patch made the launcher prefer py311, and the v0.3.2 target removes the
   the `tide-client` identity.
 - Make the py311 runtime reproducible (a lock or recorded freeze) or move
   production to an environment built from `uv.lock`. Until then the py311
-  suite fails `test_pinned_runtime_versions` (Zarr 2.18.6 vs 2.18.7); the
-  owner decides whether to accept that or align the environment.
+  suite fails `test_pinned_runtime_versions` (Zarr 2.18.6 vs 2.18.7). The
+  owner authorized aligning Zarr only; see "Py311 Zarr alignment" for the
+  procedure and the items still to confirm.
 - The internal 8040 listener's certificate expired on 2023-08-25 (the public
   443 frontend is valid). Whether and how to replace it is an owner
   decision; it is not part of the v0.3.2 runtime manifest.
