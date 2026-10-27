@@ -484,42 +484,61 @@ Constraints:
 
 Start and stop:
 
-- Set `LE_PRIVKEY` and `LE_FULLCHAIN` to the valid Let's Encrypt key and
-  certificate (the same paths checked in part B, step 1), then start the
-  canary from the canary checkout. It exports the same Dask TLS variables
-  as `conf/start_app.sh` plus the absolute `TIDE_ZARR_PATH`, checks that
-  every file is readable, and starts Gunicorn without `--reload` only if
-  they all are:
+- Set `SHA` to the merged commit under test, and `LE_PRIVKEY` and
+  `LE_FULLCHAIN` to the valid Let's Encrypt key and certificate (the same
+  paths checked in part B, step 1). Then run the block below. It runs under
+  `set -euo pipefail` in a subshell, so any failure stops it before
+  Gunicorn starts, while the operator's own shell keeps its options and
+  gets none of the exported variables (no stray `TIDE_ZARR_PATH`). It:
+  - requires `SHA` (7 to 40 hex digits), `LE_PRIVKEY`, and `LE_FULLCHAIN`;
+  - changes into the canary checkout, and refuses unless that checkout's
+    `git rev-parse HEAD` starts with `SHA` and it has no tracked changes;
+  - exports the same Dask TLS variables as `conf/start_app.sh` plus the
+    absolute `TIDE_ZARR_PATH`, and refuses unless every file is readable;
+  - starts Gunicorn without `--reload`, with `--chdir` pinned to the
+    checkout, and prints its PID.
 
   ```bash
-  cd "/home/odbadmin/tmp/tide-v0.3.2-$SHA"   # the canary checkout
-  DASK_TLS_DIR=/home/odbadmin/.config/dask/tls   # as in conf/start_app.sh
-  export DASK_SCHEDULER_ADDRESS=tls://127.0.0.1:8786
-  export DASK_TLS_CA_FILE="$DASK_TLS_DIR/certs/ca.crt"
-  export DASK_TLS_CLIENT_CERT="$DASK_TLS_DIR/certs/tide-client.crt"
-  export DASK_TLS_CLIENT_KEY="$DASK_TLS_DIR/private/tide-client.key"
-  # Store under test: TPXO10 here; for the rollback canary use
-  # /home/odbadmin/python/tide/data/tpxo9.zarr.
-  export TIDE_ZARR_PATH=/home/odbadmin/python/tide_tpxo10_atlas_v2/data/tpxo10.zarr
-  : "${LE_PRIVKEY:?set LE_PRIVKEY to the LE private key path}"
-  : "${LE_FULLCHAIN:?set LE_FULLCHAIN to the LE fullchain path}"
-  ok=yes
-  for f in "$DASK_TLS_CA_FILE" "$DASK_TLS_CLIENT_CERT" "$DASK_TLS_CLIENT_KEY" \
-           "$TIDE_ZARR_PATH" "$LE_PRIVKEY" "$LE_FULLCHAIN"; do
-    [ -r "$f" ] || { echo "not readable: $f" >&2; ok=no; }
-  done
-  CANARY_LOG=/home/odbadmin/tmp/tide-v0.3.2-$SHA-canary.log
-  [ "$ok" = yes ] && {
-    /home/odbadmin/.pyenv/versions/py311/bin/gunicorn tide_app:app -w 1 \
+  CANARY_PID=$(
+    set -euo pipefail
+    : "${SHA:?set SHA to the merged commit under test}"
+    : "${LE_PRIVKEY:?set LE_PRIVKEY to the LE private key path}"
+    : "${LE_FULLCHAIN:?set LE_FULLCHAIN to the LE fullchain path}"
+    [[ $SHA =~ ^[0-9a-f]{7,40}$ ]] \
+      || { echo "SHA must be 7-40 hex digits: $SHA" >&2; exit 1; }
+    CHECKOUT=/home/odbadmin/tmp/tide-v0.3.2-$SHA   # the canary checkout
+    cd "$CHECKOUT"
+    head=$(git rev-parse HEAD)
+    [[ $head == "$SHA"* ]] \
+      || { echo "checkout is at $head, not $SHA" >&2; exit 1; }
+    git diff --quiet HEAD -- \
+      || { echo "checkout has tracked changes" >&2; exit 1; }
+    DASK_TLS_DIR=/home/odbadmin/.config/dask/tls   # as in conf/start_app.sh
+    export DASK_SCHEDULER_ADDRESS=tls://127.0.0.1:8786
+    export DASK_TLS_CA_FILE="$DASK_TLS_DIR/certs/ca.crt"
+    export DASK_TLS_CLIENT_CERT="$DASK_TLS_DIR/certs/tide-client.crt"
+    export DASK_TLS_CLIENT_KEY="$DASK_TLS_DIR/private/tide-client.key"
+    # Store under test: TPXO10 here; for the rollback canary use
+    # /home/odbadmin/python/tide/data/tpxo9.zarr.
+    export TIDE_ZARR_PATH=/home/odbadmin/python/tide_tpxo10_atlas_v2/data/tpxo10.zarr
+    for f in "$DASK_TLS_CA_FILE" "$DASK_TLS_CLIENT_CERT" \
+             "$DASK_TLS_CLIENT_KEY" "$TIDE_ZARR_PATH" \
+             "$LE_PRIVKEY" "$LE_FULLCHAIN"; do
+      [ -r "$f" ] || { echo "not readable: $f" >&2; exit 1; }
+    done
+    /home/odbadmin/.pyenv/versions/py311/bin/gunicorn tide_app:app \
+      --chdir "$CHECKOUT" -w 1 \
       --worker-class uvicorn.workers.UvicornWorker -b 127.0.0.1:8041 \
       --timeout 180 --keyfile "$LE_PRIVKEY" --certfile "$LE_FULLCHAIN" \
-      > "$CANARY_LOG" 2>&1 &
-    CANARY_PID=$!
-    echo "canary PID $CANARY_PID, log $CANARY_LOG"
-  }
+      < /dev/null > "$CHECKOUT-canary.log" 2>&1 &
+    echo "$!"
+  ) && echo "canary PID $CANARY_PID"
   ```
 
-  Record the PID, and stop the canary with `kill "$CANARY_PID"` only.
+  If it prints an error instead of a PID, nothing was started; fix the
+  cause and rerun it. The canary log is
+  `/home/odbadmin/tmp/tide-v0.3.2-$SHA-canary.log`. Record the PID, and
+  stop the canary with `kill "$CANARY_PID"` only.
 - After the canary, remove the symlinks created for it (certificate links,
   and store links from step 2 if they are no longer needed). Confirm the
   removal read-only, for example with `ls -l` on the canary checkout, and
@@ -531,8 +550,10 @@ A. Dask transport (TLS). This shows the canary's TLS settings and the
 `tide-client` identity work with the scheduler and worker. It does not test
 Tide computation, because the Tide API never submits Dask tasks.
 
-1. Before starting, use a one-off client with the same exported TLS
-   variables to record the scheduler's client list:
+1. Before starting, use a one-off client with the same four Dask TLS
+   variables as the canary block (it exports them only inside its
+   subshell, so set them for the client separately) to record the
+   scheduler's client list:
    `client.run_on_scheduler(lambda dask_scheduler: sorted(dask_scheduler.clients))`.
    Production holds one `Client-tideapi-*` entry per Gunicorn worker.
 2. While the canary runs, the list gains exactly one `Client-tideapi-*`
