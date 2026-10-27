@@ -143,15 +143,15 @@ Each item stays open until it has been done once with its result recorded.
 Results so far are in "Validation record" below.
 
 - [ ] py311 test suite in a separate VM24 checkout (step 2). **Run; not
-      green**: one failure (Zarr pin) plus known warnings. Needs an owner
-      decision; see the record.
+      green**: one failure (Zarr pin) plus known warnings. Whether to accept
+      the Zarr divergence or align it separately before deployment is an
+      owner decision; see the record.
 - [x] Canary certificate: SAN, expiry, and key match recorded. The curl
       version is implied by `https_smoke.sh` passing, since it refuses curl
       older than 7.76; the exact version was not recorded.
 - [ ] `conf/replace_runtime_files.sh` rehearsed on a scratch copy (see
       "Production deployment procedure"). Not yet reported.
-- [ ] Canary for the TPXO10 and TPXO9 stores. Parts B and C passed;
-      **part A (Dask transport) evidence not yet recorded**.
+- [x] Canary for the TPXO10 and TPXO9 stores: parts A, B, and C passed.
 - [x] PM2 environment validation with an isolated `PM2_HOME`, including
       the `pm2_restart_check.sh` rehearsal on the dummy app.
 - [ ] Production daemon liveness, read-only:
@@ -189,7 +189,12 @@ changed.
 - **Production unaffected (part C):** the production Tide Gunicorn PIDs
   stayed 97326/97327/97328, release files were not modified, port 8041 was
   released, and no production PM2 operation was run.
-- **Dask transport (part A):** no evidence recorded yet.
+- **Dask transport (part A): passed** during the TPXO10 canary run:
+  - The scheduler's client list showed three `Client-tideapi-*` entries:
+    the two production workers plus the one canary worker.
+  - A separate one-off client with the same mTLS settings completed the
+    trivial task and got `42`.
+  - The canary log had no Dask connection-failure message.
 - **PM2 environment validation:** isolated daemon, short `PM2_HOME`, and a
   `.cjs` dummy config (see "PM2 environment validation"). All of these
   passed:
@@ -200,6 +205,8 @@ changed.
   - `save`, `kill`, and `resurrect` preserved the value.
   - `pm2_restart_check.sh` succeeded, refused a wrong executable, passed
     `--daemon-only`, and failed closed after the daemon was stopped.
+- **Rollback:** components validated (2026-10-27); production rollback not
+  exercised. See "Rollback".
 - **Canary symlinks:** a cleanup command was sent, but its completion was
   not confirmed. Treat them as possibly present until checked read-only.
 
@@ -394,13 +401,15 @@ on `gateway`), and restarting other apps.
 
 ## Rollback
 
-Status: **unverified**.
+Status: **rollback components validated (2026-10-27); production rollback
+not exercised.**
 
-Progress from the 2026-10-27 validation: the TPXO9 data path through the
-current runtime passed canary parts B and C, and PM2 propagation of
-`TIDE_ZARR_PATH`, including save/kill/resurrect, passed on the isolated
-dummy app. Canary part A evidence is not recorded yet, so the status is not
-yet "components validated".
+The 2026-10-27 validation met the condition below: the TPXO9 canary passed
+(the data path through the current runtime), and so did the isolated PM2
+environment validation (`TIDE_ZARR_PATH` propagation, including
+save/kill/resurrect, on a dummy app). The production `tide` entry was never
+switched. This status does not mean that a production rollout or a
+production rollback drill has been done.
 
 - Once the TPXO9 canary and the isolated PM2 environment validation pass,
   record "rollback components validated (<date>)". Those tests cover the

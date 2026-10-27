@@ -58,6 +58,15 @@ def test_pm2_dummy_config_is_cjs():
     assert not re.search(r"envprobe\.config\.js\b", TEXT)
 
 
+def test_rollback_status_keeps_production_caveat():
+    status = re.search(r"^## Rollback\n\nStatus: (.*?)\n\n", TEXT,
+                       flags=re.S | re.M)
+    assert status, "Rollback section must open with a Status line"
+    line = " ".join(status.group(1).split())
+    if "components validated" in line:
+        assert "production rollback not exercised" in line, line
+
+
 def test_canary_does_not_use_expired_release_certificate():
     assert "<release>/conf/privkey.pem" not in TEXT
     assert "<release>/conf/fullchain.pem" not in TEXT
