@@ -692,7 +692,9 @@ ALIGN = REPO_ROOT / "conf" / "py311_zarr_align.sh"
 # picks one failure: freeze (prints a partial list, then fails), freeze-nozarr,
 # download, dryrun-extra (the plan offers another package), install (pip
 # fails after printing, so a following tee still succeeds), install-numpy
-# (succeeds but also changes numpy), check (pip check cannot run).
+# (succeeds but also changes numpy), check (pip check exits 2). FAKE_CHECK
+# picks the `pip check` result; the default is the two conflicts VM24 py311
+# shows (exit 1).
 FAKE_PY = r'''#!/bin/bash
 S=$FAKE_PY
 [ "$1" = "-I" ] && shift
@@ -712,8 +714,33 @@ case "$sub" in
     echo "netCDF4==1.7.3" ;;
   check)
     [ "$FAKE_FAIL" = check ] && exit 2
-    echo "argopy 1.0.0 has requirement xarray<2024.3,>=0.18, but you have xarray 2025.3.1."
-    exit 1 ;;
+    conflicts() {
+      echo "argopy 1.0.0 has requirement xarray<2024.3,>=0.18, but you have xarray 2025.3.1."
+      echo "dask-expr 1.1.20 has requirement dask==2024.12.0, but you have dask 2025.3.0."
+    }
+    case "${FAKE_CHECK:-conflicts}" in
+      conflicts) conflicts; exit 1 ;;
+      clean) echo "No broken requirements found."; exit 0 ;;
+      clean-extra) echo "No broken requirements found."; echo "extra"; exit 0 ;;
+      all-kinds)
+        echo "foo 1.0 requires bar, which is not installed."
+        conflicts
+        echo "baz 2.0 is not supported on this platform"; exit 1 ;;
+      traceback-stdout)
+        echo "Traceback (most recent call last):"
+        echo '  File "pip/_internal/cli/main.py", line 80, in main'
+        echo "OSError: [Errno 13] Permission denied"; exit 1 ;;
+      traceback-stderr)
+        echo "Traceback (most recent call last):" >&2
+        echo "OSError: [Errno 13] Permission denied" >&2; exit 1 ;;
+      unknown) echo "something unexpected happened"; exit 1 ;;
+      mixed) conflicts; echo "ERROR: partial result"; exit 1 ;;
+      empty) exit 1 ;;
+      warning)
+        conflicts
+        echo "WARNING: Error parsing dependencies of lxml: invalid metadata" >&2; exit 1 ;;
+      *) echo "unknown FAKE_CHECK" >&2; exit 9 ;;
+    esac ;;
   download)
     [ "$FAKE_FAIL" = download ] && { echo "ERROR: hash mismatch" >&2; exit 1; }
     while [ $# -gt 0 ]; do
@@ -750,8 +777,9 @@ def align(tmp_path):
     py.chmod(0o755)
     work = tmp_path / "ops" / "zarr-align-1"
 
-    def run(mode, fail=None, dirpath=work):
-        env = dict(os.environ, FAKE_PY=str(state), FAKE_FAIL=fail or "")
+    def run(mode, fail=None, dirpath=work, check=None):
+        env = dict(os.environ, FAKE_PY=str(state), FAKE_FAIL=fail or "",
+                   FAKE_CHECK=check or "conflicts")
         return subprocess.run(["bash", str(ALIGN), mode, "--dir", str(dirpath),
                                "--python", str(py)],
                               capture_output=True, text=True, env=env, timeout=60)
@@ -809,13 +837,65 @@ def test_align_failed_snapshot_leaves_no_freeze_file(align, fail, expect):
 @pytest.mark.parametrize("fail,expect", [
     ("download", "cannot download"),
     ("dryrun-extra", "does not offer exactly zarr-2.18.7"),
-    ("check", "pip check failed to run"),
+    ("check", "pip check gave no recognised result (exit 2"),
 ])
 def test_align_prepare_fails_closed(align, fail, expect):
     r = align["run"]("prepare", fail)
     assert r.returncode != 0 and expect in r.stderr
     assert not (align["work"] / "prepared").exists()
     assert _installs(align["calls"]()) == []
+
+
+@pytest.mark.parametrize("check,record", [
+    ("clean", "No broken requirements found.\nexit 0\n"),
+    ("conflicts",
+     "argopy 1.0.0 has requirement xarray<2024.3,>=0.18, but you have xarray 2025.3.1.\n"
+     "dask-expr 1.1.20 has requirement dask==2024.12.0, but you have dask 2025.3.0.\n"
+     "exit 1\n"),
+    ("all-kinds", None),
+])
+def test_align_pip_check_accepts_pip_check_results(align, check, record):
+    r = align["run"]("prepare", check=check)
+    assert r.returncode == 0, r.stderr
+    got = (align["work"] / "pip-check-before.txt").read_text()
+    if record is not None:
+        assert got == record
+    else:   # one line of each conflict kind pip check writes
+        assert len(got.splitlines()) == 5 and got.endswith("exit 1\n")
+    assert not (align["work"] / "pip-check-before.txt.stderr").exists()
+
+
+# pip check results that must be rejected: a crash that still exits 1,
+# unknown or mixed output, nothing at all, a warning on stderr (pip exits 1
+# on unreadable metadata), or extra output after a clean result.
+BAD_CHECKS = ["traceback-stdout", "traceback-stderr", "unknown", "mixed",
+              "empty", "warning", "clean-extra"]
+
+
+@pytest.mark.parametrize("check", BAD_CHECKS)
+def test_align_pip_check_rejects_anything_else(align, check):
+    r = align["run"]("prepare", check=check)
+    assert r.returncode != 0
+    assert "pip check gave no recognised result" in r.stderr
+    w = align["work"]
+    assert not (w / "pip-check-before.txt").exists()   # nothing recorded
+    assert (w / "pip-check-before.txt.rejected").exists()
+    assert not (w / "prepared").exists()
+    assert _installs(align["calls"]()) == []
+    assert not any(c.startswith("download") for c in align["calls"]())
+
+
+@pytest.mark.parametrize("mode", ["apply", "rollback"])
+@pytest.mark.parametrize("check", ["traceback-stdout", "traceback-stderr", "unknown"])
+def test_align_pip_check_failure_after_install_fails(align, mode, check):
+    assert align["run"]("prepare").returncode == 0
+    if mode == "rollback":
+        assert align["run"]("apply").returncode == 0
+    r = align["run"](mode, check=check)
+    assert r.returncode != 0
+    assert "pip check gave no recognised result" in r.stderr
+    assert "do not restart or smoke" in r.stderr
+    assert f"OK {mode}" not in r.stdout
 
 
 def test_align_apply_refuses_without_prepare(align):

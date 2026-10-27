@@ -764,8 +764,10 @@ hot patch made the launcher prefer py311, and the v0.3.2 target removes the
 Status: **proposed, not executed.** The owner authorized aligning the
 shared py311 Zarr from 2.18.6 to the `uv.lock` pin 2.18.7, changing no
 other package. This is a production change to an interpreter shared by
-several services. Run it only in an approved maintenance window, after
-every item under "Confirm before the window" is settled.
+several services. The items under "Preconditions before any production
+run" are prerequisites, not formalities: none is settled yet. Do not run
+`apply` or `rollback` on VM24 until every one is settled and recorded here,
+in an approved maintenance window.
 
 ### Isolated validation (2026-10-27, local, not on VM24)
 
@@ -801,9 +803,14 @@ every item under "Confirm before the window" is settled.
 - `conf/py311_zarr_align.sh` wraps the procedure. It is fail-closed and
   covered by `tests/test_ops_scripts.py`, including a pip failure whose
   output a `tee` still captures, failed and zarr-less snapshots, drift since
-  `prepare`, and changes beyond zarr.
+  `prepare`, and changes beyond zarr. It also covers `pip check` results
+  that are not in pip's format, such as a traceback with exit 1, unknown,
+  mixed, or empty output, or a stderr warning, including the case where
+  `prepare` and `apply` fail the same way. `tests/test_deployment_doc.py`
+  runs the runbook's own `apply` and `rollback` chains and confirms that
+  the restart and smoke never run after any of these failures.
 
-### Confirm before the window
+### Preconditions before any production run
 
 Each item below is open. Evidence from the read-only check is noted where
 there is some; none of it is verified.
@@ -824,14 +831,25 @@ there is some; none of it is verified.
       and keep the old Zarr code in memory until they restart. The code is
       identical, so a later restart under the host runbook is enough.
       Confirm with the owner.
-- [ ] **Live install or stop/start.** Both Tide and MHW run with
-      `--reload`, so `apply` reloads their workers as soon as the zarr files
-      change, not at the next restart. A worker that reloads while pip is
-      swapping the files could fail to boot. The owner chooses one of:
-      - install live, then restart each service with its verified procedure
-        straight away (assumed below);
-      - stop Tide and MHW, install, then start them, which is not covered
-        by validated tooling.
+- [ ] **How Tide and MHW are handled during the install: undecided.**
+      Both run with `--reload`, so `apply` and `rollback` reload their
+      workers as soon as the zarr files change, not at the next restart. A
+      worker that reloads while pip is swapping the files could fail to
+      boot. Neither option below is decided or validated on VM24:
+      - install while the services run, then restart each one straight
+        away with its own procedure;
+      - stop Tide and MHW, install, then start them. Validated tooling does
+        not cover stopping and starting them.
+
+      The chains below show only the order of the script, Tide's restart
+      check, and Tide's smoke. They do not choose between these options,
+      and they do not include MHW. Revise them once the owner decides.
+- [ ] **Production `pip check` output.** It has never been run on VM24.
+      The script accepts only pip check's two result formats (see
+      "Procedure"). If `prepare` rejects production's output, for example
+      a metadata warning caused by the orphaned dist-info directories, stop
+      and report it with `pip-check-before.txt.rejected` and
+      `pip-check-before.txt.stderr`. Never loosen the check.
 
 ### Procedure
 
@@ -842,9 +860,23 @@ failed `pip install` is not hidden by the `tee` that logs it, and a failed
 snapshot leaves no freeze file behind. Nothing chained after it with `&&`
 runs on failure.
 
+`pip check` is accepted only in one of the two forms pip 25.3 produces:
+
+- exit 0 with exactly `No broken requirements found.`;
+- exit 1 with one or more conflict lines and nothing else. Each line must
+  be one of `X v requires Y, which is not installed.`,
+  `X v has requirement R, but you have Y v.`, or
+  `X v is not supported on this platform`.
+
+Both forms also need empty stderr. Anything else is treated as pip check
+failing, and the script stops without recording a result. That includes a
+traceback, empty or unknown output, a warning (pip also exits 1 on
+unreadable metadata), and any other exit status. Only an accepted result
+goes into the before/after comparison.
+
 1. Before the window, `prepare` changes nothing in py311. It records the
-   sorted `pip freeze --all`, `pip check` with its exit status, and the Zarr
-   version. It downloads the 2.18.7 and 2.18.6 wheels pinned by SHA-256
+   sorted `pip freeze --all`, the accepted `pip check` result with its exit
+   status, and the Zarr version. It downloads the 2.18.7 and 2.18.6 wheels pinned by SHA-256
    into `$D/wheels`, and dry-runs the install, which must offer exactly
    `zarr-2.18.7`.
 
@@ -855,14 +887,16 @@ runs on failure.
    "$ALIGN" prepare --dir "$D"
    ```
 
-2. In the window, `apply` refuses to start unless py311 still matches the
-   `prepare` freeze. It installs 2.18.7 offline with `--no-deps`,
-   `--no-index`, and `--require-hashes`. Then it requires:
+2. In the window, and only after every precondition above is settled,
+   `apply` refuses to start unless py311 still matches the `prepare`
+   freeze. It installs 2.18.7 offline with `--no-deps`, `--no-index`, and
+   `--require-hashes`. Then it requires:
    - the freeze to differ only in `zarr==2.18.6` → `zarr==2.18.7`;
-   - `pip check` to be unchanged;
+   - an accepted `pip check` result identical to the `prepare` one;
    - zarr to import as 2.18.7.
 
-   Only then do Tide's verified restart and smoke run:
+   Only then do Tide's restart check and smoke run. The service-handling
+   decision above may change this chain:
 
    ```bash
    "$ALIGN" apply --dir "$D" \
@@ -871,8 +905,9 @@ runs on failure.
           --prod-port 443 --out-root "$D-smoke"
    ```
 
-3. After `PASS prod`, restart and smoke-test MHW with its own procedure
-   (to be confirmed), then run the py311 test suite from the merged checkout
+3. After `PASS prod`, restart and smoke-test MHW with its own procedure.
+   That procedure does not exist in this runbook yet; it is a
+   precondition. Then run the py311 test suite from the merged checkout
    (release sequence step 2). The pin test should now pass.
 
 If `apply` fails, do not restart or smoke anything. Report to the owner
@@ -885,14 +920,15 @@ What to check and record:
   2.2.4 unchanged;
 - that the freeze differs only in the zarr line (`freeze-before.txt` vs
   `freeze-after.txt`);
-- that `pip check` is unchanged (`pip-check-before.txt` vs
-  `pip-check-after.txt`);
+- that `pip check` was accepted both times and is unchanged
+  (`pip-check-before.txt` vs `pip-check-after.txt`);
 - Tide's `OK restart` and `PASS prod`, and MHW's smoke result.
 
 Rollback to 2.18.6 uses the same `$D`. It installs the hash-pinned 2.18.6
-wheel saved by `prepare`, offline, and requires the freeze and `pip check`
-to match the `prepare` snapshot exactly. Restart and smoke-test the
-services the same way, MHW included:
+wheel saved by `prepare`, offline. It requires the freeze and an accepted
+`pip check` result to match the `prepare` snapshot exactly. Restart and
+smoke-test the services the same way, MHW included, under the same
+preconditions:
 
 ```bash
 "$ALIGN" rollback --dir "$D" \

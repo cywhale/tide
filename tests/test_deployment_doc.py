@@ -241,10 +241,10 @@ def align_chain(tmp_path):
     log = tmp_path / "steps.log"
     d = tmp_path / "zarr-align-x"
 
-    def run(block, fail=""):
+    def run(block, fail="", check="conflicts", dirpath=d):
         env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "SRC": str(src),
-               "ALIGN": str(wrapper), "D": str(d), "FAKE_PY": str(state),
-               "FAKE_FAIL": fail, "STEPS_LOG": str(log)}
+               "ALIGN": str(wrapper), "D": str(dirpath), "FAKE_PY": str(state),
+               "FAKE_FAIL": fail, "FAKE_CHECK": check, "STEPS_LOG": str(log)}
         return subprocess.run(["bash", "-c", block], env=env, cwd=tmp_path,
                               capture_output=True, text=True, timeout=60)
 
@@ -291,3 +291,28 @@ def test_align_apply_then_rollback_chains_run_restart_and_smoke(align_chain):
     assert r.returncode == 0, r.stderr
     assert len(_steps(log)) == 4
     assert (state / "zarr").read_text().strip() == "2.18.6"
+
+
+@pytest.mark.parametrize("check", ["traceback-stdout", "traceback-stderr",
+                                   "unknown", "empty"])
+def test_align_chains_stop_when_pip_check_is_not_recognised(align_chain, check):
+    run, log, state = align_chain
+    r = run(_align_block("apply"), check=check)     # pip check after install
+    assert r.returncode != 0 and _steps(log) == []
+    assert (state / "zarr").read_text().strip() == "2.18.7"
+    r = run(_align_block("rollback"), check=check)
+    assert r.returncode != 0 and _steps(log) == []
+
+
+@pytest.mark.parametrize("check", ["traceback-stdout", "unknown", "warning"])
+def test_align_chain_stops_when_pip_check_is_broken_throughout(
+        align_chain, tmp_path, check):
+    # Regression: a pip check that fails the same way in prepare and apply
+    # was recorded twice, compared equal, and let restart and smoke run.
+    run, log, state = align_chain
+    d2 = tmp_path / "zarr-align-broken-check"
+    r = run('"$ALIGN" prepare --dir "$D"', check=check, dirpath=d2)
+    assert r.returncode != 0
+    r = run(_align_block("apply"), check=check, dirpath=d2)
+    assert r.returncode != 0 and _steps(log) == []
+    assert (state / "zarr").read_text().strip() == "2.18.6"   # never installed

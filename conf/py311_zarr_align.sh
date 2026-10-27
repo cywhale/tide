@@ -16,6 +16,8 @@
 #   `pip check` to be unchanged, and zarr to import as 2.18.7.
 # rollback installs 2.18.6 the same way and requires the freeze and
 #   `pip check` to equal prepare's again.
+# pip check counts only in one of its two result formats (see pip_check);
+#   anything else stops the script and is never compared or recorded.
 #
 # Fails closed: any failed step exits non-zero before the next one, so a
 # restart or smoke chained after it with && never runs. Snapshots go to a
@@ -32,7 +34,7 @@ HASH_FROM=a5334311fae8859870d78561ebb6bd0ab01accc392a6cf4dcaa25d83b4a2f22c
 HASH_TO=ac3dc4033e9ae4e9d7b5e27c97ea3eaf1003cc0a07f010bd83d5134bf8c4b223
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-usage() { sed -n '2,25p' "$0" >&2; exit 2; }
+usage() { sed -n '2,27p' "$0" >&2; exit 2; }
 
 pip_() { "$PY" -I -m pip --disable-pip-version-check "$@"; }
 
@@ -59,13 +61,36 @@ snapshot() {
   mv "$out.tmp" "$out"
 }
 
-# pip_check NAME: `pip check` output plus its exit status into DIR/NAME. Exit
-# 1 means conflicts were found, which existing py311 conflicts make normal;
-# anything else means pip itself failed.
+# The only lines pip 25.3 `pip check` writes to stdout for conflicts
+# (pip/_internal/commands/check.py); warnings go to stderr.
+PKG_VER='[A-Za-z0-9][A-Za-z0-9._-]* [^ ]+'
+CONFLICT_RE=(
+  -e "$PKG_VER requires .+, which is not installed\\."
+  -e "$PKG_VER has requirement .+, but you have $PKG_VER\\."
+  -e "$PKG_VER is not supported on this platform"
+)
+
+# pip_check NAME: `pip check` stdout plus its exit status into DIR/NAME,
+# accepted only as one of pip check's two results: exit 0 with exactly
+# "No broken requirements found.", or exit 1 with one or more conflict lines
+# and nothing else. Both need empty stderr. A traceback, empty or unknown
+# output, a warning (for example unreadable metadata, which also exits 1), or
+# any other exit means pip check itself failed: DIR/NAME is not written, and
+# the output is kept as NAME.rejected and NAME.stderr for inspection.
 pip_check() {
-  local out="$DIR/$1" rc=0
-  pip_ check > "$out.tmp" 2>&1 || rc=$?
-  [ "$rc" -le 1 ] || { rm -f "$out.tmp"; die "pip check failed to run (exit $rc)"; }
+  local out="$DIR/$1" rc=0 ok=no
+  pip_ check > "$out.tmp" 2> "$out.stderr" || rc=$?
+  if [ ! -s "$out.stderr" ]; then
+    case "$rc" in
+      0) [ "$(cat "$out.tmp")" = "No broken requirements found." ] && ok=yes ;;
+      1) [ -s "$out.tmp" ] && ! grep -Evqx "${CONFLICT_RE[@]}" "$out.tmp" && ok=yes ;;
+    esac
+  fi
+  if [ "$ok" != yes ]; then
+    mv "$out.tmp" "$out.rejected"
+    die "pip check gave no recognised result (exit $rc; see $out.rejected and $out.stderr); do not restart or smoke"
+  fi
+  rm -f "$out.stderr"
   echo "exit $rc" >> "$out.tmp"
   mv "$out.tmp" "$out"
 }
