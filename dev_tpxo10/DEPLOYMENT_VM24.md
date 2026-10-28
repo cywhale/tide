@@ -163,14 +163,19 @@ Results so far are in "Validation record" below.
       printed `daemon alive: PID 3352` and `OK daemon-only: pm2 was not
       called`, and exited 0. `ps` shows the full, untruncated title
       `PM2 v5.4.2: God Daemon (/home/odbadmin/.pm2)`.
-- [ ] Canary symlink cleanup. A read-only check on 2026-10-28 found that
-      **the cleanup did not happen**. The certificate links
-      `canary-validation/tls/privkey.pem` and `.../fullchain.pem` are still
-      in `/home/odbadmin/tmp/tide-v032-codex-20261027`, pointing into
-      `/etc/letsencrypt/live/eco.odb.ntu.edu.tw/`. The store links
-      `data/tpxo9.zarr` and `data/tpxo10.zarr` from step 2 are also still
-      there. Remove the certificate links, then confirm with `ls -l`; keep
-      the store links only while that checkout is still needed.
+- [x] Canary symlink cleanup (2026-10-28). A read-only check earlier that
+      day found the earlier cleanup had not happened. Afterwards, the four
+      links in `/home/odbadmin/tmp/tide-v032-codex-20261027` were each
+      removed with `unlink`, which does not follow a link:
+      - `canary-validation/tls/privkey.pem` and
+        `canary-validation/tls/fullchain.pem`, which pointed into
+        `/etc/letsencrypt/live/eco.odb.ntu.edu.tw/`;
+      - the step 2 store links `data/tpxo9.zarr` and `data/tpxo10.zarr`.
+
+      A read-only check confirmed that none of the four remains and that no
+      symlink is left under that checkout. The type, inode, and mtime of
+      every link target were the same before and after, and the release's
+      runtime hashes were unchanged.
 - [ ] Owner authorization for the production deployment (step 4).
 
 ### Validation record
@@ -243,9 +248,11 @@ changed.
     - `restore` after a successful `deploy`: exit 0, with the original
       contents and modes.
   - The temporary directory was removed afterwards.
-- **Canary symlinks (read-only check, 2026-10-28): not cleaned up.** The
-  two certificate links and the two store links listed under "Outstanding
-  rollout checks" are still present. No certificate content was read.
+- **Canary symlinks: removed on 2026-10-28.** A read-only check found the
+  two certificate links and the two store links still present. They were
+  then removed with `unlink`, and the result was confirmed read-only (see
+  "Outstanding rollout checks"). No certificate content was read. No link
+  target was changed.
 
 Checks on VM24 on 2026-10-28, by Claude at the owner's request, using the
 PR #3 scripts at `ca304d9`. They were copied to
@@ -273,9 +280,18 @@ matched the commit. No service was stopped, started, or restarted, and no
   - The release's own manifest hashes were the same before and after.
   - The variant that deploys from an edited source clone was not run on
     VM24; local tests cover it.
-  - Cleanup: all 35 scratch files were removed one by one. The 14 empty
-    directories of `/home/odbadmin/tmp/tide-replace-rehearsal.1Xhks1` are
-    left for the owner to remove.
+  - Cleanup: all 35 scratch files were removed one by one. The empty
+    directories were removed afterwards, outside this session. A read-only
+    check later on 2026-10-28 found no
+    `/home/odbadmin/tmp/tide-replace-rehearsal.1Xhks1` and no other
+    `tide-replace-rehearsal.*` entry in `/home/odbadmin/tmp`.
+- **Release runtime hashes around the cleanup:** the 15 runtime files of
+  `/home/odbadmin/python/tide_tpxo10_atlas_v2` were hashed before and after
+  the symlink cleanup, and the two lists were identical (list digest
+  `a1de99c748a2ee1c…`). The manifest files are still the v0.3.1 hot-patch
+  versions (`conf/start_app.sh` `8ee7b44d…`,
+  `src/dask_client_manager.py` `d74c6690…`). The Tide Gunicorn PIDs are
+  still 97326/97327/97328.
 - **Production PM2 daemon, read-only:** alive as PID 3352 with an
   untruncated title (see "Outstanding rollout checks").
 - **Zarr alignment `prepare`:** passed. See "Py311 Zarr alignment".
@@ -871,13 +887,18 @@ settled and recorded here, in an approved maintenance window.
 
 ### Preconditions before any production run
 
-Every item below is open unless it is checked. The read-only checks of
-2026-10-27 and 2026-10-28 read only the crontab, scripts, configuration, logs, and `ps`.
-They did not source or run `update_mhw.sh`, ran no `pm2` command, and
-changed nothing. Their evidence is noted with each item, together with
-what it does not prove.
+Every item below is open unless it is checked. Items marked "to be
+confirmed by the MHW maintainer" are MHW's own facts and procedures. The
+Tide runbook records only the evidence found and does not treat them as
+passed.
 
-- [ ] **MHW API interpreter after a restart.**
+The read-only checks of 2026-10-27 and 2026-10-28 read only the crontab,
+scripts, configuration, logs, and `ps`. They did not source or run
+`update_mhw.sh`, ran no `pm2` command, and changed nothing. Their evidence
+is noted with each item, together with what it does not prove.
+
+- [ ] **MHW API interpreter after a restart: to be confirmed by the MHW
+      maintainer.**
       - Observed: PM2 app `mhwapi` (from `~/.pm2/dump.pm2`, saved
         2026-10-24) runs `/home/odbadmin/proj/marineheatwave/API/conf/start_app.sh`
         with `bash`, in fork mode, with `autorestart`, from working
@@ -892,7 +913,8 @@ what it does not prove.
         That depends on the `PATH` PM2 has stored for `mhwapi`. This is the
         same `PATH` dependence that Tide v0.3.2 removed from its own
         launcher.
-- [ ] **`update_mhw.sh` cron interpreter.**
+- [ ] **`update_mhw.sh` cron interpreter: to be confirmed by the MHW
+      maintainer.**
       - Observed: crontab entry `50 4 18 * *`, at 04:50 server time on the
         18th of each month. The crontab sets no `PATH` or `SHELL`. The next
         run is due 2026-11-18 04:50.
@@ -908,15 +930,13 @@ what it does not prove.
       - Observed: the last run (2026-10-18 04:50–04:51) appended to
         `data/mhw.zarr` with xarray and Dask arrays. It uses no distributed
         Dask client.
-      - Observed on 2026-10-28, after the owner edited the script: it no
-        longer restarts nginx. It still initializes pyenv, runs
-        `pyenv activate py311`, runs `update_mhw.py` with the pyenv shim,
-        and ends with `pm2 restart mhwapi`. So this cron is still a monthly
-        MHW restart, and the window must not overlap it. The crontab entry
-        is unchanged.
+      - Confirmed owner change (observed 2026-10-28): `update_mhw.sh` no
+        longer restarts nginx. It still ends with `pm2 restart mhwapi`, so
+        this cron is still a monthly MHW restart, and the window must not
+        overlap it. The crontab entry is unchanged.
       - The interpreter conclusion is unchanged: py311 by inference from
         pyenv's configuration, not directly observed.
-- [ ] **MHW restart procedure.**
+- [ ] **MHW restart procedure: to be confirmed by the MHW maintainer.**
       - No maintainer procedure was found. The MHW `README.md` and
         `change_log.md` describe none; the change log only mentions a PM2
         `pre_stop`.
@@ -928,7 +948,8 @@ what it does not prove.
         running setup: it starts `dask-worker` on plain `tcp://`, and it
         has a `pre_stop` that runs `kill -9` on `mhw_app`.
       - Unconfirmed. The MHW maintainer must supply the procedure.
-- [ ] **MHW health check and smoke.**
+- [ ] **MHW health check and smoke: to be confirmed by the MHW
+      maintainer.**
       - There is no health endpoint. The read-only GET routes are
         `/api/mhw` (JSON), `/api/mhw/csv`, `/api/mhw/plot`, and
         `/api/swagger/mhw`.
@@ -939,9 +960,9 @@ what it does not prove.
         does.
       - Unconfirmed: no query or expected result is defined. The MHW
         maintainer must supply them.
-- [ ] **Maintenance window.** It is not set. It must avoid the MHW cron
-      (04:50 on the 18th, with its own MHW restart). The owner and the MHW
-      maintainer agree on it.
+- [ ] **Maintenance window: to be agreed by the owner and the MHW
+      maintainer.** It is not set. It must avoid the MHW cron (04:50 on the
+      18th, which also restarts MHW).
 - [ ] **Dask scheduler and worker.** They run on py311 without `--reload`
       and keep the old Zarr code in memory until they restart. The code is
       identical, so a later restart under the host runbook is enough.
