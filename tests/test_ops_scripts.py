@@ -722,6 +722,13 @@ case "$sub" in
       conflicts) conflicts; exit 1 ;;
       clean) echo "No broken requirements found."; exit 0 ;;
       clean-extra) echo "No broken requirements found."; echo "extra"; exit 0 ;;
+      clean-blank) printf 'No broken requirements found.\n\n'; exit 0 ;;
+      clean-nonl) printf 'No broken requirements found.'; exit 0 ;;
+      clean-crlf) printf 'No broken requirements found.\r\n'; exit 0 ;;
+      clean-space) printf 'No broken requirements found. \n'; exit 0 ;;
+      clean-leading) printf '\nNo broken requirements found.\n'; exit 0 ;;
+      conflicts-blank) conflicts; echo; exit 1 ;;
+      conflicts-nonl) c=$(conflicts); printf '%s' "$c"; exit 1 ;;
       all-kinds)
         echo "foo 1.0 requires bar, which is not installed."
         conflicts
@@ -869,7 +876,12 @@ def test_align_pip_check_accepts_pip_check_results(align, check, record):
 # unknown or mixed output, nothing at all, a warning on stderr (pip exits 1
 # on unreadable metadata), or extra output after a clean result.
 BAD_CHECKS = ["traceback-stdout", "traceback-stderr", "unknown", "mixed",
-              "empty", "warning", "clean-extra"]
+              "empty", "warning", "clean-extra",
+              # exit 0 must be exactly "No broken requirements found.\n"
+              "clean-blank", "clean-nonl", "clean-crlf", "clean-space",
+              "clean-leading",
+              # conflict lines must be newline-terminated, with no blank line
+              "conflicts-blank", "conflicts-nonl"]
 
 
 @pytest.mark.parametrize("check", BAD_CHECKS)

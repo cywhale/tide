@@ -812,21 +812,72 @@ in an approved maintenance window.
 
 ### Preconditions before any production run
 
-Each item below is open. Evidence from the read-only check is noted where
-there is some; none of it is verified.
+Each item below is open. The read-only checks of 2026-10-27 and
+2026-10-28 read only the crontab, scripts, configuration, logs, and `ps`.
+They did not source or run `update_mhw.sh`, ran no `pm2` command, and
+changed nothing. Their evidence is noted with each item, together with
+what it does not prove.
 
-- [ ] **MHW API interpreter.** On 2026-10-27, `ps` showed the `mhw_app`
-      Gunicorn running from the py311 Gunicorn with `--reload`, with working
-      directory `/home/odbadmin/proj/marineheatwave/API`. Still to confirm:
-      that its PM2 entry or launcher starts it with py311 again after a
-      restart.
-- [ ] **`update_mhw.sh` cron interpreter.** The crontab runs
-      `/home/odbadmin/backup/script/update_mhw.sh` at 04:50 on the 18th of
-      each month. Which Python it uses is **not known**: the script was not
-      read. Its `update_mhw.py` writes the MHW store with `to_zarr`, so if
-      it uses py311, the window must avoid that run.
-- [ ] **MHW maintenance window, restart, and smoke procedure.** The MHW
-      maintainer has to supply these. Tide's tooling covers only Tide.
+- [ ] **MHW API interpreter after a restart.**
+      - Observed: PM2 app `mhwapi` (from `~/.pm2/dump.pm2`, saved
+        2026-10-24) runs `/home/odbadmin/proj/marineheatwave/API/conf/start_app.sh`
+        with `bash`, in fork mode, with `autorestart`, from working
+        directory `.../marineheatwave/API`.
+      - Observed: that launcher exports the `mhw-client` Dask TLS identity,
+        then starts a bare `gunicorn mhw_app:app ... -b 127.0.0.1:8030
+        --reload`. It does not use `exec`, so PM2's PID is the `bash`
+        launcher and Gunicorn is its child.
+      - Observed: the running Gunicorn (started 2026-10-24) is
+        `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn`.
+      - Not proven: which `gunicorn` the launcher finds after a restart.
+        That depends on the `PATH` PM2 has stored for `mhwapi`. This is the
+        same `PATH` dependence that Tide v0.3.2 removed from its own
+        launcher.
+- [ ] **`update_mhw.sh` cron interpreter.**
+      - Observed: crontab entry `50 4 18 * *`, at 04:50 server time on the
+        18th of each month. The crontab sets no `PATH` or `SHELL`. The next
+        run is due 2026-11-18 04:50.
+      - Observed: the script initializes pyenv, runs `pyenv activate
+        py311`, and then runs `update_mhw.py` with
+        `/home/odbadmin/.pyenv/shims/python`.
+      - Observed: the pyenv global version is `py311`, pyenv-virtualenv is
+        installed, and there is no `.python-version` in the API directory
+        or any parent.
+      - Inferred, not observed: every way pyenv can resolve that shim leads
+        to py311. The log records only the shim path, never the
+        interpreter it resolved to.
+      - Observed: the last run (2026-10-18 04:50–04:51) appended to
+        `data/mhw.zarr` with xarray and Dask arrays. It uses no distributed
+        Dask client.
+      - Observed: the script ends by running `pm2 restart mhwapi` and
+        restarting nginx, so this cron is also a monthly MHW restart. The
+        window must not overlap it.
+- [ ] **MHW restart procedure.**
+      - No maintainer procedure was found. The MHW `README.md` and
+        `change_log.md` describe none; the change log only mentions a PM2
+        `pre_stop`.
+      - The only restart in use is the cron's own `pm2 restart mhwapi`.
+      - Tide's `pm2_restart_check.sh` is not validated for `mhwapi`. Its
+        `--expect-exec` check reads the command line of PM2's PID, which
+        for MHW is the `bash` launcher, not Gunicorn.
+      - The repository's `conf/ecosystem.config.js` does not match the
+        running setup: it starts `dask-worker` on plain `tcp://`, and it
+        has a `pre_stop` that runs `kill -9` on `mhw_app`.
+      - Unconfirmed. The MHW maintainer must supply the procedure.
+- [ ] **MHW health check and smoke.**
+      - There is no health endpoint. The read-only GET routes are
+        `/api/mhw` (JSON), `/api/mhw/csv`, `/api/mhw/plot`, and
+        `/api/swagger/mhw`.
+      - nginx proxies the public 443 paths `/api/mhw` and `/api/swagger/mhw`
+        on `eco.odb.ntu.edu.tw` to `https://127.0.0.1:8030`.
+      - The certificate served on 8030 (`API/conf/fullchain.pem`) expired
+        on 2023-08-25, so a verified smoke has to go through 443, as Tide's
+        does.
+      - Unconfirmed: no query or expected result is defined. The MHW
+        maintainer must supply them.
+- [ ] **Maintenance window.** It is not set. It must avoid the MHW cron
+      (04:50 on the 18th, with its own MHW restart). The owner and the MHW
+      maintainer agree on it.
 - [ ] **Dask scheduler and worker.** They run on py311 without `--reload`
       and keep the old Zarr code in memory until they restart. The code is
       identical, so a later restart under the host runbook is enough.
@@ -862,9 +913,11 @@ runs on failure.
 
 `pip check` is accepted only in one of the two forms pip 25.3 produces:
 
-- exit 0 with exactly `No broken requirements found.`;
-- exit 1 with one or more conflict lines and nothing else. Each line must
-  be one of `X v requires Y, which is not installed.`,
+- exit 0 with stdout exactly the one line `No broken requirements found.`
+  and its newline, compared byte for byte, so that no extra blank line,
+  missing newline, `\r`, or trailing space gets through;
+- exit 1 with one or more newline-terminated conflict lines, no blank line,
+  and nothing else. Each line must be one of `X v requires Y, which is not installed.`,
   `X v has requirement R, but you have Y v.`, or
   `X v is not supported on this platform`.
 

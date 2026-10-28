@@ -71,19 +71,23 @@ CONFLICT_RE=(
 )
 
 # pip_check NAME: `pip check` stdout plus its exit status into DIR/NAME,
-# accepted only as one of pip check's two results: exit 0 with exactly
-# "No broken requirements found.", or exit 1 with one or more conflict lines
-# and nothing else. Both need empty stderr. A traceback, empty or unknown
+# accepted only as one of pip check's two results: exit 0 with stdout exactly
+# the one line "No broken requirements found.\n", or exit 1 with one or more
+# newline-terminated conflict lines and nothing else (no blank lines). Both
+# need empty stderr. A traceback, empty or unknown
 # output, a warning (for example unreadable metadata, which also exits 1), or
 # any other exit means pip check itself failed: DIR/NAME is not written, and
 # the output is kept as NAME.rejected and NAME.stderr for inspection.
 pip_check() {
   local out="$DIR/$1" rc=0 ok=no
   pip_ check > "$out.tmp" 2> "$out.stderr" || rc=$?
+  # Compare bytes, not $(...): command substitution drops trailing newlines,
+  # so extra blank lines or a missing final newline would pass unnoticed.
   if [ ! -s "$out.stderr" ]; then
     case "$rc" in
-      0) [ "$(cat "$out.tmp")" = "No broken requirements found." ] && ok=yes ;;
-      1) [ -s "$out.tmp" ] && ! grep -Evqx "${CONFLICT_RE[@]}" "$out.tmp" && ok=yes ;;
+      0) printf 'No broken requirements found.\n' | cmp -s - "$out.tmp" && ok=yes ;;
+      1) [ -s "$out.tmp" ] && [ -z "$(tail -c 1 "$out.tmp")" ] \
+           && ! grep -Evqx "${CONFLICT_RE[@]}" "$out.tmp" && ok=yes ;;
     esac
   fi
   if [ "$ok" != yes ]; then
