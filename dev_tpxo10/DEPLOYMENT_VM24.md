@@ -150,20 +150,27 @@ Results so far are in "Validation record" below.
 - [x] Canary certificate: SAN, expiry, and key match recorded. The curl
       version is implied by `https_smoke.sh` passing, since it refuses curl
       older than 7.76; the exact version was not recorded.
-- [ ] `conf/replace_runtime_files.sh` rehearsed on a scratch copy on VM24
-      (see "Production deployment procedure"). A local sandbox rehearsal
-      passed after a fix (see the record); the VM24 run, with GNU
-      coreutils and bash 5, is not yet reported.
+- [x] `conf/replace_runtime_files.sh` rehearsed on a scratch copy on VM24
+      (2026-10-28, script from PR #3 at `ca304d9`, bash 5.2 with GNU
+      coreutils): `deploy`, refusal of a reused `--work`, refusal of a
+      staged copy altered after its check, and `restore` all passed. The
+      production files were unchanged; see the record.
 - [x] Canary for the TPXO10 and TPXO9 stores: parts A, B, and C passed.
 - [x] PM2 environment validation with an isolated `PM2_HOME`, including
       the `pm2_restart_check.sh` rehearsal on the dummy app.
-- [ ] Production daemon liveness, read-only:
+- [x] Production daemon liveness, read-only (2026-10-28):
       `pm2_restart_check.sh --daemon-only --pm2-home /home/odbadmin/.pm2`
-      reports the production daemon's PID. It never calls `pm2`, and it
-      confirms that daemon's title is not truncated (see "PM2 environment
-      validation").
-- [ ] Canary symlink cleanup confirmed read-only. The cleanup command was
-      sent, but its completion was not confirmed.
+      printed `daemon alive: PID 3352` and `OK daemon-only: pm2 was not
+      called`, and exited 0. `ps` shows the full, untruncated title
+      `PM2 v5.4.2: God Daemon (/home/odbadmin/.pm2)`.
+- [ ] Canary symlink cleanup. A read-only check on 2026-10-28 found that
+      **the cleanup did not happen**. The certificate links
+      `canary-validation/tls/privkey.pem` and `.../fullchain.pem` are still
+      in `/home/odbadmin/tmp/tide-v032-codex-20261027`, pointing into
+      `/etc/letsencrypt/live/eco.odb.ntu.edu.tw/`. The store links
+      `data/tpxo9.zarr` and `data/tpxo10.zarr` from step 2 are also still
+      there. Remove the certificate links, then confirm with `ls -l`; keep
+      the store links only while that checkout is still needed.
 - [ ] Owner authorization for the production deployment (step 4).
 
 ### Validation record
@@ -236,8 +243,42 @@ changed.
     - `restore` after a successful `deploy`: exit 0, with the original
       contents and modes.
   - The temporary directory was removed afterwards.
-- **Canary symlinks:** a cleanup command was sent, but its completion was
-  not confirmed. Treat them as possibly present until checked read-only.
+- **Canary symlinks (read-only check, 2026-10-28): not cleaned up.** The
+  two certificate links and the two store links listed under "Outstanding
+  rollout checks" are still present. No certificate content was read.
+
+Checks on VM24 on 2026-10-28, by Claude at the owner's request, using the
+PR #3 scripts at `ca304d9`. They were copied to
+`/home/odbadmin/tmp/tide-pr3-ca304d9-ops/conf/`, and their sha256 hashes
+matched the commit. No service was stopped, started, or restarted, and no
+`pm2` command was run.
+
+- **`replace_runtime_files.sh` scratch rehearsal: passed.**
+  - `REL` was a new `mktemp` directory under `/home/odbadmin/tmp`, on the
+    same filesystem as the release (device 64512). The rehearsal script
+    refused any `REL` that resolved to the release directory.
+  - `REL` held copies of the release's 15 runtime files, made with
+    `cp -p`; no `*.pem` was copied. `SRC` was the merged checkout
+    `/home/odbadmin/tmp/tide-v032-codex-20261027` at `ef780ea`, with no
+    tracked changes; it was only read.
+  - `deploy`: exit 0. Both manifest files matched the commit blobs, and
+    modes 775 and 664 were kept. The other runtime files were unchanged, and
+    `staging/` was removed.
+  - The same `--work` again: exit 1, "already exists". Hashes, modes, and
+    inodes in `REL` were unchanged.
+  - `restore`: exit 0. `REL` was back to its original contents and modes.
+  - A staged copy altered after its check (through a `chmod` wrapper on
+    `PATH`): exit 1, "changed after verification; nothing was replaced".
+    Hashes, modes, and inodes in `REL` were unchanged.
+  - The release's own manifest hashes were the same before and after.
+  - The variant that deploys from an edited source clone was not run on
+    VM24; local tests cover it.
+  - Cleanup: all 35 scratch files were removed one by one. The 14 empty
+    directories of `/home/odbadmin/tmp/tide-replace-rehearsal.1Xhks1` are
+    left for the owner to remove.
+- **Production PM2 daemon, read-only:** alive as PID 3352 with an
+  untruncated title (see "Outstanding rollout checks").
+- **Zarr alignment `prepare`:** passed. See "Py311 Zarr alignment".
 
 ## Production deployment procedure
 
@@ -761,13 +802,31 @@ hot patch made the launcher prefer py311, and the v0.3.2 target removes the
 
 ## Py311 Zarr alignment
 
-Status: **proposed, not executed.** The owner authorized aligning the
-shared py311 Zarr from 2.18.6 to the `uv.lock` pin 2.18.7, changing no
-other package. This is a production change to an interpreter shared by
-several services. The items under "Preconditions before any production
-run" are prerequisites, not formalities: none is settled yet. Do not run
-`apply` or `rollback` on VM24 until every one is settled and recorded here,
-in an approved maintenance window.
+Status: **`prepare` done on 2026-10-28; `apply` not run.** The owner
+accepted aligning only the shared py311 Zarr from 2.18.6 to the `uv.lock`
+pin 2.18.7, changing no other package. This is a production change to an
+interpreter shared by several services. The items under "Preconditions
+before any production run" are prerequisites, not formalities, and most are
+still open. Do not run `apply` or `rollback` on VM24 until every one is
+settled and recorded here, in an approved maintenance window.
+
+`prepare` on VM24 (2026-10-28 10:34 +0800) used
+`/home/odbadmin/tmp/tide-pr3-ca304d9-ops/conf/py311_zarr_align.sh` from
+`ca304d9`. It exited 0 and py311 was unchanged: zarr still imports as
+2.18.6. Its artifacts are in `/home/odbadmin/tmp/zarr-align-20261028T103416`:
+
+- `freeze-before.txt`: 234 lines, including `zarr==2.18.6`. Its stderr was
+  empty; the orphaned dist-info directories caused no warning.
+- `pip-check-before.txt`: exit 1 with four existing conflicts, all in pip
+  check's format and accepted. `odbargo-app` and `connectorx` require
+  `numpy<2`, `dask-expr` requires `dask==2024.12.0`, and `argopy` requires
+  `xarray<2024.3`. None involves zarr. The first two did not appear in the
+  isolated run, which could not reproduce those two packages.
+- `dry-run.txt`: `Would install zarr-2.18.7` and nothing else.
+- `wheels/`: zarr 2.18.7 (sha256 `ac3dc403…`) and 2.18.6 (sha256
+  `a5334311…`), both matching the hashes pinned in the script.
+- `prepared`: the marker that `apply` requires. `apply` takes a new freeze
+  and refuses to install if py311 differs from this snapshot.
 
 ### Isolated validation (2026-10-27, local, not on VM24)
 
@@ -812,8 +871,8 @@ in an approved maintenance window.
 
 ### Preconditions before any production run
 
-Each item below is open. The read-only checks of 2026-10-27 and
-2026-10-28 read only the crontab, scripts, configuration, logs, and `ps`.
+Every item below is open unless it is checked. The read-only checks of
+2026-10-27 and 2026-10-28 read only the crontab, scripts, configuration, logs, and `ps`.
 They did not source or run `update_mhw.sh`, ran no `pm2` command, and
 changed nothing. Their evidence is noted with each item, together with
 what it does not prove.
@@ -849,9 +908,14 @@ what it does not prove.
       - Observed: the last run (2026-10-18 04:50–04:51) appended to
         `data/mhw.zarr` with xarray and Dask arrays. It uses no distributed
         Dask client.
-      - Observed: the script ends by running `pm2 restart mhwapi` and
-        restarting nginx, so this cron is also a monthly MHW restart. The
-        window must not overlap it.
+      - Observed on 2026-10-28, after the owner edited the script: it no
+        longer restarts nginx. It still initializes pyenv, runs
+        `pyenv activate py311`, runs `update_mhw.py` with the pyenv shim,
+        and ends with `pm2 restart mhwapi`. So this cron is still a monthly
+        MHW restart, and the window must not overlap it. The crontab entry
+        is unchanged.
+      - The interpreter conclusion is unchanged: py311 by inference from
+        pyenv's configuration, not directly observed.
 - [ ] **MHW restart procedure.**
       - No maintainer procedure was found. The MHW `README.md` and
         `change_log.md` describe none; the change log only mentions a PM2
@@ -895,12 +959,11 @@ what it does not prove.
       The chains below show only the order of the script, Tide's restart
       check, and Tide's smoke. They do not choose between these options,
       and they do not include MHW. Revise them once the owner decides.
-- [ ] **Production `pip check` output.** It has never been run on VM24.
-      The script accepts only pip check's two result formats (see
-      "Procedure"). If `prepare` rejects production's output, for example
-      a metadata warning caused by the orphaned dist-info directories, stop
-      and report it with `pip-check-before.txt.rejected` and
-      `pip-check-before.txt.stderr`. Never loosen the check.
+- [x] **Production `pip check` output** (2026-10-28 `prepare`): exit 1
+      with four conflict lines in pip check's format and empty stderr, so
+      it was accepted (see the status above). If a later `apply` or
+      `rollback` gets output the script rejects, stop and report it with
+      the `.rejected` and `.stderr` files. Never loosen the check.
 
 ### Procedure
 
