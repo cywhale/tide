@@ -600,6 +600,8 @@ def test_service_order_stays_a_proposal_until_approved():
         assert overclaim not in flat, overclaim
     assert "stopping the APIs does not remove the import risk" in flat
     assert "The impact on the Dask worker is unknown under both options." in flat
+    assert "Neither order is shown to be safe." in flat
+    assert "It shows one moment, not what will arrive during a later window." in flat
     sheet = " ".join(TEXT[TEXT.index("### Production run sheet"):].split())
     assert "Do not run `apply` while any item is open." in sheet
     assert "- [ ] Owner: approve the service order" in sheet

@@ -971,7 +971,9 @@ plus `pyenv sh-activate`, whose output was printed and never evaluated. No
     (`lib/God/ActionMethods.js`). `pm2_restart_check.sh` therefore cannot
     verify starting a stopped app.
 - **Other py311 processes:** the Dask scheduler (PID 96637) and worker (PID
-  101867 and its children), without `--reload`. Nothing else runs on py311.
+  101867 and its children), without `--reload`. They are the PM2 apps
+  `dask-scheduler` and `dask-worker`, both with `autorestart` true. Nothing
+  else runs on py311.
 
 ### Service handling during the install
 
@@ -981,7 +983,7 @@ risk of client errors.
 |  | Install while running, then restart (proposed, not validated) | Stop Tide and MHW, install, start |
 |---|---|---|
 | Client impact | Workers reload during the install, then two controlled restarts. Requests can fail during both. | Both APIs are down from the stop to the start. |
-| Race | pip removes the installed `zarr` package and writes every file of the new one, not only `version.py`. In between, the package on disk is incomplete, and the `--reload` polling of Tide and MHW workers can fire. A worker that starts then can fail to import Zarr or import a mix, and clients get errors. | With both APIs stopped, no API worker reloads during the swap. The Dask scheduler and worker stay up on py311 (see below), so stopping the APIs does not remove the import risk. |
+| Race | pip removes the installed `zarr` package and writes every file of the new one, not only `version.py`. In between, the package on disk is incomplete, and the `--reload` polling of Tide and MHW workers can fire. A worker that starts then can fail to import Zarr or import a mix, and clients get errors. MHW data requests in that period also run Zarr code on the Dask scheduler and worker (see below). | With both APIs stopped, no API worker reloads, and MHW, the only task submitter found, sends no work to Dask. The Dask scheduler and worker stay up on py311, so stopping the APIs does not remove the import risk (see below). |
 | Recovery | Expected from the code and configuration below, not demonstrated. | Depends on a start procedure that does not exist yet. |
 | Tooling | Existing scripts: `py311_zarr_align.sh`, then `pm2_restart_check.sh` (no `--update-env`; it checks the new PID, restart count +1, stability, and executable). That check has run against `tide` in isolation and never against the real `mhwapi`. | Needs `pm2 stop` and `pm2 start` for both apps. `pm2_restart_check.sh` would report a correct start as a failure, because the restart count does not rise for a stopped app. No start check exists, and stopping `tide` runs its broad `pre_stop`. |
 | On failure | The `&&` chain stops at the first failed check, and the owner decides. | Manual. A failed start leaves an API down. |
@@ -1003,12 +1005,65 @@ code and PM2's dump. None of it has been observed during a package swap.
 - A worker that imported a partial package but kept running is not replaced
   by any of this. Only the controlled restarts after `apply` replace it.
 
+#### Dask and Zarr during the install (read-only, 2026-10-28)
+
 The Dask scheduler and worker stay up under either option. They run on
-py311 without `--reload`, so the swap does not restart them, but a worker
-that runs a task or imports a module during the swap may load Zarr from the
-incomplete package. Whether the worker has Zarr loaded, and whether any
-client submits tasks during the window, has not been checked. The impact on
-the Dask worker is unknown under both options.
+py311 without `--reload`, so the swap itself does not restart them.
+
+Source evidence (MHW at `920f0da` with no local changes; the Tide release
+directory):
+
+- MHW opens `data/mhw.zarr` with `chunks='auto'` and registers its Dask
+  client with `set_as_default=True`. Every `/api/mhw` and `/api/mhw/csv`
+  request calls `.load()` on that data. With the client connected, the read
+  runs as a Dask graph:
+  - the scheduler deserializes it (`update_graph` in distributed 2025.3.0);
+  - the worker runs the `getitem` tasks, which read the chunks through Zarr.
+
+  Without a client, MHW reads in its own process.
+- Tide also creates a default client in each worker, but it opens its store
+  with `chunks=None` and submits nothing.
+- `update_mhw.py` creates no Dask client.
+
+Snapshot at 2026-10-28T15:19:58Z. It shows one moment, not what will arrive
+during a later window.
+
+- The scheduler had 4 clients. `ss` shows they are the two MHW and two Tide
+  Gunicorn workers; no other process was connected. There was one worker,
+  idle, and 0 tasks in any state (`/json/counts.json` and `/metrics` on
+  `127.0.0.1:8787`).
+- Since the scheduler started on 2026-10-24, nearly all of its task compute
+  time (about 406 s) is in `open_dataset-…-getitem` prefixes named after the
+  MHW variables.
+- numcodecs' extension modules are loaded in the scheduler, the Dask worker
+  process, and an MHW and a Tide worker (`/proc/<pid>/maps`).
+  - Zarr imports numcodecs, so Zarr is probably loaded in each. This is an
+    inference: pure-Python modules do not appear in `maps`.
+  - Zarr 2.18.6 also imports some modules inside functions. Whether a data
+    request reaches one that is not yet loaded was not determined.
+- The worker runs under a nanny with an 8 GB memory limit. A restart by the
+  nanny or by PM2 starts a new process; whether that start imports Zarr was
+  not checked.
+- MHW data requests in the nginx log:
+  - 26 October: 369, of which 362 came from one client in one hour;
+  - 27 October: 239, of which 232 came in one hour;
+  - 28 October up to 23:12: 3.
+
+  Bursts arrive at different hours.
+
+What this means:
+
+- **APIs running during `apply`:** an MHW data request during the swap runs
+  Zarr code in the MHW worker, the scheduler, and the Dask worker. Any Zarr
+  module not yet loaded in one of them would be read from the incomplete
+  package. Requests can arrive at any hour, sometimes hundreds an hour.
+- **APIs stopped, Dask running:** MHW is the only task submitter found in the
+  source and in the snapshot, so stopping it removes the known source of
+  Zarr work on Dask. The snapshot does not show that nothing else will
+  connect: any process with a valid client certificate can. A scheduler or
+  worker restart during the swap is also not covered.
+- The impact on the Dask worker is unknown under both options. Neither order
+  is shown to be safe.
 
 **Proposed order, not validated: install while running, then immediately
 restart Tide and then MHW**, each through `pm2_restart_check.sh` and each
