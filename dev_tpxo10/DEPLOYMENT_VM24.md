@@ -983,7 +983,7 @@ risk of client errors.
 |  | Install while running, then restart (proposed, not validated) | Stop Tide and MHW, install, start |
 |---|---|---|
 | Client impact | Workers reload during the install, then two controlled restarts. Requests can fail during both. | Both APIs are down from the stop to the start. |
-| Race | pip removes the installed `zarr` package and writes every file of the new one, not only `version.py`. In between, the package on disk is incomplete, and the `--reload` polling of Tide and MHW workers can fire. A worker that starts then can fail to import Zarr or import a mix, and clients get errors. MHW data requests in that period also run Zarr code on the Dask scheduler and worker (see below). | With both APIs stopped, no API worker reloads, and MHW, the only task submitter found, sends no work to Dask. The Dask scheduler and worker stay up on py311, so stopping the APIs does not remove the import risk (see below). |
+| Race | pip removes the installed `zarr` package and writes every file of the new one, not only `version.py`. In between, the package on disk is incomplete, and the `--reload` polling of Tide and MHW workers can fire. A worker that starts then can fail to import Zarr or import a mix, and clients get errors. MHW data requests in that period also send Dask graphs with Zarr-backed reads, which the Dask worker runs (see below). | With both APIs stopped, no API worker reloads, and MHW, the only task submitter found, sends no work to Dask. The Dask scheduler and worker stay up on py311, so stopping the APIs does not remove the import risk (see below). |
 | Recovery | Expected from the code and configuration below, not demonstrated. | Depends on a start procedure that does not exist yet. |
 | Tooling | Existing scripts: `py311_zarr_align.sh`, then `pm2_restart_check.sh` (no `--update-env`; it checks the new PID, restart count +1, stability, and executable). That check has run against `tide` in isolation and never against the real `mhwapi`. | Needs `pm2 stop` and `pm2 start` for both apps. `pm2_restart_check.sh` would report a correct start as a failure, because the restart count does not rise for a stopped app. No start check exists, and stopping `tide` runs its broad `pre_stop`. |
 | On failure | The `&&` chain stops at the first failed check, and the owner decides. | Manual. A failed start leaves an API down. |
@@ -1053,10 +1053,11 @@ during a later window.
 
 What this means:
 
-- **APIs running during `apply`:** an MHW data request during the swap runs
-  Zarr code in the MHW worker, the scheduler, and the Dask worker. Any Zarr
-  module not yet loaded in one of them would be read from the incomplete
-  package. Requests can arrive at any hour, sometimes hundreds an hour.
+- **APIs running during `apply`:** an MHW data request during the swap makes
+  MHW submit a Dask graph with Zarr-backed reads. The scheduler deserializes
+  and schedules it, and the Dask worker runs the read tasks. Whether any of
+  these processes loads a not-yet-loaded Zarr module during the swap is
+  unknown. Requests can arrive at any hour, sometimes hundreds an hour.
 - **APIs stopped, Dask running:** MHW is the only task submitter found in the
   source and in the snapshot, so stopping it removes the known source of
   Zarr work on Dask. The snapshot does not show that nothing else will

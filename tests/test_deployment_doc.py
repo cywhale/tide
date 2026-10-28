@@ -596,7 +596,7 @@ def test_service_order_stays_a_proposal_until_approved():
     for overclaim in ("(recommended)", "Recommendation:", "race is bounded",
                       "Validated tools only", "restart failed workers",
                       "No running process imports Zarr",
-                      "identical 2.18.6 code"):
+                      "identical 2.18.6 code", "Zarr code"):
         assert overclaim not in flat, overclaim
     assert "stopping the APIs does not remove the import risk" in flat
     assert "The impact on the Dask worker is unknown under both options." in flat
