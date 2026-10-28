@@ -981,7 +981,7 @@ risk of client errors.
 |  | Install while running, then restart (proposed, not validated) | Stop Tide and MHW, install, start |
 |---|---|---|
 | Client impact | Workers reload during the install, then two controlled restarts. Requests can fail during both. | Both APIs are down from the stop to the start. |
-| Race | pip removes the installed `zarr` package and writes every file of the new one, not only `version.py`. In between, the package on disk is incomplete, and the `--reload` polling of Tide and MHW workers can fire. A worker that starts then can fail to import Zarr or import a mix, and clients get errors. | No running process imports Zarr during the swap. |
+| Race | pip removes the installed `zarr` package and writes every file of the new one, not only `version.py`. In between, the package on disk is incomplete, and the `--reload` polling of Tide and MHW workers can fire. A worker that starts then can fail to import Zarr or import a mix, and clients get errors. | With both APIs stopped, no API worker reloads during the swap. The Dask scheduler and worker stay up on py311 (see below), so stopping the APIs does not remove the import risk. |
 | Recovery | Expected from the code and configuration below, not demonstrated. | Depends on a start procedure that does not exist yet. |
 | Tooling | Existing scripts: `py311_zarr_align.sh`, then `pm2_restart_check.sh` (no `--update-env`; it checks the new PID, restart count +1, stability, and executable). That check has run against `tide` in isolation and never against the real `mhwapi`. | Needs `pm2 stop` and `pm2 start` for both apps. `pm2_restart_check.sh` would report a correct start as a failure, because the restart count does not rise for a stopped app. No start check exists, and stopping `tide` runs its broad `pre_stop`. |
 | On failure | The `&&` chain stops at the first failed check, and the owner decides. | Manual. A failed start leaves an API down. |
@@ -1002,6 +1002,13 @@ code and PM2's dump. None of it has been observed during a package swap.
   PM2 never manages individual workers.
 - A worker that imported a partial package but kept running is not replaced
   by any of this. Only the controlled restarts after `apply` replace it.
+
+The Dask scheduler and worker stay up under either option. They run on
+py311 without `--reload`, so the swap does not restart them, but a worker
+that runs a task or imports a module during the swap may load Zarr from the
+incomplete package. Whether the worker has Zarr loaded, and whether any
+client submits tasks during the window, has not been checked. The impact on
+the Dask worker is unknown under both options.
 
 **Proposed order, not validated: install while running, then immediately
 restart Tide and then MHW**, each through `pm2_restart_check.sh` and each
@@ -1024,9 +1031,10 @@ followed by its smoke.
   - recording the errors seen and the recovery.
 
   It has not been done.
-- Do not restart the Dask scheduler and worker in this window. They hold the
-  identical 2.18.6 code in memory; restart them later under the host
-  runbook.
+- Do not restart the Dask scheduler and worker in this window; restart them
+  later under the host runbook. Until then they keep whatever Zarr modules
+  they have already loaded, and their exposure during the swap is unknown
+  (see above).
 - This order is **not approved**. The owner must approve it, or choose
   another, and the MHW maintainer must agree to the `mhwapi` restart and
   the smoke below. The owner's Zarr-only authorization does not approve this
@@ -1154,7 +1162,8 @@ proposal.
 - [ ] MHW maintainer: agree to the `mhwapi` restart, which has never run
       against the real app, and to the smoke expectations.
 - [ ] Owner: when to restart the Dask scheduler and worker. Recommended:
-      after this window.
+      after this window. They stay up during the install under either
+      service order, and the impact of the swap on the worker is unknown.
 - [ ] Reviewer: approve PR #3 (scripts and this run sheet).
 - [ ] Operator: a checkout `SRC` of the approved commit on VM24, with no
       tracked changes. The sha256 of its `conf/py311_zarr_align.sh`,

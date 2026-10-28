@@ -594,8 +594,12 @@ def test_service_order_stays_a_proposal_until_approved():
     assert "This order is **not approved**" in flat
     assert "never against the real `mhwapi`" in flat
     for overclaim in ("(recommended)", "Recommendation:", "race is bounded",
-                      "Validated tools only", "restart failed workers"):
+                      "Validated tools only", "restart failed workers",
+                      "No running process imports Zarr",
+                      "identical 2.18.6 code"):
         assert overclaim not in flat, overclaim
+    assert "stopping the APIs does not remove the import risk" in flat
+    assert "The impact on the Dask worker is unknown under both options." in flat
     sheet = " ".join(TEXT[TEXT.index("### Production run sheet"):].split())
     assert "Do not run `apply` while any item is open." in sheet
     assert "- [ ] Owner: approve the service order" in sheet
