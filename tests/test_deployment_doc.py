@@ -584,3 +584,18 @@ def test_mhw_proc_check_fails_on_the_wrong_process(mhw, ps, ss, why):
     r = run(f'mhw_check "{tmp}/out"')
     assert r.returncode != 0 and why in r.stderr, r.stderr
     assert not (tmp / "out").exists()     # no GET after a failed process check
+
+
+def test_service_order_stays_a_proposal_until_approved():
+    section = TEXT[TEXT.index("### Service handling during the install"):
+                   TEXT.index("### MHW restart and post-restart smoke")]
+    flat = " ".join(section.split())
+    assert "Proposed order, not validated" in flat
+    assert "This order is **not approved**" in flat
+    assert "never against the real `mhwapi`" in flat
+    for overclaim in ("(recommended)", "Recommendation:", "race is bounded",
+                      "Validated tools only", "restart failed workers"):
+        assert overclaim not in flat, overclaim
+    sheet = " ".join(TEXT[TEXT.index("### Production run sheet"):].split())
+    assert "Do not run `apply` while any item is open." in sheet
+    assert "- [ ] Owner: approve the service order" in sheet

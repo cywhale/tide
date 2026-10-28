@@ -975,39 +975,70 @@ plus `pyenv sh-activate`, whose output was printed and never evaluated. No
 
 ### Service handling during the install
 
-|  | Install while running, then restart (recommended) | Stop Tide and MHW, install, start |
+Neither option has been exercised on VM24 or in a rehearsal. Both carry a
+risk of client errors.
+
+|  | Install while running, then restart (proposed, not validated) | Stop Tide and MHW, install, start |
 |---|---|---|
-| Client impact | Workers reload during the install (seconds), then two controlled restarts. In-flight requests can fail. | Both APIs are down from the stop to the start. |
-| Race | A worker that restarts while pip swaps Zarr's files can fail to import it. Gunicorn then exits and PM2 restarts it, or a worker runs with a half-imported module until the controlled restart replaces it. | None: no process imports Zarr during the swap. |
-| Tooling | Validated tools only: `py311_zarr_align.sh`, then `pm2_restart_check.sh` (no `--update-env`; it checks the new PID, restart count +1, stability, and executable). | Needs `pm2 stop` and `pm2 start` for both apps. `pm2_restart_check.sh` would report a correct start as a failure, because the restart count does not rise for a stopped app. No validated start check exists, and stopping `tide` runs its broad `pre_stop`. |
-| On failure | The `&&` chain stops before the next restart, and the owner decides. | Manual. A failed start leaves an API down. |
+| Client impact | Workers reload during the install, then two controlled restarts. Requests can fail during both. | Both APIs are down from the stop to the start. |
+| Race | pip removes the installed `zarr` package and writes every file of the new one, not only `version.py`. In between, the package on disk is incomplete, and the `--reload` polling of Tide and MHW workers can fire. A worker that starts then can fail to import Zarr or import a mix, and clients get errors. | No running process imports Zarr during the swap. |
+| Recovery | Expected from the code and configuration below, not demonstrated. | Depends on a start procedure that does not exist yet. |
+| Tooling | Existing scripts: `py311_zarr_align.sh`, then `pm2_restart_check.sh` (no `--update-env`; it checks the new PID, restart count +1, stability, and executable). That check has run against `tide` in isolation and never against the real `mhwapi`. | Needs `pm2 stop` and `pm2 start` for both apps. `pm2_restart_check.sh` would report a correct start as a failure, because the restart count does not rise for a stopped app. No start check exists, and stopping `tide` runs its broad `pre_stop`. |
+| On failure | The `&&` chain stops at the first failed check, and the owner decides. | Manual. A failed start leaves an API down. |
 
-**Recommendation: install while running, then immediately restart Tide and
-then MHW**, each through `pm2_restart_check.sh` and each followed by its
-smoke.
+Expected recovery for the first option, read from py311's Gunicorn 23.0.0
+code and PM2's dump. None of it has been observed during a package swap.
 
-- Both options interrupt clients. This one adds no untested PM2 step and
-  drops no check.
-- The race is bounded:
-  - the only file whose content differs between the two wheels is
-    `zarr/version.py`;
-  - the install is offline and takes seconds;
-  - Gunicorn and PM2 restart failed workers;
-  - both apps are restarted under the checker right after `apply`, however
-    healthy they look.
+- Each Gunicorn master manages its own workers and starts a new worker when
+  one exits.
+- If a new worker fails to boot or to load the app, the master stops itself
+  (`HaltServer` on `WORKER_BOOT_ERROR` or `APP_LOAD_ERROR` in
+  `gunicorn/arbiter.py`).
+- PM2 then restarts only the process it manages, because `autorestart` is on
+  for both entries in `~/.pm2/dump.pm2`:
+  - for `tide`, that process is the Gunicorn master itself;
+  - for `mhwapi`, it is the `bash` launcher, which starts a new Gunicorn.
+
+  PM2 never manages individual workers.
+- A worker that imported a partial package but kept running is not replaced
+  by any of this. Only the controlled restarts after `apply` replace it.
+
+**Proposed order, not validated: install while running, then immediately
+restart Tide and then MHW**, each through `pm2_restart_check.sh` and each
+followed by its smoke.
+
+- Why it is proposed over stopping first: it needs no start procedure. The
+  controlled restarts replace every worker after `apply`, whatever state
+  each worker is in, and the chain stops at the first failed check.
+- It accepts a short window of possible client errors during the install.
+  Its recovery is not demonstrated: no evidence covers Gunicorn and PM2
+  behaviour while pip replaces the package.
+- The `mhwapi` restart check has never run against the real `mhwapi`. The
+  isolated rehearsal used a dummy app started by `bash`, which does not
+  validate it.
+- The owner may require a recovery rehearsal before approving. That would
+  mean:
+  - a throwaway venv created from py311, and a copy of each app running on
+    a spare port with `--reload`;
+  - reinstalling the Zarr wheels while requests run;
+  - recording the errors seen and the recovery.
+
+  It has not been done.
 - Do not restart the Dask scheduler and worker in this window. They hold the
   identical 2.18.6 code in memory; restart them later under the host
   runbook.
-- Not yet approved: the owner must approve this order, and the MHW
-  maintainer must agree to the `mhwapi` restart and the smoke below.
+- This order is **not approved**. The owner must approve it, or choose
+  another, and the MHW maintainer must agree to the `mhwapi` restart and
+  the smoke below. The owner's Zarr-only authorization does not approve this
+  order.
 
 ### MHW restart and post-restart smoke (proposed)
 
 The restart is `pm2_restart_check.sh --name mhwapi --expect-exec
 /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh`. The executable
 it expects is the launcher, because that is PM2's PID for `mhwapi`. It has
-not been run against `mhwapi`; the isolated rehearsal used a dummy app
-started by `bash`.
+never run against the real `mhwapi`. The isolated rehearsal used a dummy app
+started by `bash`, which does not count as validating it.
 
 Then `mhw_check` (defined in the run sheet) runs these read-only checks:
 
@@ -1085,8 +1116,13 @@ exactly. A directory accepts one `apply`.
 
 ### Production run sheet
 
-Preflight checklist. The open items must all be checked, with their
-results recorded here, before the window starts.
+Preflight checklist. Every open item must be checked, with its result
+recorded here, before the window starts. Do not run `apply` while any item
+is open.
+
+The owner's Zarr-only authorization does not settle any of them. In
+particular, it does not approve the service order, which is still a
+proposal.
 
 - [x] Owner authorization, 2026-10-28: Zarr 2.18.6 → 2.18.7 in the shared
       py311 only.
@@ -1105,13 +1141,18 @@ results recorded here, before the window starts.
       maintenance does not use it.
 - [x] Canary symlinks removed. The release runtime hashes were unchanged
       (`a1de99c748a2ee1c…`).
-- [x] MHW API and cron interpreters resolved to py311 (see "MHW facts").
-      The launcher's TLS files are readable.
+- [x] MHW API and cron interpreters: pyenv resolves both to py311,
+      read-only (see "MHW facts"). Neither is recorded by a run after a
+      restart, and the cron does not log its interpreter. The launcher's
+      TLS files are readable.
 - [x] MHW smoke baseline taken (see above).
 - [ ] Owner and MHW maintainer: the window, with its date and time. It
       must not overlap the MHW cron at 04:50 on the 18th.
-- [ ] Owner: approve "install while running, then restart". MHW
-      maintainer: agree to the `mhwapi` restart and the smoke expectations.
+- [ ] Owner: approve the service order, which is proposed and not
+      validated (see "Service handling during the install"), or choose
+      another. The owner may ask for the recovery rehearsal first.
+- [ ] MHW maintainer: agree to the `mhwapi` restart, which has never run
+      against the real app, and to the smoke expectations.
 - [ ] Owner: when to restart the Dask scheduler and worker. Recommended:
       after this window.
 - [ ] Reviewer: approve PR #3 (scripts and this run sheet).
