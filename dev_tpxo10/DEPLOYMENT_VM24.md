@@ -145,8 +145,9 @@ Results so far are in "Validation record" below.
 
 - [ ] py311 test suite in a separate VM24 checkout (step 2). **Run; not
       green**: one failure (Zarr pin) plus known warnings. The owner
-      authorized aligning Zarr only; the procedure is validated in
-      isolation but not run on VM24 (see "Py311 Zarr alignment").
+      authorized aligning Zarr only. Its `prepare` ran on VM24 on
+      2026-10-28; `apply` waits for the open items of the run sheet (see
+      "Py311 Zarr alignment").
 - [x] Canary certificate: SAN, expiry, and key match recorded. The curl
       version is implied by `https_smoke.sh` passing, since it refuses curl
       older than 7.76; the exact version was not recorded.
@@ -176,7 +177,9 @@ Results so far are in "Validation record" below.
       symlink is left under that checkout. The type, inode, and mtime of
       every link target were the same before and after, and the release's
       runtime hashes were unchanged.
-- [ ] Owner authorization for the production deployment (step 4).
+- [ ] Owner authorization for the production deployment (step 4). The
+      2026-10-28 authorization covers only the py311 Zarr change, not
+      these runtime files.
 
 ### Validation record
 
@@ -295,6 +298,14 @@ matched the commit. No service was stopped, started, or restarted, and no
 - **Production PM2 daemon, read-only:** alive as PID 3352 with an
   untruncated title (see "Outstanding rollout checks").
 - **Zarr alignment `prepare`:** passed. See "Py311 Zarr alignment".
+- **MHW interpreters and smoke baseline (later on 2026-10-28, read-only):**
+  - the MHW API after a restart and the `update_mhw.sh` cron both resolve
+    to py311;
+  - the cron's own `pm2 restart mhwapi` has failed every month;
+  - the proposed MHW check passed against the running service.
+
+  See "MHW facts for the maintenance" and "MHW restart and post-restart
+  smoke".
 
 ## Production deployment procedure
 
@@ -805,10 +816,10 @@ release sequence step 2 runs them with py311.
 The 2026-10-27 py311 run (step 2) was **not green**: the Zarr version pin
 test failed (py311 has 2.18.6, `uv.lock` pins 2.18.7), with the known NumPy
 ABI and Polars CPU-feature warnings. Do not hide this by changing the pin
-or installing packages into the shared py311. The owner has authorized
-aligning only Zarr to 2.18.7; the validated procedure and what must still
-be confirmed first are in "Py311 Zarr alignment" below. It has not been
-run on VM24.
+or installing packages into the shared py311 outside the approved
+maintenance. The owner has authorized aligning only Zarr to 2.18.7. Its
+`prepare` has run on VM24, and its `apply` has not; the run sheet and what
+must still be settled first are in "Py311 Zarr alignment" below.
 
 On 2026-10-24, a PM2 restart whose PATH included `uv` started a `uv` sync
 that created an incomplete `.venv` in the release directory; it was moved
@@ -818,13 +829,14 @@ hot patch made the launcher prefer py311, and the v0.3.2 target removes the
 
 ## Py311 Zarr alignment
 
-Status: **`prepare` done on 2026-10-28; `apply` not run.** The owner
-accepted aligning only the shared py311 Zarr from 2.18.6 to the `uv.lock`
-pin 2.18.7, changing no other package. This is a production change to an
-interpreter shared by several services. The items under "Preconditions
-before any production run" are prerequisites, not formalities, and most are
-still open. Do not run `apply` or `rollback` on VM24 until every one is
-settled and recorded here, in an approved maintenance window.
+Status: **`prepare` done on 2026-10-28; `apply` not run.** On 2026-10-28
+the owner authorized the production maintenance for one package change:
+the shared py311 Zarr from 2.18.6 to the `uv.lock` pin 2.18.7. No other
+package may change. This authorization does not cover deploying the v0.3.2
+runtime files (release sequence step 4). It is a production change to an
+interpreter shared by Tide, MHW, and the Dask scheduler and worker. Run it
+only from "Production run sheet" below, in an agreed window, after every
+open item in its checklist is settled and recorded here.
 
 `prepare` on VM24 (2026-10-28 10:34 +0800) used
 `/home/odbadmin/tmp/tide-pr3-ca304d9-ops/conf/py311_zarr_align.sh` from
@@ -885,115 +897,149 @@ settled and recorded here, in an approved maintenance window.
   runs the runbook's own `apply` and `rollback` chains and confirms that
   the restart and smoke never run after any of these failures.
 
-### Preconditions before any production run
+### MHW facts for the maintenance (read-only, 2026-10-28)
 
-Every item below is open unless it is checked. Items marked "to be
-confirmed by the MHW maintainer" are MHW's own facts and procedures. The
-Tide runbook records only the evidence found and does not treat them as
-passed.
+These checks read `ps`, `/proc`, `ss`, PM2's pid files, dump, and log, PM2's
+installed source, the MHW launcher and app source, the interpreter lines of
+`update_mhw.sh`, its log, and its cron mail. Of the environment, they read
+only path variables. pyenv's resolution was run read-only: `pyenv which`,
+plus `pyenv sh-activate`, whose output was printed and never evaluated. No
+`pm2` command was run, and nothing was started, stopped, or changed.
 
-The read-only checks of 2026-10-27 and 2026-10-28 read only the crontab,
-scripts, configuration, logs, and `ps`. They did not source or run
-`update_mhw.sh`, ran no `pm2` command, and changed nothing. Their evidence
-is noted with each item, together with what it does not prove.
+- **MHW API interpreter after a restart: py311.** Resolved read-only:
+  - PM2's PID for `mhwapi` is the launcher
+    `bash /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh` (PID
+    96946, started 2026-10-24 13:45:56). It runs a bare `gunicorn` without
+    `exec`, so Gunicorn (PID 96947) is its child.
+  - A `pm2 restart` without `--update-env` starts the launcher with the
+    environment PM2 stored at its last start, which is the launcher's
+    current environment.
+  - In that `PATH`, the first `gunicorn` is `/home/odbadmin/.pyenv/shims/gunicorn`.
+    The entries before it contain no `gunicorn`, and two of them no longer
+    exist.
+  - There is no `PYENV_VERSION`, and no `.python-version` from the API
+    directory upward. The pyenv global version is `py311`. pyenv therefore
+    resolves the shim to `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn`,
+    whose shebang is `py311/bin/python3.11` (`3.11.4/envs/py311`).
+  - Replaying the launcher's path variables with `env -i` from the API
+    directory gave the same result, and so does the running Gunicorn.
+  - This holds only for a restart without `--update-env`, which
+    `pm2_restart_check.sh` never passes, and only while the launcher is
+    still PID 96946. A restart with `--update-env` would take the caller's
+    `PATH`.
+  - `pm2 resurrect` would use `~/.pm2/dump.pm2` (saved 2026-10-24 14:41),
+    whose `PATH` also puts the pyenv shims first.
+  - The post-restart check (`mhw_proc_check`) verifies the interpreter
+    again.
+- **`update_mhw.sh` cron interpreter: py311.** Resolved read-only:
+  - Cron runs the script directly (`#!/bin/bash`). The script `cd`s to the
+    API directory, puts `~/.pyenv/bin` on `PATH`, and evaluates
+    `pyenv init -` and `pyenv virtualenv-init -`. It then runs
+    `pyenv activate py311` and starts `update_mhw.py` through
+    `/home/odbadmin/.pyenv/shims/python`.
+  - `pyenv activate py311` exports `PYENV_VERSION=py311`. In a cron-like
+    `env -i` from the API directory, `pyenv which python` resolves to
+    `/home/odbadmin/.pyenv/versions/py311/bin/python`, both with it and
+    without it (the global `py311`).
+  - The 2026-10-18 log shows the shim on `PATH`. Its cron mail shows no
+    pyenv or activation error.
+  - The run does not log `sys.executable`, so the interpreter is resolved
+    rather than recorded. Both pyenv branches lead to py311.
+- **Correction: the cron does not restart MHW.**
+  - Its last line, `pm2 restart mhwapi`, fails: `pm2` is only in
+    `~/.npm-global/bin`, which is not on the cron's `PATH`.
+  - The cron mail shows `pm2: command not found` from that line in the
+    July, August, September, and October 2026 runs. PM2's log shows no
+    `mhwapi` restart at those times.
+  - Fixing it is the MHW maintainer's decision and is not part of this
+    maintenance.
+  - The cron still writes `data/mhw.zarr` with py311's Zarr at 04:50 on the
+    18th, so the window must not overlap it.
+- **Startup dependencies.**
+  - The launcher exits 1 if any of the three `mhw-client` Dask TLS files is
+    unreadable. `odbadmin` can read all three.
+  - The app opens `data/mhw.zarr` (consolidated) and connects to the Dask
+    scheduler. If the connection fails, it logs `Dask scheduler unavailable;
+    falling back to local execution.` and still serves.
+  - Output and errors are merged into `API/tmp/err.log`.
+- **Reload and restart mechanics.**
+  - Both APIs run Gunicorn 23.0.0 with `--reload`. py311 has no `inotify`
+    package, so Gunicorn uses its polling reloader, which checks the loaded
+    module files, Zarr's included, about once a second. Workers restart
+    after the Zarr files change.
+  - PM2 5.4.2 increments `restart_time` only when it restarts an online app
+    (`lib/God/ActionMethods.js`). `pm2_restart_check.sh` therefore cannot
+    verify starting a stopped app.
+- **Other py311 processes:** the Dask scheduler (PID 96637) and worker (PID
+  101867 and its children), without `--reload`. Nothing else runs on py311.
 
-- [ ] **MHW API interpreter after a restart: to be confirmed by the MHW
-      maintainer.**
-      - Observed: PM2 app `mhwapi` (from `~/.pm2/dump.pm2`, saved
-        2026-10-24) runs `/home/odbadmin/proj/marineheatwave/API/conf/start_app.sh`
-        with `bash`, in fork mode, with `autorestart`, from working
-        directory `.../marineheatwave/API`.
-      - Observed: that launcher exports the `mhw-client` Dask TLS identity,
-        then starts a bare `gunicorn mhw_app:app ... -b 127.0.0.1:8030
-        --reload`. It does not use `exec`, so PM2's PID is the `bash`
-        launcher and Gunicorn is its child.
-      - Observed: the running Gunicorn (started 2026-10-24) is
-        `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn`.
-      - Not proven: which `gunicorn` the launcher finds after a restart.
-        That depends on the `PATH` PM2 has stored for `mhwapi`. This is the
-        same `PATH` dependence that Tide v0.3.2 removed from its own
-        launcher.
-- [ ] **`update_mhw.sh` cron interpreter: to be confirmed by the MHW
-      maintainer.**
-      - Observed: crontab entry `50 4 18 * *`, at 04:50 server time on the
-        18th of each month. The crontab sets no `PATH` or `SHELL`. The next
-        run is due 2026-11-18 04:50.
-      - Observed: the script initializes pyenv, runs `pyenv activate
-        py311`, and then runs `update_mhw.py` with
-        `/home/odbadmin/.pyenv/shims/python`.
-      - Observed: the pyenv global version is `py311`, pyenv-virtualenv is
-        installed, and there is no `.python-version` in the API directory
-        or any parent.
-      - Inferred, not observed: every way pyenv can resolve that shim leads
-        to py311. The log records only the shim path, never the
-        interpreter it resolved to.
-      - Observed: the last run (2026-10-18 04:50–04:51) appended to
-        `data/mhw.zarr` with xarray and Dask arrays. It uses no distributed
-        Dask client.
-      - Confirmed owner change (observed 2026-10-28): `update_mhw.sh` no
-        longer restarts nginx. It still ends with `pm2 restart mhwapi`, so
-        this cron is still a monthly MHW restart, and the window must not
-        overlap it. The crontab entry is unchanged.
-      - The interpreter conclusion is unchanged: py311 by inference from
-        pyenv's configuration, not directly observed.
-- [ ] **MHW restart procedure: to be confirmed by the MHW maintainer.**
-      - No maintainer procedure was found. The MHW `README.md` and
-        `change_log.md` describe none; the change log only mentions a PM2
-        `pre_stop`.
-      - The only restart in use is the cron's own `pm2 restart mhwapi`.
-      - Tide's `pm2_restart_check.sh` is not validated for `mhwapi`. Its
-        `--expect-exec` check reads the command line of PM2's PID, which
-        for MHW is the `bash` launcher, not Gunicorn.
-      - The repository's `conf/ecosystem.config.js` does not match the
-        running setup: it starts `dask-worker` on plain `tcp://`, and it
-        has a `pre_stop` that runs `kill -9` on `mhw_app`.
-      - Unconfirmed. The MHW maintainer must supply the procedure.
-- [ ] **MHW health check and smoke: to be confirmed by the MHW
-      maintainer.**
-      - There is no health endpoint. The read-only GET routes are
-        `/api/mhw` (JSON), `/api/mhw/csv`, `/api/mhw/plot`, and
-        `/api/swagger/mhw`.
-      - nginx proxies the public 443 paths `/api/mhw` and `/api/swagger/mhw`
-        on `eco.odb.ntu.edu.tw` to `https://127.0.0.1:8030`.
-      - The certificate served on 8030 (`API/conf/fullchain.pem`) expired
-        on 2023-08-25, so a verified smoke has to go through 443, as Tide's
-        does.
-      - Unconfirmed: no query or expected result is defined. The MHW
-        maintainer must supply them.
-- [ ] **Maintenance window: to be agreed by the owner and the MHW
-      maintainer.** It is not set. It must avoid the MHW cron (04:50 on the
-      18th, which also restarts MHW).
-- [ ] **Dask scheduler and worker.** They run on py311 without `--reload`
-      and keep the old Zarr code in memory until they restart. The code is
-      identical, so a later restart under the host runbook is enough.
-      Confirm with the owner.
-- [ ] **How Tide and MHW are handled during the install: undecided.**
-      Both run with `--reload`, so `apply` and `rollback` reload their
-      workers as soon as the zarr files change, not at the next restart. A
-      worker that reloads while pip is swapping the files could fail to
-      boot. Neither option below is decided or validated on VM24:
-      - install while the services run, then restart each one straight
-        away with its own procedure;
-      - stop Tide and MHW, install, then start them. Validated tooling does
-        not cover stopping and starting them.
+### Service handling during the install
 
-      The chains below show only the order of the script, Tide's restart
-      check, and Tide's smoke. They do not choose between these options,
-      and they do not include MHW. Revise them once the owner decides.
-- [x] **Production `pip check` output** (2026-10-28 `prepare`): exit 1
-      with four conflict lines in pip check's format and empty stderr, so
-      it was accepted (see the status above). If a later `apply` or
-      `rollback` gets output the script rejects, stop and report it with
-      the `.rejected` and `.stderr` files. Never loosen the check.
+|  | Install while running, then restart (recommended) | Stop Tide and MHW, install, start |
+|---|---|---|
+| Client impact | Workers reload during the install (seconds), then two controlled restarts. In-flight requests can fail. | Both APIs are down from the stop to the start. |
+| Race | A worker that restarts while pip swaps Zarr's files can fail to import it. Gunicorn then exits and PM2 restarts it, or a worker runs with a half-imported module until the controlled restart replaces it. | None: no process imports Zarr during the swap. |
+| Tooling | Validated tools only: `py311_zarr_align.sh`, then `pm2_restart_check.sh` (no `--update-env`; it checks the new PID, restart count +1, stability, and executable). | Needs `pm2 stop` and `pm2 start` for both apps. `pm2_restart_check.sh` would report a correct start as a failure, because the restart count does not rise for a stopped app. No validated start check exists, and stopping `tide` runs its broad `pre_stop`. |
+| On failure | The `&&` chain stops before the next restart, and the owner decides. | Manual. A failed start leaves an API down. |
+
+**Recommendation: install while running, then immediately restart Tide and
+then MHW**, each through `pm2_restart_check.sh` and each followed by its
+smoke.
+
+- Both options interrupt clients. This one adds no untested PM2 step and
+  drops no check.
+- The race is bounded:
+  - the only file whose content differs between the two wheels is
+    `zarr/version.py`;
+  - the install is offline and takes seconds;
+  - Gunicorn and PM2 restart failed workers;
+  - both apps are restarted under the checker right after `apply`, however
+    healthy they look.
+- Do not restart the Dask scheduler and worker in this window. They hold the
+  identical 2.18.6 code in memory; restart them later under the host
+  runbook.
+- Not yet approved: the owner must approve this order, and the MHW
+  maintainer must agree to the `mhwapi` restart and the smoke below.
+
+### MHW restart and post-restart smoke (proposed)
+
+The restart is `pm2_restart_check.sh --name mhwapi --expect-exec
+/home/odbadmin/proj/marineheatwave/API/conf/start_app.sh`. The executable
+it expects is the launcher, because that is PM2's PID for `mhwapi`. It has
+not been run against `mhwapi`; the isolated rehearsal used a dummy app
+started by `bash`.
+
+Then `mhw_check` (defined in the run sheet) runs these read-only checks:
+
+| Check | Expected |
+|---|---|
+| Listener on `127.0.0.1:8030` (`ss`, `ps`) | Exactly one Gunicorn master whose parent is the MHW launcher. Its command line starts with `py311/bin/python3.11 py311/bin/gunicorn mhw_app:app`. |
+| GET `https://eco.odb.ntu.edu.tw/api/swagger/mhw/openapi.json` | 200 `application/json`. `paths` include `/api/mhw` and `/api/mhw/csv`. |
+| GET `https://eco.odb.ntu.edu.tw/api/swagger/mhw` | 200 `text/html; charset=utf-8`. The page references `/api/swagger/mhw/openapi.json`. |
+| GET `https://eco.odb.ntu.edu.tw/api/mhw?lon0=135&lat0=15&start=2024-01-01&end=2024-03-01` | 200 `application/json`. Three rows at lon 135.125, lat 15.125, dated 2024-01-01, 2024-02-01, and 2024-03-01, each with `level` 0–4. The body matches the pre-apply baseline byte for byte. |
+| GET `https://eco.odb.ntu.edu.tw/api/mhw` (no parameters) | 422 `application/json`, reporting `lon0` and `lat0` missing. |
+
+- It does not call `/api/mhw/csv`, which writes a temporary file for each
+  request, `/api/mhw/plot`, which is heavy, or anything that updates data.
+- After `mhw_check`, look at the new lines of `API/tmp/err.log` for
+  `Dask scheduler unavailable`. MHW still serves without Dask, so report it
+  rather than fail.
+- Read-only baseline, 2026-10-28:
+  - The four GETs, from outside VM24, returned 200, 200, 200, and 422 as
+    above. The point query was 178 bytes, sha256 `23ea145e…`, with levels
+    1, 0, and 0.
+  - `mhw_proc_check` on VM24 printed
+    `OK mhw process: master 96947 is the py311 Gunicorn under the launcher`.
+  - A second `mhw_http_check` matched the baseline byte for byte.
+- The MHW maintainer should confirm these expectations.
 
 ### Procedure
 
-Use `conf/py311_zarr_align.sh` from a merged checkout that contains it
-(`SRC`). It runs under `set -euo pipefail`, independent of the operator's
-shell. Every step either succeeds or exits non-zero before the next one. A
-failed `pip install` is not hidden by the `tee` that logs it, and a failed
-snapshot leaves no freeze file behind. Nothing chained after it with `&&`
-runs on failure.
+`conf/py311_zarr_align.sh` runs under `set -euo pipefail`, independent of
+the operator's shell. Every step either succeeds or exits non-zero before
+the next one. A failed `pip install` is not hidden by the `tee` that logs
+it, and a failed snapshot leaves no freeze file behind. Nothing chained
+after it with `&&` runs on failure.
 
 `pip check` is accepted only in one of the two forms pip 25.3 produces:
 
@@ -1011,71 +1057,265 @@ traceback, empty or unknown output, a warning (pip also exits 1 on
 unreadable metadata), and any other exit status. Only an accepted result
 goes into the before/after comparison.
 
-1. Before the window, `prepare` changes nothing in py311. It records the
-   sorted `pip freeze --all`, the accepted `pip check` result with its exit
-   status, and the Zarr version. It downloads the 2.18.7 and 2.18.6 wheels pinned by SHA-256
-   into `$D/wheels`, and dry-runs the install, which must offer exactly
-   `zarr-2.18.7`.
+`prepare` records the sorted `pip freeze --all`, the accepted `pip check`
+result with its exit status, and the Zarr version, changing nothing in
+py311. It downloads the 2.18.7 and 2.18.6 wheels pinned by SHA-256 into
+`$D/wheels` and dry-runs the install, which must offer exactly
+`zarr-2.18.7`. It was run on 2026-10-28 (see the status above). Do not run
+it again for this window: the run sheet reuses that directory and its
+wheels. Run it only for a new attempt after a rollback, into a new
+directory, with `SRC` and `ALIGN` set as in step 1 of the run sheet:
+
+```bash
+D=/home/odbadmin/tmp/zarr-align-$(date +%Y%m%d)   # must not exist yet
+"$ALIGN" prepare --dir "$D"
+```
+
+`apply` refuses to start unless `$D` was prepared and not yet applied, and
+unless py311 still matches the `prepare` freeze. It installs 2.18.7 offline
+with `--no-deps`, `--no-index`, and `--require-hashes`. Then it requires:
+
+- the freeze to differ only in `zarr==2.18.6` → `zarr==2.18.7`;
+- an accepted `pip check` result identical to the `prepare` one;
+- zarr to import as 2.18.7.
+
+`rollback` installs the saved 2.18.6 wheel the same way. It requires the
+freeze and an accepted `pip check` result to match the `prepare` snapshot
+exactly. A directory accepts one `apply`.
+
+### Production run sheet
+
+Preflight checklist. The open items must all be checked, with their
+results recorded here, before the window starts.
+
+- [x] Owner authorization, 2026-10-28: Zarr 2.18.6 → 2.18.7 in the shared
+      py311 only.
+- [x] Isolated validation (2026-10-27). The freeze changed only in the
+      zarr line, the tests went green, and the MHW-style round trip passed.
+- [x] `prepare` on VM24 (2026-10-28 10:34), in
+      `/home/odbadmin/tmp/zarr-align-20261028T103416`:
+      - `freeze-before.txt`, `pip-check-before.txt` (four accepted
+        conflicts), `dry-run.txt` (`Would install zarr-2.18.7` only), the
+        `prepared` marker, and no `applied` marker;
+      - both wheels match their pinned hashes (rechecked later on
+        2026-10-28).
+- [x] Production PM2 daemon, read-only: PID 3352, with an untruncated
+      title.
+- [x] `replace_runtime_files.sh` scratch rehearsal on VM24. This
+      maintenance does not use it.
+- [x] Canary symlinks removed. The release runtime hashes were unchanged
+      (`a1de99c748a2ee1c…`).
+- [x] MHW API and cron interpreters resolved to py311 (see "MHW facts").
+      The launcher's TLS files are readable.
+- [x] MHW smoke baseline taken (see above).
+- [ ] Owner and MHW maintainer: the window, with its date and time. It
+      must not overlap the MHW cron at 04:50 on the 18th.
+- [ ] Owner: approve "install while running, then restart". MHW
+      maintainer: agree to the `mhwapi` restart and the smoke expectations.
+- [ ] Owner: when to restart the Dask scheduler and worker. Recommended:
+      after this window.
+- [ ] Reviewer: approve PR #3 (scripts and this run sheet).
+- [ ] Operator: a checkout `SRC` of the approved commit on VM24, with no
+      tracked changes. The sha256 of its `conf/py311_zarr_align.sh`,
+      `conf/pm2_restart_check.sh`, and `conf/https_smoke.sh` must match
+      that commit.
+      - Today those scripts are split across two places. The aligner is
+        only in `/home/odbadmin/tmp/tide-pr3-ca304d9-ops/`. The other two
+        are in the `ef780ea` checkout `/home/odbadmin/tmp/tide-v032-codex-20261027`.
+      - All three match the current PR head, but neither place holds all
+        three.
+- [ ] In the window: preflight A and B pass immediately before `apply`.
+
+Only Zarr may change. In the window, run no `pip`, `pyenv`, or `uv`
+command against py311 other than the ones below. Do not re-run `prepare`
+into `$D`, download wheels again, or edit anything in `$D`.
+
+Run the steps in order, in one shell on VM24. Each block stops at the first
+failure. If any block fails, stop and report to the owner.
+
+1. Set the variables. `$D` is the 2026-10-28 `prepare` directory.
 
    ```bash
-   SRC=/home/odbadmin/tmp/tide-v0.3.2-$SHA   # merged checkout with the script
+   SRC=/home/odbadmin/tmp/tide-v0.3.2-$SHA   # approved checkout, see checklist
    ALIGN="$SRC/conf/py311_zarr_align.sh"
-   D=/home/odbadmin/tmp/zarr-align-$(date +%Y%m%d)   # must not exist yet
-   "$ALIGN" prepare --dir "$D"
+   D=/home/odbadmin/tmp/zarr-align-20261028T103416
    ```
 
-2. In the window, and only after every precondition above is settled,
-   `apply` refuses to start unless py311 still matches the `prepare`
-   freeze. It installs 2.18.7 offline with `--no-deps`, `--no-index`, and
-   `--require-hashes`. Then it requires:
-   - the freeze to differ only in `zarr==2.18.6` → `zarr==2.18.7`;
-   - an accepted `pip check` result identical to the `prepare` one;
-   - zarr to import as 2.18.7.
+2. Preflight A, read-only: the artifacts are intact, and py311 still
+   matches the `prepare` snapshot. `apply` repeats the freeze comparison,
+   but this block catches drift before the window's restarts begin.
 
-   Only then do Tide's restart check and smoke run. The service-handling
-   decision above may change this chain:
+```bash
+(
+  set -euo pipefail
+  PY=/home/odbadmin/.pyenv/versions/py311/bin/python
+  fail() { echo "FAIL preflight: $*; do not apply" >&2; exit 1; }
+  [ -f "$D/prepared" ] || fail "$D has no prepared marker"
+  [ ! -e "$D/applied" ] || fail "$D was already used for apply"
+  cd "$D"
+  sha256sum -c - <<'SUMS' || fail "a saved wheel does not match its pinned hash"
+ac3dc4033e9ae4e9d7b5e27c97ea3eaf1003cc0a07f010bd83d5134bf8c4b223  wheels/zarr-2.18.7-py3-none-any.whl
+a5334311fae8859870d78561ebb6bd0ab01accc392a6cf4dcaa25d83b4a2f22c  wheels/zarr-2.18.6-py3-none-any.whl
+SUMS
+  [ "$("$PY" -I -c 'import zarr; print(zarr.__version__)')" = 2.18.6 ] \
+    || fail "zarr does not import as 2.18.6"
+  now=$(mktemp)
+  "$PY" -I -m pip --disable-pip-version-check freeze --all | LC_ALL=C sort -f > "$now" \
+    || fail "pip freeze failed"
+  diff "$D/freeze-before.txt" "$now" \
+    || fail "py311 changed since prepare (current freeze kept in $now)"
+  rm "$now"
+  echo "OK preflight A: zarr 2.18.6; freeze identical to the prepare snapshot"
+)
+```
+
+3. Preflight B, read-only: the services are as they were checked on
+   2026-10-28.
+   - If the MHW launcher is no longer PID 96946, PM2 has started it again
+     since then. Resolve the interpreter again (see "MHW facts") before
+     continuing.
+   - The MHW update must not be running.
+
+```bash
+(
+  set -euo pipefail
+  fail() { echo "FAIL preflight: $*; do not apply" >&2; exit 1; }
+  "$SRC/conf/pm2_restart_check.sh" --daemon-only --pm2-home /home/odbadmin/.pm2
+  [ "$(ps -o args= -p 96946)" = "bash /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh" ] \
+    || fail "the MHW launcher is no longer PID 96946"
+  for f in certs/ca.crt certs/mhw-client.crt private/mhw-client.key; do
+    [ -r "/home/odbadmin/.config/dask/tls/$f" ] \
+      || fail "the MHW launcher would exit: $f is unreadable"
+  done
+  if pgrep -u odbadmin -f 'update_mhw\.(sh|py)' > /dev/null; then
+    fail "the MHW update is running"
+  fi
+  echo "OK preflight B: PM2 daemon alive; MHW launcher unchanged; no MHW update running"
+)
+```
+
+4. Define the MHW checks and take the baseline right before `apply`, with
+   `mhw_check "$D-mhw-before"`.
+
+```bash
+# Read-only MHW checks. Nothing here calls pm2 or writes outside OUT.
+#   mhw_proc_check             the 8030 listener is py311 Gunicorn under the launcher
+#   mhw_http_check OUT [BASE]  four GETs through 443; responses saved in OUT
+#   mhw_check OUT [BASE]       both
+# OUT must not exist yet. With BASE, the point query must match BASE byte
+# for byte.
+mhw_proc_check() (
+  set -euo pipefail
+  launcher="bash /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh"
+  py311=/home/odbadmin/.pyenv/versions/py311/bin
+  master=""
+  for pid in $(ss -ltnpH 'sport = :8030' | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do
+    [ "$(ps -o args= -p "$(ps -o ppid= -p "$pid" | tr -d ' ')")" = "$launcher" ] || continue
+    [ -z "$master" ] || { echo "FAIL mhw: two 8030 masters under the launcher" >&2; exit 1; }
+    master=$pid
+  done
+  [ -n "$master" ] || { echo "FAIL mhw: no 8030 listener under the MHW launcher" >&2; exit 1; }
+  args=$(ps -o args= -p "$master")
+  case "$args" in
+    "$py311/python3.11 $py311/gunicorn mhw_app:app "*) ;;
+    *) echo "FAIL mhw: 8030 master $master runs '$args', not the py311 Gunicorn" >&2; exit 1 ;;
+  esac
+  echo "OK mhw process: master $master is the py311 Gunicorn under the launcher"
+)
+mhw_http_check() (
+  set -euo pipefail
+  out=${1:?usage: mhw_http_check OUT [BASE]}
+  base=${2:-}
+  mkdir "$out"
+  expect() {   # expect FILE PATH STATUS CONTENT_TYPE
+    local got
+    got=$(curl -sS --proto '=https' --max-time 60 -o "$out/$1" \
+            -w '%{http_code} %{content_type}' "https://eco.odb.ntu.edu.tw$2") \
+      || { echo "FAIL mhw: GET $2: curl failed" >&2; exit 1; }
+    [ "$got" = "$3 $4" ] \
+      || { echo "FAIL mhw: GET $2 gave '$got', expected '$3 $4'" >&2; exit 1; }
+  }
+  expect openapi.json /api/swagger/mhw/openapi.json 200 application/json
+  expect swagger.html /api/swagger/mhw 200 'text/html; charset=utf-8'
+  expect point.json '/api/mhw?lon0=135&lat0=15&start=2024-01-01&end=2024-03-01' 200 application/json
+  expect missing.json /api/mhw 422 application/json
+  python3 -I - "$out" <<'PY' || { echo "FAIL mhw: a response lacks an expected feature" >&2; exit 1; }
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1])
+paths = json.loads((d / "openapi.json").read_text())["paths"]
+assert {"/api/mhw", "/api/mhw/csv"} <= set(paths), sorted(paths)
+assert "/api/swagger/mhw/openapi.json" in (d / "swagger.html").read_text()
+rows = json.loads((d / "point.json").read_text())
+assert [r["date"] for r in rows] == ["2024-01-01", "2024-02-01", "2024-03-01"], rows
+for r in rows:
+    assert (r["lon"], r["lat"]) == (135.125, 15.125), r
+    assert r["level"] in (0, 1, 2, 3, 4), r
+missing = {e["loc"][-1] for e in json.loads((d / "missing.json").read_text())["detail"]}
+assert missing == {"lon0", "lat0"}, missing
+PY
+  if [ -n "$base" ]; then
+    cmp "$base/point.json" "$out/point.json" \
+      || { echo "FAIL mhw: point query differs from $base" >&2; exit 1; }
+  fi
+  echo "PASS mhw http: 4 GETs as expected${base:+; point query identical to $base}"
+)
+mhw_check() { mhw_proc_check && mhw_http_check "$@"; }
+```
+
+5. Apply, then restart and check Tide, then MHW, in one `&&` chain:
 
    ```bash
    "$ALIGN" apply --dir "$D" \
      && "$SRC/conf/pm2_restart_check.sh" --pm2-home /home/odbadmin/.pm2 --name tide \
      && "$SRC/conf/https_smoke.sh" --host eco.odb.ntu.edu.tw --mode prod \
-          --prod-port 443 --out-root "$D-smoke"
+          --prod-port 443 --out-root "$D-smoke" \
+     && "$SRC/conf/pm2_restart_check.sh" --pm2-home /home/odbadmin/.pm2 --name mhwapi \
+          --expect-exec /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh \
+     && mhw_check "$D-mhw-after" "$D-mhw-before"
    ```
 
-3. After `PASS prod`, restart and smoke-test MHW with its own procedure.
-   That procedure does not exist in this runbook yet; it is a
-   precondition. Then run the py311 test suite from the merged checkout
-   (release sequence step 2). The pin test should now pass.
+6. After `PASS mhw http`:
+   - check the new lines of MHW's `err.log` for the Dask fallback message;
+   - run the py311 test suite from the approved checkout (release sequence
+     step 2). The pin test should now pass.
 
-If `apply` fails, do not restart or smoke anything. Report to the owner
-with `$D/install.log` and the snapshots. The state of py311 after a failed
-install is unknown, and rolling back is the owner's decision.
+What to record here:
 
-What to check and record:
+- `OK apply`, the freeze diff (`diff $D/freeze-before.txt $D/freeze-after.txt`
+  shows only the zarr line), and `pip-check-before.txt` vs
+  `pip-check-after.txt` (identical);
+- numcodecs 0.15.1 and numpy 2.2.4, unchanged;
+- Tide's `OK restart` and `PASS prod`;
+- MHW's `OK restart`, `OK mhw process`, and `PASS mhw http`;
+- the Dask fallback finding;
+- the py311 suite counts.
 
-- the versions: zarr 2.18.6 → 2.18.7, with numcodecs 0.15.1 and numpy
-  2.2.4 unchanged;
-- that the freeze differs only in the zarr line (`freeze-before.txt` vs
-  `freeze-after.txt`);
-- that `pip check` was accepted both times and is unchanged
-  (`pip-check-before.txt` vs `pip-check-after.txt`);
-- Tide's `OK restart` and `PASS prod`, and MHW's smoke result.
+If `apply` fails, nothing is restarted.
 
-Rollback to 2.18.6 uses the same `$D`. It installs the hash-pinned 2.18.6
-wheel saved by `prepare`, offline. It requires the freeze and an accepted
-`pip check` result to match the `prepare` snapshot exactly. Restart and
-smoke-test the services the same way, MHW included, under the same
-preconditions:
+- Report to the owner with `$D/install.log` and the snapshots.
+- The state of py311 after a failed install is unknown. Rolling back is the
+  owner's decision.
+- If a check after `apply` fails, the chain stops there. Rolling back is
+  again the owner's decision.
+
+Rollback to 2.18.6 uses the same `$D` and the same checks. The MHW point
+query must still match the pre-apply baseline:
 
 ```bash
 "$ALIGN" rollback --dir "$D" \
   && "$SRC/conf/pm2_restart_check.sh" --pm2-home /home/odbadmin/.pm2 --name tide \
   && "$SRC/conf/https_smoke.sh" --host eco.odb.ntu.edu.tw --mode prod \
-       --prod-port 443 --out-root "$D-rollback-smoke"
+       --prod-port 443 --out-root "$D-rollback-smoke" \
+  && "$SRC/conf/pm2_restart_check.sh" --pm2-home /home/odbadmin/.pm2 --name mhwapi \
+       --expect-exec /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh \
+  && mhw_check "$D-mhw-rollback" "$D-mhw-before"
 ```
 
-A directory accepts one `apply`. To try again after a rollback, run
-`prepare` with a new directory.
+To try again after a rollback, run `prepare` into a new directory.
+
+Follow-up after the window: the 2026-11-18 cron will be the first MHW
+append under 2.18.7, which the isolated round trip covered. Check its log
+and cron mail.
 
 ## Operational Notes
 
@@ -1103,8 +1343,15 @@ A directory accepts one `apply`. To try again after a rollback, run
 - Make the py311 runtime reproducible (a lock or recorded freeze) or move
   production to an environment built from `uv.lock`. Until then the py311
   suite fails `test_pinned_runtime_versions` (Zarr 2.18.6 vs 2.18.7). The
-  owner authorized aligning Zarr only; see "Py311 Zarr alignment" for the
-  procedure and the items still to confirm.
+  owner authorized aligning Zarr only; see "Production run sheet" for the
+  steps and the items still to settle.
+- MHW (for its maintainer, not part of the Zarr maintenance):
+  - the monthly `update_mhw.sh` cron cannot find `pm2`, so its
+    `pm2 restart mhwapi` has not run since at least July 2026;
+  - the stored `PATH` of `mhwapi` now begins with entries from an operator
+    tool session, two of which no longer exist;
+  - the MHW listener on 8030 serves a certificate that expired on
+    2023-08-25.
 - The internal 8040 listener's certificate expired on 2023-08-25 (the public
   443 frontend is valid). Whether and how to replace it is an owner
   decision; it is not part of the v0.3.2 runtime manifest.
