@@ -67,9 +67,13 @@ if cmd == "jlist":
         if sc == "crashloop" and st["after"] >= 2:
             a["pid"] += 1
             a["restarts"] += 1
-    print(json.dumps([{"name": a["name"], "pid": a["pid"],
-                       "pm2_env": {"status": a["status"], "restart_time": a["restarts"]}}
-                      for a in st["apps"]]))
+    def entry(a):   # pid "MISSING": PM2 5.4.2 omits the key for some stopped apps
+        e = {"name": a["name"],
+             "pm2_env": {"status": a["status"], "restart_time": a["restarts"]}}
+        if a["pid"] != "MISSING":
+            e["pid"] = a["pid"]
+        return e
+    print(json.dumps([entry(a) for a in st["apps"]]))
 elif cmd in ("stop", "restart"):
     name = sys.argv[2]
     st["target"], st["acted"] = name, True
@@ -125,9 +129,11 @@ PY
 '''
 
 
-def _world(home, scenario, target, status, pid, procs, start_pid=0, start_procs=()):
+def _world(home, scenario, target, status, pid, procs, start_pid=0, start_procs=(),
+           extra=()):
     apps = [{"name": "gateway", "status": "online", "pid": 9000007, "restarts": 0},
             {"name": target, "status": status, "pid": pid, "restarts": 3}]
+    apps += [dict(a) for a in extra]
     (home / "state.json").write_text(json.dumps({
         "scenario": scenario, "apps": apps, "procs": [list(p) for p in procs],
         "start_pid": start_pid, "start_procs": [list(p) for p in start_procs]}))
@@ -149,12 +155,12 @@ def life(tmp_path, pm2_home):  # noqa: F811
 
     def run(mode, name, scenario="ok", status="online", pid=9000100, procs=(),
             start_pid=9000200, start_procs=(), match="tide_app:app",
-            expect_exec=f"{PY311}/gunicorn", chain=True, home=None):
+            expect_exec=f"{PY311}/gunicorn", chain=True, home=None, extra=()):
         if home is None:
             home, dpid = pm2_home()
         else:
             home, dpid = home
-        _world(home, scenario, name, status, pid, procs, start_pid, start_procs)
+        _world(home, scenario, name, status, pid, procs, start_pid, start_procs, extra)
         env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
                    FAKE_STATE=str(home / "state.json"), FAKE_DAEMON_PID=str(dpid),
                    FAKE_DAEMON_ARGS=f"PM2 v5.4.2: God Daemon ({home})")
@@ -308,6 +314,74 @@ def test_status_and_pid_modes_are_read_only(life):
     assert r.returncode == 0 and r.stdout.strip() == "9000100"
     r, _, _ = life("pid", "tide", status="stopped", pid=0, chain=False)
     assert r.returncode != 0 and "not online" in r.stderr
+
+
+# VM24, 2026-10-29: the stopped app odbbathy has no pid in `pm2 jlist`
+# (PM2 5.4.2 loads a stopped app from its dump with `process: {}`).
+STOPPED_NO_PID = {"name": "odbbathy", "status": "stopped", "pid": "MISSING", "restarts": 0}
+
+
+@pytest.mark.parametrize("pid", ["MISSING", None])
+def test_a_stopped_app_without_a_pid_reads_as_pid_0(life, pid):
+    r, calls, _ = life("status", "tide", status="stopped", pid=pid, chain=False)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "stopped 0 3"
+    assert calls == ["jlist"]
+
+
+def test_a_stopped_bystander_without_a_pid_does_not_block_any_mode(life):
+    r, _, _ = life("status", "tide", procs=TIDE_TREE, chain=False, extra=[STOPPED_NO_PID])
+    assert r.returncode == 0 and r.stdout.strip() == "online 9000100 3", r.stderr
+    r, _, _ = life("pid", "tide", procs=TIDE_TREE, chain=False, extra=[STOPPED_NO_PID])
+    assert r.returncode == 0 and r.stdout.strip() == "9000100", r.stderr
+    r, calls, _ = life("stop", "tide", procs=TIDE_TREE, extra=[STOPPED_NO_PID])
+    assert r.returncode == 0 and "NEXT_STEP_WOULD_RUN" in r.stdout, r.stderr
+    r, calls, _ = life("start", "tide", status="stopped", pid=0, start_procs=TIDE_NEW,
+                       extra=[STOPPED_NO_PID])
+    assert r.returncode == 0 and "NEXT_STEP_WOULD_RUN" in r.stdout, r.stderr
+
+
+def test_start_of_a_stopped_app_without_a_pid(life):
+    r, calls, _ = life("start", "tide", status="stopped", pid="MISSING", start_procs=TIDE_NEW)
+    assert r.returncode == 0, r.stderr
+    assert "OK start: tide online as pid 9000200" in r.stdout
+    assert [c for c in calls if c != "jlist"] == ["restart tide"]
+
+
+# Without a positive PID, an online app's executable and process tree cannot
+# be checked; any other status without a pid is not a state PM2 5.4.2
+# produces. Each makes every mode fail before pm2 stop or restart.
+BAD_PIDS = [("online", "MISSING"), ("online", None), ("online", 0), ("online", -5),
+            ("online", "9000100"), ("online", True), ("online", 9000100.0),
+            ("errored", "MISSING"), ("errored", None), ("launching", "MISSING"),
+            ("stopping", None)]
+
+
+@pytest.mark.parametrize("mode", ["status", "pid", "stop", "start"])
+@pytest.mark.parametrize("status, pid", BAD_PIDS)
+def test_a_target_without_a_valid_pid_fails_closed(life, mode, status, pid):
+    r, calls, _ = life(mode, "tide", status=status, pid=pid, procs=TIDE_TREE,
+                       start_procs=TIDE_NEW)
+    assert r.returncode != 0
+    assert "unexpected PM2 entry 'tide'" in r.stderr
+    assert "cannot read PM2 state" in r.stderr or "cannot read the PM2 app list" in r.stderr
+    assert "NEXT_STEP_WOULD_RUN" not in r.stdout
+    assert calls == ["jlist"]                       # refused before any pm2 action
+
+
+@pytest.mark.parametrize("status, pid", [("online", "MISSING"), ("errored", None)])
+def test_a_bystander_without_a_valid_pid_fails_closed(life, status, pid):
+    bad = {"name": "ghrsst", "status": status, "pid": pid, "restarts": 7}
+    r, calls, _ = life("stop", "tide", procs=TIDE_TREE, extra=[bad])
+    assert r.returncode != 0
+    assert "unexpected PM2 entry 'ghrsst'" in r.stderr
+    assert not any(c.startswith("stop") for c in calls)
+
+
+def test_malformed_restart_count_fails_closed(life):
+    bad = {"name": "ghrsst", "status": "online", "pid": 9000500, "restarts": None}
+    r, calls, _ = life("status", "tide", procs=TIDE_TREE, chain=False, extra=[bad])
+    assert r.returncode != 0 and "restart_time None" in r.stderr
 
 
 # --- dask_scheduler_check.sh -------------------------------------------------

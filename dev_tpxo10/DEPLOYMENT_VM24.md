@@ -1129,7 +1129,12 @@ and each exits non-zero unless every check passes.
     uses `pm2 restart`, and requires it online, stable for `--settle`
     seconds with an unchanged restart count, with `--expect-exec` in the
     PM2 PID's command line and exactly one matching process tree;
-  - both require every other PM2 app to keep its status and PID.
+  - both require every other PM2 app to keep its status and PID;
+  - every mode reads all PM2 apps and fails on a malformed entry. Only a
+    `stopped` app may lack a PID: PM2 5.4.2 omits `pid` for an app it loaded
+    as stopped from its dump (VM24's `odbbathy`). An online app needs a
+    positive integer PID, or its executable and process tree could not be
+    checked.
 - `conf/dask_scheduler_check.sh drained|ready` reads the scheduler's own
   `/health`, `/metrics`, and `/json/identity.json` on `127.0.0.1:8787`. It
   never creates a Dask client. `drained` needs zero clients and zero tasks
@@ -1156,7 +1161,11 @@ Tested:
   (`tests/test_stop_first_scripts.py`): stop and start pass, and fail
   closed on a respawn, an orphan, a surviving tree process, a duplicate
   tree, the wrong executable, a crash loop, a raised restart count, a failed
-  pm2 call, a change to another app, and a dead daemon. The scheduler checks
+  pm2 call, a change to another app, and a dead daemon. A stopped app
+  without a `pid` reads as PID 0 and can be started; an online app without
+  a positive integer PID, an errored, launching, or stopping app without
+  one, and a malformed bystander entry fail every mode before any pm2
+  action. The scheduler checks
   fail closed on clients, tasks, worker count, worker status, nanny owner,
   and an unreachable scheduler.
 - Sandbox runs of the run sheet's own blocks (`tests/test_deployment_doc.py`)
@@ -1191,16 +1200,26 @@ Tested:
     the start check failed; the stop check then brought it to `stopped`;
   - an extra Dask client made `drained` fail until it disconnected;
   - stopping an already stopped app was refused.
+- Real PM2 5.4.2 in an isolated `PM2_HOME` (macOS, 2026-10-29): an app
+  stopped, then `pm2 save`, `kill`, and `resurrect`, comes back with no
+  `pid` in `jlist`, as on VM24. The `364af40` lifecycle script failed on it
+  even when asked about another app; the current one reads it as
+  `stopped 0`, starts it with `pm2 restart`, and stops it again.
+- Read-only on VM24, 2026-10-29 (see "VM24 preflight record"): preflights A
+  and C, preflight B with the parser fixed, and the pre-stop checks of the
+  four apps (executable and one match root each), cut off before any pm2
+  action.
 
 Derived from source, not run against the real services:
 
 - the PM2 and nanny behaviour above, for the VM24 entries;
 - that the real Tide and MHW reconnect to a restarted scheduler at startup
   (both create their client at startup, and MHW again per request);
-- `py311_quiescent.sh` on a real Linux `/proc`, run as root, and the
-  nanny-port lookup with `ss`: macOS has neither, so the rehearsal used
-  `pgrep` on the venv path and `lsof`, and the unit tests used a fake
-  `/proc` and a fake `ss`.
+- `py311_quiescent.sh` on a real Linux `/proc`, run as root: macOS has no
+  `/proc`, so the rehearsal used `pgrep` on the venv path and the unit tests
+  a fake `/proc`. As odbadmin on VM24 it fails closed as designed (147
+  processes of other users unreadable, 2026-10-29); the root run is still
+  open. The nanny-port lookup with `ss` did run on VM24 (preflight B).
 
 Unknown until the window:
 
@@ -1208,10 +1227,73 @@ Unknown until the window:
   20 seconds each, including an 8-second stability wait; the run sheet uses
   the 10-second default);
 - whether the real `dask-scheduler` and `dask-worker` PM2 entries start
-  cleanly with their stored TLS arguments (the rehearsal used plain `tcp://`);
+  cleanly with their stored TLS arguments and the production certificates.
+  The rehearsal used plain `tcp://`; the isolated VM24 TLS test (see "VM24
+  preflight record") used production's flags with a throwaway CA, on other
+  ports, outside PM2. Neither proves the production restart: this is a risk
+  to accept before scheduling, or to narrow with another isolated test on
+  other ports and its own `DASK_TEMPORARY_DIRECTORY`;
 - whether any process outside PM2 uses py311 in the window without loading
   a compiled module from it (`py311_quiescent` sees command lines and
   mapped files only).
+
+### VM24 preflight record (read-only, 2026-10-29)
+
+Nothing was installed, no pm2 action ran, and no service was stopped or
+restarted. `pm2 jlist` was the only PM2 command.
+
+- Checkout `/home/odbadmin/tmp/tide-zarr-364af40`, detached at `364af40`
+  with no tracked or untracked changes, cloned from a git bundle copied
+  from a workstation (VM24 has no credentials for the repository). The
+  parser fix below changes `pm2_app_lifecycle.sh`, so the approved commit
+  needs a new checkout and new hashes.
+- Preflights A and C, run verbatim from the run sheet: `prepared` present,
+  no `applied`, both wheels match, zarr 2.18.6, freeze identical to the
+  `prepare` snapshot, `STATE before`. Nothing in `$D` changed.
+- Preflight B failed at `pm2_app_lifecycle.sh status`: the stopped app
+  `odbbathy` has no `pid` in `jlist`, and the parser raised `KeyError`.
+  With that line fixed in a separate copy it passed: PM2 5.4.2 daemon PID
+  3352, MHW launcher PID 96946, Dask TLS files readable, no MHW update, the
+  four apps online, and Dask with 4 clients, 0 tasks, and one worker whose
+  nanny port PID 101867 owns (`ss`).
+- The same copy, cut off before any pm2 action, passed the pre-stop checks
+  of all four apps: the PM2 PID runs the expected executable, and exactly
+  one match root lies in its tree.
+- Of odbadmin's processes, only the four apps use py311 (10 processes).
+  PM2 runs five other apps (`ghrsst`, `ghrsst_mcp`, `woa23`, `gateway`, and
+  the stopped `odbbathy`); none uses py311. Other users' processes need the
+  root check.
+- `py311_quiescent.sh --inspectable-only` as odbadmin fails closed as
+  designed (147 processes of other users unreadable). The root run was not
+  done; run it against the approved checkout and record the script hash.
+- An isolated Dask TLS test, with production's scheduler and worker flags
+  on ports 18786 and 18787, a throwaway CA, `env -i` with its own `HOME`
+  and `DASK_CONFIG`, py311 with `-I -B`, outside PM2:
+  - a nanny-managed worker registered, a task round trip and a small
+    dask.array computation succeeded, and `ready` and `drained` passed
+    against it;
+  - the scheduler refused plaintext, a client without a certificate
+    (`CERTIFICATE_REQUIRED`), and a certificate from another CA
+    (`UNKNOWN_CA`);
+  - on SIGINT to the tree, children first, the nanny closed without
+    restarting the worker, and the scheduler exited;
+  - production showed the same PIDs, 4 clients, 1 worker, and 0 tasks
+    before and after, and no test process was left.
+
+  Its limits: it proves neither the production certificates nor a start
+  under PM2. Its scheduler also used production's `/tmp/dask-scratch-space`,
+  because `DASK_TEMPORARY_DIRECTORY` was not set, and rewrote the
+  modification times of the lock files there (`locket` opens them with
+  `"wb"`). Dask's leftover purge removes only directories whose `flock` it
+  can take; production holds both of its own, and nothing was removed. A
+  repeat must set its own `DASK_TEMPORARY_DIRECTORY`.
+- distributed 2025.3.0 answered `/json/identity.json` once with HTTP 500
+  right after the test's tasks ran (tuple keys in a worker's metrics). The
+  Dask check read that as not ready, retried, and passed, but printed a
+  Python traceback; an operator may see one in the window.
+- The production Dask certificates are valid until 2027-11-25 (the CA until
+  2036-10-21), and odbadmin can read the four keys. Only the expiry dates
+  were read.
 
 ### MHW post-start smoke (proposed)
 

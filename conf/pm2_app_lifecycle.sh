@@ -38,7 +38,8 @@
 # pid:    prints the PID of APP when it is online; never changes anything.
 # status: prints "STATUS PID RESTARTS" of APP; never changes anything.
 # Both stop and start also require every other PM2 app to keep its status
-# and PID, and the daemon to be the same one at the end.
+# and PID, and the daemon to be the same one at the end. Every mode fails if
+# any PM2 entry is malformed; only a stopped app may lack a PID (see apps).
 #
 # The target daemon is always --pm2-home (default: production
 # /home/odbadmin/.pm2); an inherited PM2_HOME is ignored. pm2 is never called
@@ -48,7 +49,7 @@ set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-usage() { sed -n '2,46p' "$0" >&2; exit 2; }
+usage() { sed -n '2,47p' "$0" >&2; exit 2; }
 
 [ $# -ge 1 ] || usage
 MODE=$1
@@ -112,12 +113,31 @@ fi
 export PM2_HOME=$TARGET_HOME
 
 # apps: one "NAME STATUS PID RESTARTS" line per PM2 app, sorted.
+# PM2 5.4.2 omits pid for an app it loaded as stopped (resurrect or dump:
+# God.prepare gives it `process: {}`), as for odbbathy on VM24. Only for
+# status stopped is a missing or null pid read as 0. Any other missing or
+# malformed field fails the whole read, and so does an online app without a
+# positive PID: its PID, executable, and process tree could not be checked.
 apps() {
   "$PM2" jlist | python3 -I -c '
 import json, sys
+def bad(p, why):
+    sys.exit("unexpected PM2 entry %r: %s" % (p.get("name"), why))
 for p in json.load(sys.stdin):
     e = p["pm2_env"]
-    print(p["name"], e["status"], p["pid"], e["restart_time"])
+    name, status, restarts = p["name"], e["status"], e["restart_time"]
+    pid = p.get("pid")
+    if pid is None and status == "stopped":
+        pid = 0
+    if not isinstance(name, str) or name.split() != [name]:
+        bad(p, "name")
+    if not isinstance(status, str) or status.split() != [status]:
+        bad(p, "status %r" % (status,))
+    if type(pid) is not int or pid < 0 or (status == "online" and pid == 0):
+        bad(p, "status %s with pid %r" % (status, pid))
+    if type(restarts) is not int or restarts < 0:
+        bad(p, "restart_time %r" % (restarts,))
+    print(name, status, pid, restarts)
 ' | LC_ALL=C sort
 }
 
