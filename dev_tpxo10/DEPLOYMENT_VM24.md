@@ -530,7 +530,8 @@ earlier start, so always set the target store explicitly.
 PM2=$HOME/.npm-global/bin/pm2
 cd /home/odbadmin/python/tide_tpxo10_atlas_v2
 
-# Roll back to TPXO9 (pre_stop of `tide` kills every tide_app process).
+# Roll back to TPXO9. `pm2 delete tide` signals only the tide process tree;
+# PM2 5.4.2 never runs the entry's pre_stop (see "PM2 and Dask lifecycle facts").
 $PM2 delete tide
 TIDE_ZARR_PATH=/home/odbadmin/python/tide/data/tpxo9.zarr \
   $PM2 start conf/ecosystem.config.js
@@ -569,10 +570,12 @@ Constraints:
 - Run it from a separate checkout or worktree of the commit under test
   (release sequence step 2). Never write new code into the release directory
   for a canary.
-- Never start it through PM2: the `tide` entry's `pre_stop` kills every
-  process whose command line contains `tide_app`, which would hit both the
-  canary and production. Do not use `conf/start_app.sh` either: it binds
-  `127.0.0.1:8040` and enables `--reload`.
+- Never start it through PM2 or the `tide` entry, which is the production
+  app. The entry's `pre_stop` would kill every process whose command line
+  contains `tide_app`, the canary and production alike; PM2 5.4.2 never runs
+  it (see "PM2 and Dask lifecycle facts"), but do not rely on that. Do not
+  use `conf/start_app.sh` either: it binds `127.0.0.1:8040` and enables
+  `--reload`.
 - Always select the store under test with an absolute `TIDE_ZARR_PATH` (the
   TPXO9 or TPXO10 path above); do not rely on `data/` in the checkout.
 - Use a currently valid certificate and key for `eco.odb.ntu.edu.tw` (the
@@ -721,9 +724,10 @@ the `tide` entry:
 - Every `pm2` command in this test must carry the isolated `PM2_HOME`. A
   `pm2` command without it acts on the production daemon; `pm2 kill`
   without it would stop every production service.
-- The dummy app is not a `tide_app` process and has no `pre_stop`. A
-  separate `PM2_HOME` does not sandbox commands run by `pre_stop`, so never
-  use the production `conf/ecosystem.config.js` for this test.
+- The dummy app is not a `tide_app` process and has no `pre_stop`. Never
+  use the production `conf/ecosystem.config.js` for this test: it defines
+  the production `tide` app, and a separate `PM2_HOME` would not sandbox its
+  `pre_stop` under a PM2 version that ran it (5.4.2 does not).
 - Name the dummy config `envprobe.config.cjs`, not `.js`.
   `/home/odbadmin/tmp/package.json` puts `.js` files under
   `/home/odbadmin/tmp` in ES module scope, and PM2 loads ecosystem files with
@@ -975,40 +979,10 @@ plus `pyenv sh-activate`, whose output was printed and never evaluated. No
   `dask-scheduler` and `dask-worker`, both with `autorestart` true. Nothing
   else runs on py311.
 
-### Service handling during the install
+### Dask and Zarr evidence (read-only, 2026-10-28)
 
-Neither option has been exercised on VM24 or in a rehearsal. Both carry a
-risk of client errors.
-
-|  | Install while running, then restart (proposed, not validated) | Stop Tide and MHW, install, start |
-|---|---|---|
-| Client impact | Workers reload during the install, then two controlled restarts. Requests can fail during both. | Both APIs are down from the stop to the start. |
-| Race | pip removes the installed `zarr` package and writes every file of the new one, not only `version.py`. In between, the package on disk is incomplete, and the `--reload` polling of Tide and MHW workers can fire. A worker that starts then can fail to import Zarr or import a mix, and clients get errors. MHW data requests in that period also send Dask graphs with Zarr-backed reads, which the Dask worker runs (see below). | With both APIs stopped, no API worker reloads, and MHW, the only task submitter found, sends no work to Dask. The Dask scheduler and worker stay up on py311, so stopping the APIs does not remove the import risk (see below). |
-| Recovery | Expected from the code and configuration below, not demonstrated. | Depends on a start procedure that does not exist yet. |
-| Tooling | Existing scripts: `py311_zarr_align.sh`, then `pm2_restart_check.sh` (no `--update-env`; it checks the new PID, restart count +1, stability, and executable). That check has run against `tide` in isolation and never against the real `mhwapi`. | Needs `pm2 stop` and `pm2 start` for both apps. `pm2_restart_check.sh` would report a correct start as a failure, because the restart count does not rise for a stopped app. No start check exists, and stopping `tide` runs its broad `pre_stop`. |
-| On failure | The `&&` chain stops at the first failed check, and the owner decides. | Manual. A failed start leaves an API down. |
-
-Expected recovery for the first option, read from py311's Gunicorn 23.0.0
-code and PM2's dump. None of it has been observed during a package swap.
-
-- Each Gunicorn master manages its own workers and starts a new worker when
-  one exits.
-- If a new worker fails to boot or to load the app, the master stops itself
-  (`HaltServer` on `WORKER_BOOT_ERROR` or `APP_LOAD_ERROR` in
-  `gunicorn/arbiter.py`).
-- PM2 then restarts only the process it manages, because `autorestart` is on
-  for both entries in `~/.pm2/dump.pm2`:
-  - for `tide`, that process is the Gunicorn master itself;
-  - for `mhwapi`, it is the `bash` launcher, which starts a new Gunicorn.
-
-  PM2 never manages individual workers.
-- A worker that imported a partial package but kept running is not replaced
-  by any of this. Only the controlled restarts after `apply` replace it.
-
-#### Dask and Zarr during the install (read-only, 2026-10-28)
-
-The Dask scheduler and worker stay up under either option. They run on
-py311 without `--reload`, so the swap itself does not restart them.
+The Dask scheduler and worker run on py311 without `--reload`, so a package
+swap alone does not restart them.
 
 Source evidence (MHW at `920f0da` with no local changes; the Tide release
 directory):
@@ -1051,58 +1025,190 @@ during a later window.
 
   Bursts arrive at different hours.
 
-What this means:
+What this means for the service order:
 
 - **APIs running during `apply`:** an MHW data request during the swap makes
   MHW submit a Dask graph with Zarr-backed reads. The scheduler deserializes
   and schedules it, and the Dask worker runs the read tasks. Whether any of
   these processes loads a not-yet-loaded Zarr module during the swap is
   unknown. Requests can arrive at any hour, sometimes hundreds an hour.
-- **APIs stopped, Dask running:** MHW is the only task submitter found in the
+- **Only the APIs stopped:** MHW is the only task submitter found in the
   source and in the snapshot, so stopping it removes the known source of
-  Zarr work on Dask. The snapshot does not show that nothing else will
-  connect: any process with a valid client certificate can. A scheduler or
-  worker restart during the swap is also not covered.
-- The impact on the Dask worker is unknown under both options. Neither order
-  is shown to be safe.
+  Zarr work on Dask. The scheduler and worker would still run on py311, any
+  process with a valid client certificate could connect, and a scheduler or
+  worker restart during the swap is not covered. Stopping the APIs does not
+  remove the import risk.
+- Hence the stop-first proposal below stops the Dask worker and scheduler
+  as well.
 
-**Proposed order, not validated: install while running, then immediately
-restart Tide and then MHW**, each through `pm2_restart_check.sh` and each
-followed by its smoke.
+### Service handling: stop first (proposed, not approved)
 
-- Why it is proposed over stopping first: it needs no start procedure. The
-  controlled restarts replace every worker after `apply`, whatever state
-  each worker is in, and the chain stops at the first failed check.
-- It accepts a short window of possible client errors during the install.
-  Its recovery is not demonstrated: no evidence covers Gunicorn and PM2
-  behaviour while pip replaces the package.
-- The `mhwapi` restart check has never run against the real `mhwapi`. The
-  isolated rehearsal used a dummy app started by `bash`, which does not
-  validate it.
-- The owner may require a recovery rehearsal before approving. That would
-  mean:
-  - a throwaway venv created from py311, and a copy of each app running on
-    a spare port with `--reload`;
-  - reinstalling the Zarr wheels while requests run;
-  - recording the errors seen and the recovery.
+Proposed order, not validated on VM24: stop every py311 service, check that
+no process uses py311, run `apply`, check the package, then start Dask, Tide,
+and MHW and run their checks. Both APIs are down from the first stop to the
+last start. The rehearsal below ran this sequence against real PM2 and Dask
+with dummy apps; it has never run in production.
 
-  It has not been done.
-- Do not restart the Dask scheduler and worker in this window; restart them
-  later under the host runbook. Until then they keep whatever Zarr modules
-  they have already loaded, and their exposure during the swap is unknown
-  (see above).
-- This order is **not approved**. The owner must approve it, or choose
-  another, and the MHW maintainer must agree to the `mhwapi` restart and
-  the smoke below. The owner's Zarr-only authorization does not approve this
-  order.
+| PM2 app | Stopped | Why |
+|---|---|---|
+| `mhwapi` | first | Every data request submits a Dask graph with Zarr-backed reads (see "Dask and Zarr evidence"), and its Gunicorn runs with `--reload`. |
+| `tide` | second | It submits no Dask work, but it runs on the same py311 with Gunicorn `--reload`, whose polling reloader watches the loaded Zarr files. A reload during the swap can import an incomplete package. Nothing shows otherwise, so it is stopped. |
+| `dask-worker` | after the drain check | It runs the Zarr-backed read tasks. It stops only after the scheduler reports no client and no task. |
+| `dask-scheduler` | last | See below. |
 
-### MHW restart and post-restart smoke (proposed)
+**Decision: stop the Dask scheduler too.** Evidence and reasoning:
 
-The restart is `pm2_restart_check.sh --name mhwapi --expect-exec
-/home/odbadmin/proj/marineheatwave/API/conf/start_app.sh`. The executable
-it expects is the launcher, because that is PM2's PID for `mhwapi`. It has
-never run against the real `mhwapi`. The isolated rehearsal used a dummy app
-started by `bash`, which does not count as validating it.
+- It deserializes every MHW graph (`update_graph` in distributed 2025.3.0),
+  and numcodecs, which Zarr imports, is loaded in it. Once both APIs and the
+  worker are stopped and the drain check has passed, it has no known work.
+- Stopped, the whole precondition for `apply` becomes one checkable fact:
+  no process runs or maps a file from py311 (`py311_quiescent`). Running,
+  that check would have to exempt it, and any process holding a Dask client
+  certificate could still connect and submit a graph during the swap.
+- Running, it would keep its pre-`apply` Zarr modules in memory while the
+  restarted worker and APIs load 2.18.7, a mix that lasts until it is next
+  restarted.
+- The drain check requires zero clients, so stopping it disconnects nobody
+  that was observed.
+- Cost and residual risk of stopping it: its start has never run in
+  production. If it fails, the start sequence stops before the APIs (see
+  "Recovery"); Tide does not need Dask, and MHW falls back to local
+  execution, which is a behaviour change that needs the MHW maintainer.
+- Residual risk if it were kept running instead: the unobserved-client case
+  above and the lasting version mix. This is why the proposal stops it.
+
+### PM2 and Dask lifecycle facts
+
+Source-derived from PM2 5.4.2 (the npm package, `lib/`) and distributed
+2025.3.0, and exercised in the rehearsal unless marked otherwise:
+
+- **`pre_stop` never runs.** PM2 5.4.2 has no such option: it is absent from
+  `lib/API/schema.json` and referenced nowhere in `lib/`. The broad
+  `pre_stop` kill pattern in `conf/ecosystem.config.js` is therefore never
+  executed by `pm2 stop tide`. In the rehearsal, a `tide` app whose
+  `pre_stop` would touch a marker file never created it, and a process named
+  `tide_app` outside PM2 survived the stop. The live `tide` entry was not
+  re-read this round; because PM2 ignores the key either way, preflight B
+  instead requires the daemon to be `PM2 v5.4.2`. If it is not, stop: check
+  `pre_stop` support for that version before any `pm2 stop`.
+- **`pm2 stop NAME`** sends SIGINT to every process of the app's tree,
+  children first, and SIGKILL to the tree if the main PID is still alive
+  after `kill_timeout` (1600 ms by default). It waits only for the main PID.
+  A stopped app is never restarted by `autorestart`. NAME is matched as an
+  exact app name first and as a namespace only when no app has that name.
+- **Starting a stopped app**: `pm2 restart NAME` starts it with its stored
+  environment (no `--update-env`, so the operator's shell never reaches it)
+  and leaves the restart count unchanged. `pm2 start NAME` is not used: when
+  no app or namespace has that name, it falls through to starting a new app
+  from a script path.
+- **The Dask nanny**: the `dask-worker` command closes its nanny on SIGINT
+  (`Closing Nanny … Reason: signal-2`), and the nanny closes the worker. The
+  nanny restarts a worker only when the worker exits while the nanny itself
+  is still running. In the rehearsal the worker log shows the close and no
+  `Restarting worker`, and no process was left.
+- On VM24, `dask-scheduler` and `dask-worker` are PM2 apps run through
+  `/bin/bash` with interpreter `none`; PM2's PID is the scheduler or the
+  nanny itself (read-only, 2026-10-28). The worker process and the
+  multiprocessing resource tracker are the nanny's children.
+
+### Helper scripts
+
+All three are read-only except the two PM2 actions of the lifecycle script,
+and each exits non-zero unless every check passes.
+
+- `conf/pm2_app_lifecycle.sh stop|start|status|pid` stops or starts one PM2
+  app and verifies it:
+  - it calls pm2 only after proving the production daemon alive (the same
+    check as `pm2_restart_check.sh`) and never follows an inherited
+    `PM2_HOME`;
+  - stop records the app's process tree, waits for every PID of it, then
+    requires the app to stay stopped for `--settle` seconds with no process
+    carrying the app's `--match` word (no respawn by PM2 or a nanny, no
+    orphan);
+  - start accepts only a stopped or errored app with no matching process,
+    uses `pm2 restart`, and requires it online, stable for `--settle`
+    seconds with an unchanged restart count, with `--expect-exec` in the
+    PM2 PID's command line and exactly one matching process tree;
+  - both require every other PM2 app to keep its status and PID.
+- `conf/dask_scheduler_check.sh drained|ready` reads the scheduler's own
+  `/health`, `/metrics`, and `/json/identity.json` on `127.0.0.1:8787`. It
+  never creates a Dask client. `drained` needs zero clients and zero tasks
+  in every state; `ready` needs N running workers, optionally each with a
+  nanny port owned by a given PID and an exact client count.
+- `conf/py311_zarr_state.sh` prints `STATE before`, `STATE after`, or
+  `STATE unknown` with reasons. A known state needs the Zarr version, the
+  freeze (the `prepare` snapshot, or it with only the zarr line changed),
+  `pip check`, and the installed zarr files (every RECORD hash, no extra
+  file in the package) to agree. `--expect` makes it fail on the other
+  known state.
+
+### What is tested, derived, and unknown
+
+Tested:
+
+- Unit tests with a simulated PM2 daemon and process table
+  (`tests/test_stop_first_scripts.py`): stop and start pass, and fail
+  closed on a respawn, an orphan, a surviving tree process, a duplicate
+  tree, the wrong executable, a crash loop, a raised restart count, a failed
+  pm2 call, a change to another app, and a dead daemon. The scheduler checks
+  fail closed on clients, tasks, worker count, worker status, nanny owner,
+  and an unreachable scheduler.
+- Sandbox runs of the run sheet's own blocks (`tests/test_deployment_doc.py`)
+  with the scripts replaced by stubs: preflight B and its refusals, the
+  per-app match words, the stop and start order, a stop or start that halts
+  at the first failure inside an `&&` list, skipped apps already in the
+  target state, `py311_quiescent` against a fake `/proc` (a py311 command
+  line, a mapped py311 library, unreadable maps), and the recovery chains,
+  which start nothing on `STATE unknown`.
+- The state check against a real venv with real pip and hand-built zarr
+  wheels: before, after, a changed file, a missing file, a stray file, an
+  extra package, and a Zarr that does not import. The same venv shows that
+  without `--force-reinstall` pip reports a damaged 2.18.6 with intact
+  metadata as "already satisfied"; `rollback` therefore force-reinstalls.
+- `dev_tpxo10/rehearsal/stop_first_rehearsal.sh`, 2026-10-29, on macOS with
+  PM2 5.4.2, distributed and dask 2025.3.0, Gunicorn 23.0.0, numpy 2.2.4,
+  and Python 3.11 in an isolated `PM2_HOME`:
+  - four apps shaped like VM24's (scheduler and nanny-managed worker run
+    through `bash -c exec`, a Tide-like app whose PM2 PID is the Gunicorn
+    master, an MHW-like app under a bash launcher whose requests compute
+    through the default Dask client), under continuous MHW-like traffic;
+  - stop MHW, stop Tide, `drained`, stop the worker, stop the scheduler, no
+    process left from the venv; `pre_stop` never ran and the `tide_app`
+    bystander survived; the nanny logged no worker restart;
+  - start the scheduler, the worker (registered, nanny port owned by PM2's
+    PID), Tide, and MHW; four clients again and both apps answering;
+  - a scheduler that cannot bind its port crash-looped into `errored` and
+    the start check failed; the stop check then brought it to `stopped`;
+  - an extra Dask client made `drained` fail until it disconnected;
+  - stopping an already stopped app was refused.
+
+Derived from source, not run against the real services:
+
+- the PM2 and nanny behaviour above, for the VM24 entries;
+- that the real Tide and MHW reconnect to a restarted scheduler at startup
+  (both create their client at startup, and MHW again per request);
+- `py311_quiescent` and the nanny-port lookup on Linux: macOS has no
+  `/proc` and no `ss`, so the rehearsal used `pgrep` on the venv path and
+  `lsof`, and the unit tests used a fake `/proc` and a fake `ss`.
+
+Unknown until the window:
+
+- how long each real stop and start takes (the rehearsal's took about 10 to
+  20 seconds each, including an 8-second stability wait; the run sheet uses
+  the 10-second default);
+- whether the real `dask-scheduler` and `dask-worker` PM2 entries start
+  cleanly with their stored TLS arguments (the rehearsal used plain `tcp://`);
+- whether any process outside PM2 uses py311 in the window without loading
+  a compiled module from it (`py311_quiescent` sees command lines and
+  mapped files only).
+
+### MHW post-start smoke (proposed)
+
+MHW is started by `app start mhwapi` (step 8 of the run sheet), which runs
+`pm2_app_lifecycle.sh start` with `--expect-exec
+/home/odbadmin/proj/marineheatwave/API/conf/start_app.sh`: the launcher is
+PM2's PID for `mhwapi`. It has never run against the real `mhwapi`; the
+rehearsal used a dummy app under a bash launcher.
 
 Then `mhw_check` (defined in the run sheet) runs these read-only checks:
 
@@ -1174,9 +1280,12 @@ with `--no-deps`, `--no-index`, and `--require-hashes`. Then it requires:
 - an accepted `pip check` result identical to the `prepare` one;
 - zarr to import as 2.18.7.
 
-`rollback` installs the saved 2.18.6 wheel the same way. It requires the
-freeze and an accepted `pip check` result to match the `prepare` snapshot
-exactly. A directory accepts one `apply`.
+`rollback` installs the saved 2.18.6 wheel the same way, with
+`--force-reinstall`: without it, pip reports a damaged 2.18.6 whose metadata
+is intact as already satisfied and rewrites nothing (shown with real pip in
+`tests/test_stop_first_scripts.py`). It requires the freeze and an accepted
+`pip check` result to match the `prepare` snapshot exactly. A directory
+accepts one `apply`.
 
 ### Production run sheet
 
@@ -1185,7 +1294,7 @@ recorded here, before the window starts. Do not run `apply` while any item
 is open.
 
 The owner's Zarr-only authorization does not settle any of them. In
-particular, it does not approve the service order, which is still a
+particular, it does not approve the stop-first order, which is still a
 proposal.
 
 - [x] Owner authorization, 2026-10-28: Zarr 2.18.6 → 2.18.7 in the shared
@@ -1199,57 +1308,57 @@ proposal.
         `prepared` marker, and no `applied` marker;
       - both wheels match their pinned hashes (rechecked later on
         2026-10-28).
-- [x] Production PM2 daemon, read-only: PID 3352, with an untruncated
-      title.
-- [x] `replace_runtime_files.sh` scratch rehearsal on VM24. This
-      maintenance does not use it.
-- [x] Canary symlinks removed. The release runtime hashes were unchanged
-      (`a1de99c748a2ee1c…`).
+- [x] Production PM2 daemon, read-only: PID 3352, title
+      `PM2 v5.4.2: God Daemon (/home/odbadmin/.pm2)`.
 - [x] MHW API and cron interpreters: pyenv resolves both to py311,
-      read-only (see "MHW facts"). Neither is recorded by a run after a
-      restart, and the cron does not log its interpreter. The launcher's
-      TLS files are readable.
-- [x] MHW smoke baseline taken (see above).
+      read-only (see "MHW facts"). The launcher's TLS files are readable.
+- [x] MHW smoke baseline taken (see "MHW post-start smoke").
+- [x] Dask usage and snapshot, read-only (see "Dask and Zarr evidence").
+- [x] Isolated stop-first rehearsal, 2026-10-29 (see "What is tested").
 - [ ] Owner and MHW maintainer: the window, with its date and time. It
-      must not overlap the MHW cron at 04:50 on the 18th.
-- [ ] Owner: approve the service order, which is proposed and not
-      validated (see "Service handling during the install"), or choose
-      another. The owner may ask for the recovery rehearsal first.
-- [ ] MHW maintainer: agree to the `mhwapi` restart, which has never run
-      against the real app, and to the smoke expectations.
-- [ ] Owner: when to restart the Dask scheduler and worker. Recommended:
-      after this window. They stay up during the install under either
-      service order, and the impact of the swap on the worker is unknown.
-- [ ] Reviewer: approve PR #3 (scripts and this run sheet).
+      must not overlap the MHW cron at 04:50 on the 18th. Both APIs are
+      down for the whole sequence.
+- [ ] Owner: approve the stop-first order, including stopping and starting
+      the Dask scheduler and worker in the window, or choose another.
+- [ ] MHW maintainer: agree to stopping and starting `mhwapi`,
+      `dask-worker`, and `dask-scheduler` through PM2 (never run against
+      the real apps), and to the smoke expectations.
+- [ ] Owner or the maintainer of the host Dask runbook: confirm that no
+      service other than Tide and MHW needs the Dask scheduler in the
+      window. Only those two were connected on 2026-10-28.
+- [ ] Owner: reachable during the whole window for the recovery decisions
+      below.
+- [ ] Reviewer: approve this run sheet and its scripts.
 - [ ] Operator: a checkout `SRC` of the approved commit on VM24, with no
       tracked changes. The sha256 of its `conf/py311_zarr_align.sh`,
-      `conf/pm2_restart_check.sh`, and `conf/https_smoke.sh` must match
-      that commit.
-      - Today those scripts are split across two places. The aligner is
-        only in `/home/odbadmin/tmp/tide-pr3-ca304d9-ops/`. The other two
-        are in the `ef780ea` checkout `/home/odbadmin/tmp/tide-v032-codex-20261027`.
-      - All three match the current PR head, but neither place holds all
-        three.
-- [ ] In the window: preflight A and B pass immediately before `apply`.
+      `conf/py311_zarr_state.sh`, `conf/pm2_app_lifecycle.sh`,
+      `conf/dask_scheduler_check.sh`, and `conf/https_smoke.sh` must match
+      that commit. The 2026-10-28 `prepare` directory stays valid: this
+      change to the aligner touches only `rollback`.
+- [ ] In the window: preflight A, B, and C pass immediately before the
+      stop.
 
 Only Zarr may change. In the window, run no `pip`, `pyenv`, or `uv`
 command against py311 other than the ones below. Do not re-run `prepare`
 into `$D`, download wheels again, or edit anything in `$D`.
 
 Run the steps in order, in one shell on VM24. Each block stops at the first
-failure. If any block fails, stop and report to the owner.
+failure. On any failure, follow "Recovery" and report to the owner; never
+skip ahead.
 
 1. Set the variables. `$D` is the 2026-10-28 `prepare` directory.
 
    ```bash
-   SRC=/home/odbadmin/tmp/tide-v0.3.2-$SHA   # approved checkout, see checklist
+   SRC=/home/odbadmin/tmp/tide-zarr-$SHA   # approved checkout, see checklist
    ALIGN="$SRC/conf/py311_zarr_align.sh"
+   ZSTATE="$SRC/conf/py311_zarr_state.sh"
+   DASKC="$SRC/conf/dask_scheduler_check.sh"
    D=/home/odbadmin/tmp/zarr-align-20261028T103416
    ```
 
 2. Preflight A, read-only: the artifacts are intact, and py311 still
    matches the `prepare` snapshot. `apply` repeats the freeze comparison,
-   but this block catches drift before the window's restarts begin.
+   but this block catches drift before any service stops.
 
 ```bash
 (
@@ -1281,12 +1390,18 @@ SUMS
      since then. Resolve the interpreter again (see "MHW facts") before
      continuing.
    - The MHW update must not be running.
+   - The PM2 daemon must be 5.4.2, whose `pm2 stop` never runs `pre_stop`.
+   - All four apps are online, and Dask has one worker under the PM2 nanny
+     and the four API clients. Anything else is an unknown state: stop.
 
 ```bash
 (
   set -euo pipefail
   fail() { echo "FAIL preflight: $*; do not apply" >&2; exit 1; }
   "$SRC/conf/pm2_restart_check.sh" --daemon-only --pm2-home /home/odbadmin/.pm2
+  title=$(ps -o args= -p "$(tr -dc '0-9' < /home/odbadmin/.pm2/pm2.pid)")
+  [ "$title" = "PM2 v5.4.2: God Daemon (/home/odbadmin/.pm2)" ] \
+    || fail "the PM2 daemon is '$title'; check pre_stop support for that version first"
   [ "$(ps -o args= -p 96946)" = "bash /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh" ] \
     || fail "the MHW launcher is no longer PID 96946"
   for f in certs/ca.crt certs/mhw-client.crt private/mhw-client.key; do
@@ -1296,11 +1411,28 @@ SUMS
   if pgrep -u odbadmin -f 'update_mhw\.(sh|py)' > /dev/null; then
     fail "the MHW update is running"
   fi
-  echo "OK preflight B: PM2 daemon alive; MHW launcher unchanged; no MHW update running"
+  life="$SRC/conf/pm2_app_lifecycle.sh"
+  for a in dask-scheduler dask-worker tide mhwapi; do
+    s=$("$life" status --pm2-home /home/odbadmin/.pm2 --name "$a")
+    [ "${s%% *}" = online ] || fail "$a is not online: $s"
+  done
+  nanny=$("$life" pid --pm2-home /home/odbadmin/.pm2 --name dask-worker)
+  "$SRC/conf/dask_scheduler_check.sh" ready --workers 1 --nanny-pid "$nanny" \
+    --clients 4 --timeout 10 \
+    || fail "Dask is not one worker under the PM2 nanny with the four API clients"
+  echo "OK preflight B: PM2 5.4.2 alive; MHW launcher unchanged; no MHW update; four apps online; Dask as expected"
 )
 ```
 
-4. Define the MHW checks and take the baseline right before `apply`, with
+4. Preflight C, read-only: py311 is exactly in the `before` state, with
+   every installed zarr file matching its RECORD.
+
+   ```bash
+   "$ZSTATE" --dir "$D" --expect before
+   ```
+
+5. Define the MHW checks and the maintenance helpers in the same shell,
+   then take the MHW baseline right before the stop, with
    `mhw_check "$D-mhw-before"`.
 
 ```bash
@@ -1332,7 +1464,7 @@ mhw_http_check() (
   set -euo pipefail
   out=${1:?usage: mhw_http_check OUT [BASE]}
   base=${2:-}
-  mkdir "$out"
+  mkdir "$out" || { echo "FAIL mhw: $out already exists or cannot be created" >&2; exit 1; }
   expect() {   # expect FILE PATH STATUS CONTENT_TYPE
     local got
     got=$(curl -sS --proto '=https' --max-time 60 -o "$out/$1" \
@@ -1368,54 +1500,208 @@ PY
 mhw_check() { mhw_proc_check && mhw_http_check "$@"; }
 ```
 
-5. Apply, then restart and check Tide, then MHW, in one `&&` chain:
+```bash
+# Maintenance helpers. They use SRC, DASKC, and D from step 1 and mhw_check
+# from the block above.
+#   app stop|start NAME   one PM2 app through pm2_app_lifecycle.sh
+#   py311_quiescent       no process runs or maps a file from py311
+#   stop_services         MHW, Tide, drain, worker, scheduler, then quiescent
+#   start_services SMOKE_OUT MHW_OUT
+#                         scheduler, worker, Tide + smoke, MHW + smoke, Dask
+# stop_services and start_services skip an app that is already in the target
+# state, so they also serve the recovery branches. Every step ends in
+# `|| exit 1`: bash ignores set -e inside a function called from an && list,
+# as these are, so the checks are explicit.
+PM2H=/home/odbadmin/.pm2
+PY311=/home/odbadmin/.pyenv/versions/py311/bin
+app() (
+  case "$2" in
+    tide) match=tide_app:app; exe=$PY311/gunicorn ;;
+    mhwapi) match=mhw_app:app; exe=/home/odbadmin/proj/marineheatwave/API/conf/start_app.sh ;;
+    dask-worker|dask-scheduler) match=$PY311/$2; exe=$match ;;
+    *) echo "FAIL: unknown app '$2'" >&2; exit 2 ;;
+  esac
+  "$SRC/conf/pm2_app_lifecycle.sh" "$1" --pm2-home "$PM2H" --name "$2" \
+    --match "$match" --expect-exec "$exe"
+)
+app_status() (
+  s=$("$SRC/conf/pm2_app_lifecycle.sh" status --pm2-home "$PM2H" --name "$1") || exit 1
+  echo "${s%% *}"
+)
+nanny_pid() { "$SRC/conf/pm2_app_lifecycle.sh" pid --pm2-home "$PM2H" --name dask-worker; }
+py311_quiescent() (
+  proc=/proc
+  P311=/home/odbadmin/.pyenv/versions/py311/ PROC_ROOT=$proc python3 -I - <<'PY'
+import os, sys
+p311, root, me = os.environ["P311"], os.environ["PROC_ROOT"], str(os.getpid())
+hits, unreadable = [], 0
+for pid in sorted(os.listdir(root)):
+    if not pid.isdigit() or pid == me:
+        continue
+    try:
+        with open(os.path.join(root, pid, "cmdline"), "rb") as f:
+            args = f.read().replace(b"\0", b" ").decode(errors="replace").strip()
+    except OSError:
+        continue                      # exited meanwhile
+    try:
+        with open(os.path.join(root, pid, "maps"), errors="replace") as f:
+            maps = f.read()
+    except PermissionError:
+        unreadable += 1
+        maps = ""
+    except OSError:
+        continue
+    if p311 in args or p311 in maps:
+        hits.append(pid + " " + args[:160])
+if hits:
+    sys.exit("FAIL: processes still use py311:\n  " + "\n  ".join(hits))
+print("OK quiescent: no process runs or maps a file from %s "
+      "(%d processes of other users not readable)" % (p311, unreadable))
+PY
+)
+stop_services() (
+  for a in mhwapi tide dask-worker dask-scheduler; do
+    st=$(app_status "$a") || exit 1
+    if [ "$a" = dask-worker ]; then
+      sched=$(app_status dask-scheduler) || exit 1
+      if [ "$sched" = online ]; then "$DASKC" drained || exit 1; fi
+    fi
+    if [ "$st" = stopped ]; then
+      echo "note: $a already stopped"
+    else
+      app stop "$a" || exit 1
+    fi
+  done
+  py311_quiescent || exit 1
+  echo "OK services stopped: MHW, Tide, Dask worker, Dask scheduler"
+)
+start_services() (
+  smoke_out=${1:?usage: start_services SMOKE_OUT MHW_OUT}
+  mhw_out=${2:?usage: start_services SMOKE_OUT MHW_OUT}
+  start_if_down() {
+    local st
+    st=$(app_status "$1") || return 1
+    case "$st" in
+      online) echo "note: $1 already online; not started" ;;
+      stopped|errored) app start "$1" || return 1 ;;
+      *) echo "FAIL: $1 is $st, an unexpected state" >&2; return 1 ;;
+    esac
+  }
+  start_if_down dask-scheduler || exit 1
+  st=$(app_status dask-worker) || exit 1
+  if [ "$st" = online ]; then n=1; else n=0; fi
+  "$DASKC" ready --workers "$n" || exit 1
+  start_if_down dask-worker || exit 1
+  nanny=$(nanny_pid) || exit 1
+  "$DASKC" ready --workers 1 --nanny-pid "$nanny" || exit 1
+  start_if_down tide || exit 1
+  "$SRC/conf/https_smoke.sh" --host eco.odb.ntu.edu.tw --mode prod \
+    --prod-port 443 --out-root "$smoke_out" || exit 1
+  start_if_down mhwapi || exit 1
+  mhw_check "$mhw_out" "$D-mhw-before" || exit 1
+  nanny=$(nanny_pid) || exit 1
+  "$DASKC" ready --workers 1 --nanny-pid "$nanny" --clients 4 || exit 1
+  echo "OK services started: Dask, Tide, and MHW pass their checks"
+)
+```
+
+6. Stop every py311 service. If this fails, nothing was installed: follow
+   R0.
 
    ```bash
-   "$ALIGN" apply --dir "$D" \
-     && "$SRC/conf/pm2_restart_check.sh" --pm2-home /home/odbadmin/.pm2 --name tide \
-     && "$SRC/conf/https_smoke.sh" --host eco.odb.ntu.edu.tw --mode prod \
-          --prod-port 443 --out-root "$D-smoke" \
-     && "$SRC/conf/pm2_restart_check.sh" --pm2-home /home/odbadmin/.pm2 --name mhwapi \
-          --expect-exec /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh \
-     && mhw_check "$D-mhw-after" "$D-mhw-before"
+   stop_services
    ```
 
-6. After `PASS mhw http`:
-   - check the new lines of MHW's `err.log` for the Dask fallback message;
+7. Apply, then require the `after` state. If this fails, follow R1.
+
+   ```bash
+   "$ALIGN" apply --dir "$D" && "$ZSTATE" --dir "$D" --expect after
+   ```
+
+8. Start the services against the validated 2.18.7, with all checks. If
+   this fails, follow R2.
+
+   ```bash
+   start_services "$D-smoke" "$D-mhw-after"
+   ```
+
+9. After `OK services started`:
+   - check the new lines of MHW's `err.log` for the Dask fallback message,
+     which should be absent now that the scheduler was up first;
    - run the py311 test suite from the approved checkout (release sequence
      step 2). The pin test should now pass.
 
 What to record here:
 
+- every `OK` line of steps 2 to 8, with times, and how long both APIs were
+  down;
 - `OK apply`, the freeze diff (`diff $D/freeze-before.txt $D/freeze-after.txt`
   shows only the zarr line), and `pip-check-before.txt` vs
   `pip-check-after.txt` (identical);
+- `STATE after`;
 - numcodecs 0.15.1 and numpy 2.2.4, unchanged;
-- Tide's `OK restart` and `PASS prod`;
-- MHW's `OK restart`, `OK mhw process`, and `PASS mhw http`;
-- the Dask fallback finding;
-- the py311 suite counts.
+- the Dask fallback finding and the py311 suite counts.
 
-If `apply` fails, nothing is restarted.
+### Recovery
 
-- Report to the owner with `$D/install.log` and the snapshots.
-- The state of py311 after a failed install is unknown. Rolling back is the
-  owner's decision.
-- If a check after `apply` fails, the chain stops there. Rolling back is
-  again the owner's decision.
+Two rules hold in every branch:
 
-Rollback to 2.18.6 uses the same `$D` and the same checks. The MHW point
-query must still match the pre-apply baseline:
+- Services start only against a known package state: `STATE before` or
+  `STATE after` from `py311_zarr_state.sh`. With `STATE unknown`, nothing
+  starts.
+- An API is never left stopped without a report. Whenever a branch ends with
+  services stopped, report at once to the owner and the MHW maintainer:
+  which apps are stopped, the failed step and its output, and the `STATE`
+  line.
+
+**R0. Step 2, 3, 4, or 6 fails (nothing installed).** Before the stop,
+nothing changed: report and stop. If step 6 failed part way, py311 is
+unchanged, so bring back whatever was stopped:
 
 ```bash
-"$ALIGN" rollback --dir "$D" \
-  && "$SRC/conf/pm2_restart_check.sh" --pm2-home /home/odbadmin/.pm2 --name tide \
-  && "$SRC/conf/https_smoke.sh" --host eco.odb.ntu.edu.tw --mode prod \
-       --prod-port 443 --out-root "$D-rollback-smoke" \
-  && "$SRC/conf/pm2_restart_check.sh" --pm2-home /home/odbadmin/.pm2 --name mhwapi \
-       --expect-exec /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh \
-  && mhw_check "$D-mhw-rollback" "$D-mhw-before"
+"$ZSTATE" --dir "$D" --expect before \
+  && start_services "$D-r0-smoke" "$D-mhw-r0"
 ```
+
+If this also fails, stop and report.
+
+**R1. Step 7 fails.** Run `"$ZSTATE" --dir "$D"` (read-only) and act on its
+`STATE` line:
+
+- `STATE before`: `apply` refused before installing (it printed
+  "nothing was installed"), or pip rolled its own install back and every
+  zarr file matches 2.18.6 again. Run the R0 block, then report.
+- `STATE after` or `STATE unknown`: stop and report. Do not start anything.
+  The services stay stopped until the owner decides: roll back (R3), or,
+  for `STATE after` only, accept 2.18.7 and run step 8.
+
+**R2. Step 8 fails.** The package was validated, so the state is known.
+Stop and report the failed check before doing anything else; the owner
+decides between:
+
+- rolling back (R3), recommended when a Tide or MHW check failed;
+- starting the rest against 2.18.7 after the cause is understood, with
+  `"$ZSTATE" --dir "$D" --expect after && start_services "$D-r2-smoke" "$D-mhw-r2"`.
+  It starts only the apps still stopped or errored and repeats every check.
+
+If a Dask app failed to start, MHW would fall back to local execution if it
+were started without Dask; that needs the MHW maintainer's agreement and is
+not a default.
+
+**R3. Rollback is selected.** Make py311 quiescent again, roll back, require
+the `before` state, and start everything. The MHW point query must still
+match the pre-apply baseline:
+
+```bash
+stop_services \
+  && "$ALIGN" rollback --dir "$D" \
+  && "$ZSTATE" --dir "$D" --expect before \
+  && start_services "$D-rollback-smoke" "$D-mhw-rollback"
+```
+
+`stop_services` skips apps that are already stopped and stops errored ones.
+If `rollback` or the state check fails, stop and report; nothing starts.
+That is the end of what this run sheet covers.
 
 To try again after a rollback, run `prepare` into a new directory.
 
@@ -1467,6 +1753,9 @@ and cron mail.
 - Parameterize host-specific paths in `conf/start_app.sh` (the launcher
   tests currently rewrite them in a sandbox copy).
 - Remove `--reload` from the production launcher.
-- Narrow the `tide` entry's `pre_stop` process match.
+- Remove the `tide` entry's `pre_stop` from `conf/ecosystem.config.js`. PM2
+  5.4.2 never runs it, so it is dead configuration whose broad `tide_app`
+  kill pattern would matter only under a PM2 version that did. Until then,
+  the Zarr run sheet's preflight B requires the daemon to be 5.4.2.
 - Clean up merged branches and VM24 temporary directories once the above is
   settled.
