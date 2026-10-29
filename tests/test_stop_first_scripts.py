@@ -73,10 +73,19 @@ if cmd == "jlist":
         if a["pid"] != "MISSING":
             e["pid"] = a["pid"]
         return e
-    print(json.dumps([entry(a) for a in st["apps"]]))
+    out = [entry(a) for a in st["apps"]]
+    if sc.startswith("transit") and st.get("after") == 1:
+        # the first jlist after the action still shows PM2 mid-transition
+        mid = {"transit": {"stop": ("stopping", 9000100), "restart": ("launching", 0)},
+               "transit-unknown": {"stop": ("waiting restart", 0),
+                                   "restart": ("one-launch-status", 0)}}[sc][st["last_cmd"]]
+        for e in out:
+            if e["name"] == t:
+                e["pm2_env"]["status"], e["pid"] = mid
+    print(json.dumps(out))
 elif cmd in ("stop", "restart"):
     name = sys.argv[2]
-    st["target"], st["acted"] = name, True
+    st["target"], st["acted"], st["last_cmd"] = name, True, cmd
     if sc == cmd + "-fail":
         json.dump(st, open(path, "w")); sys.exit(1)
     a = apps[name]
@@ -353,8 +362,11 @@ def test_start_of_a_stopped_app_without_a_pid(life):
 # produces. Each makes every mode fail before pm2 stop or restart.
 BAD_PIDS = [("online", "MISSING"), ("online", None), ("online", 0), ("online", -5),
             ("online", "9000100"), ("online", True), ("online", 9000100.0),
-            ("errored", "MISSING"), ("errored", None), ("launching", "MISSING"),
-            ("stopping", None)]
+            ("stopped", 9000100), ("stopped", -1), ("stopped", False),
+            ("errored", 9000100), ("errored", "MISSING"), ("errored", None),
+            ("launching", 0), ("launching", 9000100), ("launching", "MISSING"),
+            ("stopping", 0), ("stopping", 9000100), ("stopping", None),
+            ("waiting restart", 0), ("one-launch-status", 0), ("unknown", 9000100)]
 
 
 @pytest.mark.parametrize("mode", ["status", "pid", "stop", "start"])
@@ -367,6 +379,42 @@ def test_a_target_without_a_valid_pid_fails_closed(life, mode, status, pid):
     assert "cannot read PM2 state" in r.stderr or "cannot read the PM2 app list" in r.stderr
     assert "NEXT_STEP_WOULD_RUN" not in r.stdout
     assert calls == ["jlist"]                       # refused before any pm2 action
+
+
+@pytest.mark.parametrize("status, pid", [("launching", 0), ("stopping", 0),
+                                         ("stopped", 9000300)])
+def test_a_bystander_in_a_transition_or_stopped_with_a_pid_blocks_every_action(
+        life, status, pid):
+    bad = {"name": "ghrsst", "status": status, "pid": pid, "restarts": 7}
+    for mode, kw in (("stop", {"procs": TIDE_TREE}),
+                     ("start", {"status": "stopped", "pid": 0, "start_procs": TIDE_NEW})):
+        r, calls, _ = life(mode, "tide", extra=[bad], **kw)
+        assert r.returncode != 0 and "unexpected PM2 entry 'ghrsst'" in r.stderr
+        assert calls == ["jlist"]
+
+
+def test_stop_waits_through_pm2s_stopping_state(life):
+    # After this script's own pm2 stop, a "stopping" read means "not yet".
+    r, calls, _ = life("stop", "tide", scenario="transit", procs=TIDE_TREE)
+    assert r.returncode == 0, r.stderr
+    assert "NEXT_STEP_WOULD_RUN" in r.stdout
+
+
+def test_start_waits_through_pm2s_launching_state(life):
+    r, calls, _ = life("start", "tide", scenario="transit", status="stopped", pid=0,
+                       start_procs=TIDE_NEW)
+    assert r.returncode == 0, r.stderr
+    assert "NEXT_STEP_WOULD_RUN" in r.stdout
+
+
+@pytest.mark.parametrize("mode, kw", [
+    ("stop", {"procs": TIDE_TREE}),
+    ("start", {"status": "stopped", "pid": 0, "start_procs": TIDE_NEW})])
+def test_an_unknown_status_after_the_action_fails_at_once(life, mode, kw):
+    r, _, _ = life(mode, "tide", scenario="transit-unknown", **kw)
+    assert r.returncode != 0
+    assert "unexpected PM2 entry 'tide'" in r.stderr and f"after {mode}" in r.stderr
+    assert "NEXT_STEP_WOULD_RUN" not in r.stdout
 
 
 @pytest.mark.parametrize("status, pid", [("online", "MISSING"), ("errored", None)])

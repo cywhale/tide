@@ -39,7 +39,8 @@
 # status: prints "STATUS PID RESTARTS" of APP; never changes anything.
 # Both stop and start also require every other PM2 app to keep its status
 # and PID, and the daemon to be the same one at the end. Every mode fails if
-# any PM2 entry is malformed; only a stopped app may lack a PID (see apps).
+# any PM2 app is in a status and PID pair outside the accepted list (see
+# apps), before any pm2 action.
 #
 # The target daemon is always --pm2-home (default: production
 # /home/odbadmin/.pm2); an inherited PM2_HOME is ignored. pm2 is never called
@@ -49,7 +50,7 @@ set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-usage() { sed -n '2,47p' "$0" >&2; exit 2; }
+usage() { sed -n '2,48p' "$0" >&2; exit 2; }
 
 [ $# -ge 1 ] || usage
 MODE=$1
@@ -112,39 +113,54 @@ if [ -n "${PM2_HOME:-}" ] && [ "$PM2_HOME" != "$TARGET_HOME" ]; then
 fi
 export PM2_HOME=$TARGET_HOME
 
-# apps: one "NAME STATUS PID RESTARTS" line per PM2 app, sorted.
-# PM2 5.4.2 omits pid for an app it loaded as stopped (resurrect or dump:
-# God.prepare gives it `process: {}`), as for odbbathy on VM24. Only for
-# status stopped is a missing or null pid read as 0. Any other missing or
-# malformed field fails the whole read, and so does an online app without a
-# positive PID: its PID, executable, and process tree could not be checked.
+# apps [wait]: one "NAME STATUS PID RESTARTS" line per PM2 app, sorted.
+# Only these status and PID pairs are read; anything else fails the whole
+# read, so no pm2 action follows it:
+#   online   a positive integer PID (else its PID, executable, and process
+#            tree could not be checked);
+#   stopped  PID 0, or no pid or a null one: PM2 5.4.2 omits it for an app
+#            it loaded as stopped from its dump (God.prepare gives it
+#            `process: {}`), as for odbbathy on VM24;
+#   errored  PID 0, as PM2's exit handler leaves it (God.js handleExit).
+# launching and stopping are transitions, accepted with an integer PID only
+# with "wait", while polling for this script's own pm2 stop or restart to
+# finish; the result is then checked against the strict list again. Unknown
+# statuses and malformed names or restart counts always fail.
 apps() {
   "$PM2" jlist | python3 -I -c '
 import json, sys
+wait = sys.argv[1] == "wait"
 def bad(p, why):
     sys.exit("unexpected PM2 entry %r: %s" % (p.get("name"), why))
 for p in json.load(sys.stdin):
     e = p["pm2_env"]
     name, status, restarts = p["name"], e["status"], e["restart_time"]
     pid = p.get("pid")
-    if pid is None and status == "stopped":
-        pid = 0
     if not isinstance(name, str) or name.split() != [name]:
         bad(p, "name")
-    if not isinstance(status, str) or status.split() != [status]:
-        bad(p, "status %r" % (status,))
-    if type(pid) is not int or pid < 0 or (status == "online" and pid == 0):
-        bad(p, "status %s with pid %r" % (status, pid))
     if type(restarts) is not int or restarts < 0:
         bad(p, "restart_time %r" % (restarts,))
+    if status == "stopped" and pid is None:
+        pid = 0
+    is_int = type(pid) is int
+    if status == "online":
+        ok = is_int and pid > 0
+    elif status in ("stopped", "errored"):
+        ok = is_int and pid == 0
+    elif status in ("launching", "stopping"):
+        ok = wait and is_int and pid >= 0
+    else:
+        ok = False
+    if not ok:
+        bad(p, "status %r with pid %r" % (status, pid))
     print(name, status, pid, restarts)
-' | LC_ALL=C sort
+' "${1:-strict}" | LC_ALL=C sort
 }
 
-# state: "STATUS PID RESTARTS" of the one app named NAME.
+# state [wait]: "STATUS PID RESTARTS" of the one app named NAME.
 state() {
   local all n
-  all=$(apps) || return 1
+  all=$(apps "${1:-strict}") || return 1
   n=$(awk -v n="$NAME" '$1 == n' <<< "$all" | wc -l | tr -d ' ')
   [ "$n" = 1 ] || { echo "expected exactly one PM2 app named $NAME, found $n" >&2; return 1; }
   awk -v n="$NAME" '$1 == n {print $2, $3, $4}' <<< "$all"
@@ -259,7 +275,7 @@ if [ "$MODE" = stop ]; then
   "$PM2" stop "$NAME" || die "pm2 stop $NAME exited non-zero"
   waited=0
   while :; do
-    cur=$(state) || die "cannot read PM2 state for $NAME after stop"
+    cur=$(state wait) || die "cannot read PM2 state for $NAME after stop"
     read -r status pid restarts <<< "$cur"
     alive=""
     for p in $tree0; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
@@ -288,7 +304,7 @@ else
   "$PM2" restart "$NAME" || die "pm2 restart $NAME exited non-zero"
   waited=0
   while :; do
-    cur=$(state) || die "cannot read PM2 state for $NAME after start"
+    cur=$(state wait) || die "cannot read PM2 state for $NAME after start"
     read -r status pid restarts <<< "$cur"
     [ "$status" = online ] && [ "$pid" != 0 ] && [ -n "$(match_roots)" ] && break
     [ "$waited" -lt "$TIMEOUT" ] \

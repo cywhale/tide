@@ -1130,11 +1130,15 @@ and each exits non-zero unless every check passes.
     seconds with an unchanged restart count, with `--expect-exec` in the
     PM2 PID's command line and exactly one matching process tree;
   - both require every other PM2 app to keep its status and PID;
-  - every mode reads all PM2 apps and fails on a malformed entry. Only a
-    `stopped` app may lack a PID: PM2 5.4.2 omits `pid` for an app it loaded
-    as stopped from its dump (VM24's `odbbathy`). An online app needs a
-    positive integer PID, or its executable and process tree could not be
-    checked.
+  - every mode reads all PM2 apps and accepts only these status and PID
+    pairs: `online` with a positive integer PID (otherwise its executable
+    and process tree could not be checked); `stopped` with PID 0, or with
+    no or a null `pid`, which PM2 5.4.2 gives an app it loaded as stopped
+    from its dump (VM24's `odbbathy`); `errored` with PID 0. Any other pair,
+    an unknown status, or a malformed entry fails the read before any pm2
+    action. `launching` and `stopping` are accepted only while polling for
+    the script's own `pm2 stop` or `pm2 restart` to finish, and the result
+    is then checked against the strict list.
 - `conf/dask_scheduler_check.sh drained|ready` reads the scheduler's own
   `/health`, `/metrics`, and `/json/identity.json` on `127.0.0.1:8787`. It
   never creates a Dask client. `drained` needs zero clients and zero tasks
@@ -1162,10 +1166,13 @@ Tested:
   closed on a respawn, an orphan, a surviving tree process, a duplicate
   tree, the wrong executable, a crash loop, a raised restart count, a failed
   pm2 call, a change to another app, and a dead daemon. A stopped app
-  without a `pid` reads as PID 0 and can be started; an online app without
-  a positive integer PID, an errored, launching, or stopping app without
-  one, and a malformed bystander entry fail every mode before any pm2
-  action. The scheduler checks
+  without a `pid` reads as PID 0 and can be started. Every pair outside the
+  accepted list, as target or bystander, fails every mode with only `jlist`
+  called: online without a positive integer PID, stopped or errored with a
+  non-zero or non-integer PID, errored without one, `launching` or
+  `stopping` with any PID including 0, and unknown statuses. A `stopping`
+  or `launching` read right after the script's own action is waited
+  through; an unknown status there fails at once. The scheduler checks
   fail closed on clients, tasks, worker count, worker status, nanny owner,
   and an unreachable scheduler.
 - Sandbox runs of the run sheet's own blocks (`tests/test_deployment_doc.py`)
@@ -1204,7 +1211,8 @@ Tested:
   stopped, then `pm2 save`, `kill`, and `resurrect`, comes back with no
   `pid` in `jlist`, as on VM24. The `364af40` lifecycle script failed on it
   even when asked about another app; the current one reads it as
-  `stopped 0`, starts it with `pm2 restart`, and stops it again.
+  `stopped 0`, starts it with `pm2 restart`, and stops it again. The full
+  rehearsal above passed again with the current lifecycle script.
 - Read-only on VM24, 2026-10-29 (see "VM24 preflight record"): preflights A
   and C, preflight B with the parser fixed, and the pre-stop checks of the
   four apps (executable and one match root each), cut off before any pm2
