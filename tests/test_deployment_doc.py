@@ -6,6 +6,7 @@ must parse, production smoke comparisons go through the public 443 frontend
 is never disabled, and PM2 dummy configs under /home/odbadmin/tmp are .cjs
 (that tree is in ES module scope).
 """
+import os
 import re
 import subprocess
 import textwrap
@@ -751,6 +752,7 @@ def test_preflight_b_refuses(preflight_b, change, why):
 # --- Run sheet: maintenance helpers ------------------------------------------
 
 HELPERS = _block_with("start_services() (")
+QUIESCE_SCRIPT = DOC.parents[1] / "conf" / "py311_quiescent.sh"
 
 # pm2_app_lifecycle.sh stand-in: one status file per app; stop and start flip
 # it, FAIL_AT ("start tide", "stop dask-worker", ...) fails that one call.
@@ -786,16 +788,26 @@ def helpers(tmp_path):
         (src / "conf" / name).chmod(0o755)
     proc = tmp_path / "proc"
     proc.mkdir()
+    # The real quiescence script, reading a fake /proc; and a sudo stand-in
+    # that only records that it was used and runs the command as is.
+    quiesce = QUIESCE_SCRIPT.read_text().replace("PROC=/proc\n", f"PROC={proc}\n")
+    assert quiesce != QUIESCE_SCRIPT.read_text()
+    (src / "conf" / "py311_quiescent.sh").write_text(quiesce)
+    (src / "conf" / "py311_quiescent.sh").chmod(0o755)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "sudo").write_text('#!/bin/bash\necho "sudo $*" >> "$STEPS_LOG"\n'
+                                 '[ "$1" = -- ] && shift\nexec "$@"\n')
+    (bindir / "sudo").chmod(0o755)
     log = tmp_path / "steps.log"
-    block = HELPERS.replace("proc=/proc", f"proc={proc}")
-    assert block != HELPERS
+    block = HELPERS
     mhw_stub = 'mhw_check() { echo "mhw_check $*" >> "$STEPS_LOG"; [ "${FAIL_AT:-}" != mhw_check ]; }\n'
 
     def run(cmd, status=None, fail=""):
         for a in ("dask-scheduler", "dask-worker", "tide", "mhwapi"):
             (w / f"status.{a}").write_text((status or {}).get(a, "online"))
         log.unlink(missing_ok=True)
-        env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "SRC": str(src),
+        env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(tmp_path), "SRC": str(src),
                "DASKC": str(src / "conf" / "dask_scheduler_check.sh"),
                "D": str(tmp_path / "d"), "W": str(w), "STEPS_LOG": str(log),
                "FAIL_AT": fail}
@@ -826,8 +838,9 @@ def test_stop_services_order_and_quiescence(helpers):
     run, _ = helpers
     r, steps = run("stop_services")
     assert r.returncode == 0, r.stderr
+    # The root quiescence check comes last, after every service stopped.
     assert steps == ["stop mhwapi", "stop tide", "dask_scheduler_check.sh drained",
-                     "stop dask-worker", "stop dask-scheduler"]
+                     "stop dask-worker", "stop dask-scheduler", "sudo --"]
     assert "OK quiescent" in r.stdout and "OK services stopped" in r.stdout
 
 
@@ -850,7 +863,7 @@ def test_stop_services_skips_stopped_apps_and_the_drain_without_a_scheduler(help
     run, _ = helpers
     r, steps = run("stop_services", status={"mhwapi": "stopped", "dask-scheduler": "stopped"})
     assert r.returncode == 0, r.stderr
-    assert steps == ["stop tide", "stop dask-worker"]
+    assert steps == ["stop tide", "stop dask-worker", "sudo --"]
     assert "note: mhwapi already stopped" in r.stdout
 
 
@@ -866,22 +879,41 @@ def test_py311_quiescent_finds_a_process_using_py311(helpers, where):
         if where == "maps" else "7f00 r-xp 0 00:00 0 /usr/lib/libc.so\n")
     r, steps = run("stop_services && echo APPLY_WOULD_RUN")
     assert r.returncode != 0
-    assert "processes still use py311" in r.stderr and "4242" in r.stderr
+    assert "processes use py311" in r.stderr and "4242" in r.stderr
     assert "APPLY_WOULD_RUN" not in r.stdout
 
 
-def test_py311_quiescent_counts_unreadable_maps(helpers):
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads every file")
+def test_stop_services_fails_closed_on_a_process_it_cannot_inspect(helpers):
+    # Regression (Codex review of PR #4): an unreadable /proc/<pid>/maps was
+    # counted and the check passed. A live process that cannot be inspected
+    # may use py311, so the stop must not reach apply.
     run, proc = helpers
     (proc / "77").mkdir()
     (proc / "77" / "cmdline").write_bytes(b"/usr/sbin/sshd\0")
+    (proc / "77" / "status").write_text("Uid:\t0\t0\t0\t0\n")
     (proc / "77" / "maps").write_text("")
     (proc / "77" / "maps").chmod(0)
     try:
-        r, _ = run("py311_quiescent")
+        r, steps = run("stop_services && echo APPLY_WOULD_RUN")
     finally:
         (proc / "77" / "maps").chmod(0o644)
+    assert r.returncode != 0
+    assert "could not be inspected" in r.stderr and "77 uid=0" in r.stderr
+    assert "APPLY_WOULD_RUN" not in r.stdout and "OK quiescent" not in r.stdout
+
+
+def test_quiescence_runs_as_root_in_the_run_sheet(helpers):
+    run, _ = helpers
+    r, _ = run("py311_quiescent")
     assert r.returncode == 0, r.stderr
-    assert "(1 processes of other users not readable)" in r.stdout
+    log = (helpers[1].parent / "steps.log").read_text()
+    assert "sudo -- " in log and "py311_quiescent.sh" in log
+    preflight = [b for b in BLOCKS if "--inspectable-only" in b]
+    assert len(preflight) == 1
+    assert _chain(preflight[0]) == [
+        '"$ZSTATE" --dir "$D" --expect before',
+        'sudo -- "$SRC/conf/py311_quiescent.sh" --inspectable-only']
 
 
 def test_start_services_order(helpers):

@@ -609,3 +609,92 @@ def test_aligner_rollback_force_reinstalls_and_apply_does_not(tmp_path):
     assert len(installs) == 2
     assert "--force-reinstall" not in installs[0] and "zarr-2.18.7.req" in installs[0]
     assert "--force-reinstall" in installs[1] and "zarr-2.18.6.req" in installs[1]
+
+
+# --- py311_quiescent.sh ------------------------------------------------------
+
+QUIESCE = CONF / "py311_quiescent.sh"
+P311 = "/home/odbadmin/.pyenv/versions/py311/"
+
+
+@pytest.fixture
+def fakeproc(tmp_path):
+    proc = tmp_path / "proc"
+    proc.mkdir()
+
+    def add(pid, cmdline=b"/usr/sbin/sshd\0-D\0", maps="7f00 r-xp 0 00:00 0 /usr/lib/libc.so\n",
+            uid=1000, readable=True):
+        d = proc / str(pid)
+        d.mkdir()
+        (d / "cmdline").write_bytes(cmdline)
+        (d / "maps").write_text(maps)
+        (d / "status").write_text(f"Name:\tx\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n")
+        if not readable:
+            (d / "maps").chmod(0)
+        return d
+
+    def run(*args):
+        return subprocess.run([str(QUIESCE), "--proc", str(proc), *args],
+                              capture_output=True, text=True, timeout=60)
+    yield proc, add, run
+    for m in proc.glob("*/maps"):
+        m.chmod(0o644)
+
+
+def test_quiescent_passes_when_nothing_uses_py311(fakeproc):
+    _, add, run = fakeproc
+    add(1, b"/sbin/init\0")
+    add(200)
+    r = run()
+    assert r.returncode == 0, r.stderr
+    assert "OK quiescent: none of 2 live processes" in r.stdout
+
+
+@pytest.mark.parametrize("where", ["cmdline", "maps"])
+def test_quiescent_fails_on_a_py311_process(fakeproc, where):
+    _, add, run = fakeproc
+    add(1)
+    if where == "cmdline":
+        add(4242, (P311 + "bin/python3.11\0x.py\0").encode())
+    else:   # started through the pyenv shim: argv0 is just "python"
+        add(4242, b"python\0x.py\0",
+            maps=f"7f00 r-xp 0 00:00 0 {P311}lib/python3.11/site-packages/numpy/_m.so\n")
+    r = run()
+    assert r.returncode != 0
+    assert "processes use py311" in r.stderr and "4242 uid=1000" in r.stderr
+    assert "OK quiescent" not in r.stdout
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads every file")
+def test_quiescent_fails_closed_on_a_live_process_it_cannot_read(fakeproc):
+    # Regression: an unreadable /proc/<pid>/maps used to be counted and
+    # passed; it may belong to a process that uses py311.
+    _, add, run = fakeproc
+    add(1)
+    add(77, b"/usr/sbin/nginx\0", uid=0, readable=False)
+    r = run()
+    assert r.returncode != 0
+    assert "1 live processes could not be inspected" in r.stderr
+    assert "77 uid=0 /usr/sbin/nginx (PermissionError)" in r.stderr
+    assert "OK" not in r.stdout
+    r = run("--inspectable-only")
+    assert r.returncode != 0 and "could not be inspected" in r.stderr
+
+
+def test_quiescent_skips_a_process_that_exited_meanwhile(fakeproc):
+    # Listed by os.listdir, gone by the time it is read: only a vanished
+    # /proc entry may be ignored.
+    proc, add, run = fakeproc
+    add(1)
+    (proc / "999").symlink_to(proc / "no-such-dir")
+    r = run()
+    assert r.returncode == 0, r.stderr
+    assert "none of 1 live processes" in r.stdout
+
+
+def test_quiescent_inspectable_only_ignores_py311_use(fakeproc):
+    _, add, run = fakeproc
+    add(4242, (P311 + "bin/python3.11\0").encode())
+    r = run("--inspectable-only")
+    assert r.returncode == 0, r.stderr
+    assert "OK inspectable: all 1 live processes could be read" in r.stdout

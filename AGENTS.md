@@ -128,7 +128,9 @@ they reload as soon as package files change. The owner-authorized Zarr
 2.18.7 alignment goes only through `conf/py311_zarr_align.sh`, from the
 "Production run sheet" in `dev_tpxo10/DEPLOYMENT_VM24.md`: the proposed
 order stops MHW, Tide, the Dask worker, and the Dask scheduler with
-`conf/pm2_app_lifecycle.sh`, requires no process to use py311, applies,
+`conf/pm2_app_lifecycle.sh`, requires no process to use py311
+(`conf/py311_quiescent.sh`, run as root, fails closed on any live process it
+cannot inspect), applies,
 requires `conf/py311_zarr_state.sh` to report the expected state, and only
 then starts the services with their checks. Services never start against
 `STATE unknown`. Run it in an approved window, after every open item in

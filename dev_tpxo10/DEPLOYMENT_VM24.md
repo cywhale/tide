@@ -1113,7 +1113,7 @@ Source-derived from PM2 5.4.2 (the npm package, `lib/`) and distributed
 
 ### Helper scripts
 
-All three are read-only except the two PM2 actions of the lifecycle script,
+All four are read-only except the two PM2 actions of the lifecycle script,
 and each exits non-zero unless every check passes.
 
 - `conf/pm2_app_lifecycle.sh stop|start|status|pid` stops or starts one PM2
@@ -1135,6 +1135,12 @@ and each exits non-zero unless every check passes.
   never creates a Dask client. `drained` needs zero clients and zero tasks
   in every state; `ready` needs N running workers, optionally each with a
   nanny port owned by a given PID and an exact client count.
+- `conf/py311_quiescent.sh`, run as root, passes only when every live
+  process was inspected and none has the py311 prefix in its command line
+  or in a mapped file. A live process whose command line or maps cannot be
+  read fails the check; only a process whose `/proc` entry has vanished
+  (it exited) is skipped. `--inspectable-only` checks just the access, as a
+  preflight.
 - `conf/py311_zarr_state.sh` prints `STATE before`, `STATE after`, or
   `STATE unknown` with reasons. A known state needs the Zarr version, the
   freeze (the `prepare` snapshot, or it with only the zarr line changed),
@@ -1157,9 +1163,13 @@ Tested:
   with the scripts replaced by stubs: preflight B and its refusals, the
   per-app match words, the stop and start order, a stop or start that halts
   at the first failure inside an `&&` list, skipped apps already in the
-  target state, `py311_quiescent` against a fake `/proc` (a py311 command
-  line, a mapped py311 library, unreadable maps), and the recovery chains,
-  which start nothing on `STATE unknown`.
+  target state, the quiescence step halting the stop on a py311 process or
+  on a process it cannot read, and the recovery chains, which start nothing
+  on `STATE unknown`.
+- `conf/py311_quiescent.sh` against a fake `/proc`: a py311 command line, a
+  mapped py311 library from a process started through the pyenv shim, a
+  live process whose maps cannot be read (fails closed), and a process that
+  exited between listing and reading (skipped).
 - The state check against a real venv with real pip and hand-built zarr
   wheels: before, after, a changed file, a missing file, a stray file, an
   extra package, and a Zarr that does not import. The same venv shows that
@@ -1187,9 +1197,10 @@ Derived from source, not run against the real services:
 - the PM2 and nanny behaviour above, for the VM24 entries;
 - that the real Tide and MHW reconnect to a restarted scheduler at startup
   (both create their client at startup, and MHW again per request);
-- `py311_quiescent` and the nanny-port lookup on Linux: macOS has no
-  `/proc` and no `ss`, so the rehearsal used `pgrep` on the venv path and
-  `lsof`, and the unit tests used a fake `/proc` and a fake `ss`.
+- `py311_quiescent.sh` on a real Linux `/proc`, run as root, and the
+  nanny-port lookup with `ss`: macOS has neither, so the rehearsal used
+  `pgrep` on the venv path and `lsof`, and the unit tests used a fake
+  `/proc` and a fake `ss`.
 
 Unknown until the window:
 
@@ -1328,14 +1339,20 @@ proposal.
       window. Only those two were connected on 2026-10-28.
 - [ ] Owner: reachable during the whole window for the recovery decisions
       below.
+- [ ] Owner: root for the read-only quiescence check in the window
+      (`sudo` for odbadmin, or a root-capable operator running that one
+      command). It must read every process's memory maps; as odbadmin it
+      fails closed while other users' processes run, and then no `apply`
+      is possible.
 - [ ] Reviewer: approve this run sheet and its scripts.
 - [ ] Operator: a checkout `SRC` of the approved commit on VM24, with no
       tracked changes. The sha256 of its `conf/py311_zarr_align.sh`,
-      `conf/py311_zarr_state.sh`, `conf/pm2_app_lifecycle.sh`,
-      `conf/dask_scheduler_check.sh`, and `conf/https_smoke.sh` must match
-      that commit. The 2026-10-28 `prepare` directory stays valid: this
+      `conf/py311_zarr_state.sh`, `conf/py311_quiescent.sh`,
+      `conf/pm2_app_lifecycle.sh`, `conf/dask_scheduler_check.sh`, and
+      `conf/https_smoke.sh` must match that commit. `py311_quiescent.sh`
+      runs as root, so its hash matters most. The 2026-10-28 `prepare` directory stays valid: this
       change to the aligner touches only `rollback`.
-- [ ] In the window: preflight A, B, and C pass immediately before the
+- [ ] In the window: preflights A to D pass immediately before the
       stop.
 
 Only Zarr may change. In the window, run no `pip`, `pyenv`, or `uv`
@@ -1424,11 +1441,16 @@ SUMS
 )
 ```
 
-4. Preflight C, read-only: py311 is exactly in the `before` state, with
-   every installed zarr file matching its RECORD.
+4. Preflights C and D, read-only.
+   - C: py311 is exactly in the `before` state, with every installed zarr
+     file matching its RECORD.
+   - D: the quiescence check, run as root, can read the command line and
+     memory maps of every live process. It ignores py311 use here, since
+     the services still run; it proves the step-6 check can pass at all.
 
    ```bash
-   "$ZSTATE" --dir "$D" --expect before
+   "$ZSTATE" --dir "$D" --expect before \
+     && sudo -- "$SRC/conf/py311_quiescent.sh" --inspectable-only
    ```
 
 5. Define the MHW checks and the maintenance helpers in the same shell,
@@ -1504,7 +1526,8 @@ mhw_check() { mhw_proc_check && mhw_http_check "$@"; }
 # Maintenance helpers. They use SRC, DASKC, and D from step 1 and mhw_check
 # from the block above.
 #   app stop|start NAME   one PM2 app through pm2_app_lifecycle.sh
-#   py311_quiescent       no process runs or maps a file from py311
+#   py311_quiescent       as root: no live process runs or maps a file from
+#                         py311, and none could not be inspected
 #   stop_services         MHW, Tide, drain, worker, scheduler, then quiescent
 #   start_services SMOKE_OUT MHW_OUT
 #                         scheduler, worker, Tide + smoke, MHW + smoke, Dask
@@ -1529,36 +1552,9 @@ app_status() (
   echo "${s%% *}"
 )
 nanny_pid() { "$SRC/conf/pm2_app_lifecycle.sh" pid --pm2-home "$PM2H" --name dask-worker; }
-py311_quiescent() (
-  proc=/proc
-  P311=/home/odbadmin/.pyenv/versions/py311/ PROC_ROOT=$proc python3 -I - <<'PY'
-import os, sys
-p311, root, me = os.environ["P311"], os.environ["PROC_ROOT"], str(os.getpid())
-hits, unreadable = [], 0
-for pid in sorted(os.listdir(root)):
-    if not pid.isdigit() or pid == me:
-        continue
-    try:
-        with open(os.path.join(root, pid, "cmdline"), "rb") as f:
-            args = f.read().replace(b"\0", b" ").decode(errors="replace").strip()
-    except OSError:
-        continue                      # exited meanwhile
-    try:
-        with open(os.path.join(root, pid, "maps"), errors="replace") as f:
-            maps = f.read()
-    except PermissionError:
-        unreadable += 1
-        maps = ""
-    except OSError:
-        continue
-    if p311 in args or p311 in maps:
-        hits.append(pid + " " + args[:160])
-if hits:
-    sys.exit("FAIL: processes still use py311:\n  " + "\n  ".join(hits))
-print("OK quiescent: no process runs or maps a file from %s "
-      "(%d processes of other users not readable)" % (p311, unreadable))
-PY
-)
+# Reading other users' memory maps needs root; as odbadmin the check
+# cannot pass while their processes run (see the checklist).
+py311_quiescent() { sudo -- "$SRC/conf/py311_quiescent.sh"; }
 stop_services() (
   for a in mhwapi tide dask-worker dask-scheduler; do
     st=$(app_status "$a") || exit 1
