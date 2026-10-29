@@ -98,10 +98,12 @@ separate checkout on VM24, then a production deployment only with the
 owner's separate authorization, then the `v0.3.2` tag. Never modify the
 release directory before the canary passes. A deployment writes only the
 runtime manifest files, each staged outside the release directory, verified
-by hash, and swapped in with an atomic rename (Gunicorn runs with
+by hash, and swapped in with its own atomic rename (Gunicorn runs with
 `--reload`); use `conf/replace_runtime_files.sh` (`deploy`/`restore`) rather
-than hand-typed commands. It and `conf/https_smoke.sh` are fail-fast and
-covered by `tests/test_ops_scripts.py`. Run both from the merged checkout
+than hand-typed commands. The renames together are not one transaction: if
+`deploy` fails after the first one, run `restore` before anything else.
+That script and `conf/https_smoke.sh` are fail-fast and covered by
+`tests/test_ops_scripts.py`. Run both from the merged checkout
 (they are not deployed). A deployment is not complete until
 `conf/pm2_restart_check.sh --pm2-home /home/odbadmin/.pm2` has restarted
 `tide` with the stored environment (no `--update-env`) and printed
@@ -120,6 +122,15 @@ gives every attempt its own directory. Rollback status is "components
 validated" at best until an owner-authorized production rollback drill is
 run.
 
+Never `pip install` into the shared VM24 py311 by hand. It also serves MHW
+and the Dask scheduler and worker, and Tide and MHW run with `--reload`, so
+they reload as soon as package files change. The owner-authorized Zarr
+2.18.7 alignment goes only through `conf/py311_zarr_align.sh`: `prepare`,
+then `apply` or `rollback` chained with `&&` to the restart and smoke. Run
+it in an approved window, after the open items under "Py311 Zarr alignment"
+in `dev_tpxo10/DEPLOYMENT_VM24.md` are confirmed. Do not assume the MHW
+cron uses py311.
+
 For deployment scripts, do not assume an interactive shell PATH.
 `conf/start_app.sh` runs only an explicitly set absolute `GUNICORN_BIN` or
 the VM24 py311 Gunicorn, and exits with an error otherwise. There is no
@@ -137,7 +148,12 @@ there reloads the live workers). Run it with the py311 Gunicorn on
 absolute `TIDE_ZARR_PATH`, and stop it by PID. Smoke HTTPS against the
 certificate's hostname with `conf/https_smoke.sh` (`curl --resolve`,
 `--fail-with-body`, HTTP 200 required); never disable verification with
-`curl -k`. Report Dask transport evidence
+`curl -k`. Compare against production through the public HTTPS frontend
+with an explicit `--prod-port 443`. The internal Gunicorn listener on 8040
+still serves an expired certificate, so verified requests to it fail. Use
+a valid certificate for the canary itself, not the release directory's
+`conf/*.pem`. PM2 dummy configs under `/home/odbadmin/tmp` must be `.cjs`,
+because that tree is in ES module scope. Report Dask transport evidence
 (scheduler client registration, a trivial task with the same credentials)
 separately from the Tide API/store smoke. PM2 environment tests must use a
 separate `PM2_HOME` on every `pm2` command, with a dummy app that has no

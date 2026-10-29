@@ -1,6 +1,6 @@
 #!/bin/bash
-# Atomically replace the v0.3.2 runtime manifest in a release directory, or
-# restore it from the backups taken by an earlier deploy.
+# Replace the v0.3.2 runtime manifest in a release directory file by file,
+# or restore it from the backups taken by an earlier deploy.
 #
 #   replace_runtime_files.sh deploy  --rel DIR --src CHECKOUT --commit SHA --work NEW_DIR
 #   replace_runtime_files.sh restore --rel DIR --work DEPLOY_WORK_DIR
@@ -11,10 +11,15 @@
 # restore: puts back the backups recorded in WORK/backup.sha256, which must
 #   list exactly the manifest paths (see load_backup_record).
 #
-# Each file is staged inside WORK, verified against its expected SHA-256, and
-# only then moved over the target with one rename(2), so the --reload Gunicorn
-# never sees a partial file. All files are staged and verified before the
-# first replacement: a mismatch replaces nothing. Any failure exits non-zero.
+# Each file is staged inside WORK and verified against its expected SHA-256.
+# All files are staged and verified, and then every staged copy is verified
+# again, before the first replacement: a mismatch replaces nothing. Each copy
+# is verified once more right before its own rename(2) over the target, so the
+# --reload Gunicorn never sees a partial file, and the target is verified after
+# it. Each rename is atomic, but the replacements together are not one
+# transaction: a failure after the first rename leaves the files renamed so
+# far in place, and the error names the restore command to run before
+# anything else. Any failure exits non-zero.
 set -euo pipefail
 # bash >= 4.4: keep errexit inside $(...); critical steps also check explicitly.
 shopt -s inherit_errexit 2>/dev/null || true
@@ -22,7 +27,7 @@ shopt -s inherit_errexit 2>/dev/null || true
 MANIFEST=(conf/start_app.sh src/dask_client_manager.py)
 
 die() { echo "ERROR: $*" >&2; exit 1; }
-usage() { sed -n '2,17p' "$0" >&2; exit 2; }
+usage() { sed -n '2,22p' "$0" >&2; exit 2; }
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
@@ -100,8 +105,23 @@ stage() {
   echo "$staged"
 }
 
-# swap STAGED EXPECTED_SHA TARGET: atomic rename, then re-verify.
+# recheck_staged ENTRY...: each "STAGED|EXPECTED_SHA|PATH" copy still matches,
+# immediately before the first rename. A staged copy can change after its own
+# check while later files are staged; this keeps such a copy out of REL.
+recheck_staged() {
+  local entry s h f
+  for entry in "$@"; do
+    IFS='|' read -r s h f <<< "$entry"
+    [ "$(sha256_file "$s")" = "$h" ] \
+      || die "staged copy of $f changed after verification; nothing was replaced"
+  done
+}
+
+# swap STAGED EXPECTED_SHA TARGET: re-verify the staged copy, rename it over
+# TARGET (atomic for this one file), then re-verify TARGET.
 swap() {
+  [ "$(sha256_file "$1")" = "$2" ] \
+    || die "staged copy for $3 changed before its rename; $3 was not replaced, but earlier files may have been; run '$0 restore --rel $REL --work $WORK'"
   mv -f "$1" "$3" || die "rename failed for $3; run '$0 restore --rel $REL --work $WORK'"
   [ "$(sha256_file "$3")" = "$2" ] \
     || die "post-rename hash mismatch for $3; run '$0 restore --rel $REL --work $WORK'"
@@ -140,6 +160,7 @@ cmd_deploy() {
     s=$(stage "$SRC/$f" "$expected" "$REL/$f" "$WORK/staging")
     staged_list+=("$s|$expected|$f")
   done
+  recheck_staged "${staged_list[@]}"
 
   for entry in "${staged_list[@]}"; do
     IFS='|' read -r s expected f <<< "$entry"
@@ -170,6 +191,7 @@ cmd_restore() {
     s=$(stage "$WORK/backup/$f" "$h" "$REL/$f" "$sdir")
     staged_list+=("$s|$h|$f")
   done
+  recheck_staged "${staged_list[@]}"
 
   for entry in "${staged_list[@]}"; do
     IFS='|' read -r s h f <<< "$entry"
