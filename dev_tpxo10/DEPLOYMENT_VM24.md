@@ -1049,6 +1049,13 @@ and MHW and run their checks. Both APIs are down from the first stop to the
 last start. The rehearsal below ran this sequence against real PM2 and Dask
 with dummy apps; it has never run in production.
 
+The owner has said that, if quiescing is needed, Tide, MHW, the Dask worker,
+and the scheduler this runbook needs would be stopped for the maintenance and
+restarted afterwards. That is the owner's stated intent. It is not yet the
+approval of this exact order, and it is not the MHW maintainer's agreement or
+a confirmation from other Dask users: those stay open in the run sheet's
+checklist.
+
 | PM2 app | Stopped | Why |
 |---|---|---|
 | `mhwapi` | first | Every data request submits a Dask graph with Zarr-backed reads (see "Dask and Zarr evidence"), and its Gunicorn runs with `--reload`. |
@@ -1146,18 +1153,26 @@ and each exits non-zero unless every check passes.
   never creates a Dask client. `drained` needs zero clients and zero tasks
   in every state; `ready` needs N running workers, optionally each with a
   nanny port owned by a given PID and an exact client count.
-- `conf/py311_quiescent.sh`, run as root, passes only when every live
-  process was inspected and none has the py311 prefix in its command line
-  or in a mapped file. A live process whose command line or maps cannot be
-  read fails the check; only a process whose `/proc` entry has vanished
-  (it exited) is skipped. `--inspectable-only` checks just the access, as a
-  preflight.
+- `conf/py311_quiescent.sh` passes only when every live process was
+  inspected and none has the py311 prefix in its command line or in a
+  mapped file. A live process whose command line or maps cannot be read
+  fails the check; only a process whose `/proc` entry has vanished (it
+  exited) is skipped. `--inspectable-only` checks just the access, as a
+  preflight; only the full check, without the flag, looks for py311 use.
+  It needs root, and root runs it only as the root-owned, hash-checked copy
+  made by `root_quiescent` (run sheet, step 4), never from the checkout.
 - `conf/py311_zarr_state.sh` prints `STATE before`, `STATE after`, or
   `STATE unknown` with reasons. A known state needs the Zarr version, the
   freeze (the `prepare` snapshot, or it with only the zarr line changed),
   `pip check`, and the installed zarr files (every RECORD hash, no extra
   file in the package) to agree. `--expect` makes it fail on the other
   known state.
+- `conf/pm2_restart_check.sh --daemon-only` is used by preflight B only: it
+  proves the production PM2 daemon alive and never calls pm2.
+
+The run sheet depends on seven scripts of the approved commit: these five,
+`conf/py311_zarr_align.sh`, and `conf/https_smoke.sh`. Its step 1 pins the
+sha256 of all seven.
 
 ### What is tested, derived, and unknown
 
@@ -1201,8 +1216,12 @@ Tested:
   `root_quiescent` runs the full check on the copy after the four stops
   and passes; a swapped checker (never run), a failing check, or a
   non-root uid fails it after the stops, without `OK services stopped` and
-  without reaching `apply`; with `root_quiescent` undefined it stops
-  nothing.
+  without reaching `apply`; with `root_quiescent` undefined, or without the
+  MHW baseline, it stops nothing.
+- Steps 1 and 7 in the same sandbox: the step 1 check passes on a clean
+  checkout at the commit and refuses a missing or wrong `SHA`, local
+  changes, and a committed script that differs from its pinned hash; when
+  the root check fails, step 7's `apply` does not start.
 - The same `root_quiescent`, with only `sudo` dropped, ran as root in a
   throwaway offline container (Debian 12, GNU coreutils, a root-owned
   `/usr/bin/python3`, 2026-10-30): with `--inspectable-only`,
@@ -1264,7 +1283,9 @@ Derived from source, not run against the real services:
   the access check has run (preflight D, `--inspectable-only`, 491
   processes readable, 2026-10-30); the full check, which looks for py311
   use, has not run on VM24 and runs in the window after the stops. The
-  nanny-port lookup with `ss` did run on VM24 (preflight B).
+  nanny-port lookup with `ss` did run on VM24 (preflight B);
+- every branch of "Recovery" on VM24: none has run there (see the status at
+  the top of that section).
 
 Unknown until the window:
 
@@ -1374,8 +1395,8 @@ stopped or restarted.
   the services were running. The full quiescence check (step 6,
   `root_quiescent` without the flag, inside `stop_services`) must still
   pass in the window after every service has stopped.
-- This does not make `apply` runnable and is not a deployment. The
-  checklist items still open above must all be checked first.
+- This does not make `apply` runnable and is not a deployment. The open
+  items of the run sheet's checklist must all be checked first.
 
 ### MHW post-start smoke (proposed)
 
@@ -1464,13 +1485,15 @@ accepts one `apply`.
 
 ### Production run sheet
 
-Preflight checklist. Every open item must be checked, with its result
-recorded here, before the window starts. Do not run `apply` while any item
-is open.
+Checklist. Every sign-off gate must be checked, with its answer recorded
+here, before the window starts; every in-window gate is checked as it
+passes. Do not run `apply` while any item is open.
 
 The owner's Zarr-only authorization does not settle any of them. In
 particular, it does not approve the stop-first order, which is still a
 proposal.
+
+Done, with the evidence recorded:
 
 - [x] Owner authorization, 2026-10-28: Zarr 2.18.6 → 2.18.7 in the shared
       py311 only.
@@ -1490,54 +1513,80 @@ proposal.
 - [x] MHW smoke baseline taken (see "MHW post-start smoke").
 - [x] Dask usage and snapshot, read-only (see "Dask and Zarr evidence").
 - [x] Isolated stop-first rehearsal, 2026-10-29 (see "What is tested").
-- [ ] Owner and MHW maintainer: the window, with its date and time. It
-      must not overlap the MHW cron at 04:50 on the 18th. Both APIs are
-      down for the whole sequence. The owner will choose a window that does
-      not conflict with the existing schedules; no window is set yet.
-- [ ] Owner: approve the stop-first order, including stopping and starting
-      the Dask scheduler and worker in the window, or choose another.
-- [ ] MHW maintainer: agree to stopping and starting `mhwapi`,
-      `dask-worker`, and `dask-scheduler` through PM2 (never run against
-      the real apps), and to the smoke expectations.
-- [ ] Owner or the maintainer of the host Dask runbook: confirm that no
-      service other than Tide and MHW needs the Dask scheduler in the
-      window. Only those two were connected on 2026-10-28.
-- [ ] Owner: reachable during the whole window for the recovery decisions
-      below.
-- [ ] Owner: root in the window for the full quiescence check of step 6
-      (`root_quiescent` inside `stop_services`, run after every service
-      stopped). It must read every process's memory maps; as odbadmin it
-      fails closed while other users' processes run, and then no `apply`
-      is possible. Preflight D below shows that root can read them; it did
-      not check py311 use.
 - [x] Owner, before the window: preflight D (step 4), the read-only root
       `--inspectable-only` check through the root-owned copy. PASS on
       2026-10-30 15:17:38 CST: the copy's hash line `q.sh: OK`, all 491
       live processes readable, exit 0 (see "VM24 preflight D record").
       This shows only that root can read every process; it does not show
       that no process used py311, and it does not make `apply` runnable.
+
+Sign-off gates, each open until the person named answers:
+
+- [ ] Owner and MHW maintainer: the window, with its date and time. It
+      must not overlap the MHW cron at 04:50 on the 18th. Both APIs are
+      down for the whole sequence. The owner will choose a window that does
+      not conflict with the existing schedules; no window is set yet.
+- [ ] Owner: approve the stop-first order, including stopping and starting
+      the Dask scheduler and worker in the window, or choose another. The
+      owner's stated intent is recorded under "Service handling"; it does
+      not check this item.
+- [ ] MHW maintainer: agree to stopping and starting `mhwapi`,
+      `dask-worker`, and `dask-scheduler` through PM2 (never run against
+      the real apps), and to the smoke expectations.
+- [ ] Owner or the maintainer of the host Dask runbook: confirm that no
+      service other than Tide and MHW needs the Dask scheduler in the
+      window. Only those two were connected on 2026-10-28.
+- [ ] Owner: accept the risk that the real `dask-scheduler` and
+      `dask-worker` PM2 entries have never been restarted with the
+      production certificates (see "Unknown until the window"), or ask for
+      another isolated test first.
+- [ ] Owner: reachable during the whole window for the recovery decisions
+      below.
+- [ ] Owner: name who runs the run sheet. It runs in one shell, and steps
+      4, 6, and 7 need root in that shell, so it must be the owner or a
+      root-capable operator the owner names.
 - [ ] Reviewer: approve this run sheet and its scripts.
-- [x] Operator: a checkout `SRC` of the approved commit on VM24, with no
-      tracked changes. The sha256 of its `conf/py311_zarr_align.sh`,
-      `conf/py311_zarr_state.sh`, `conf/py311_quiescent.sh`,
-      `conf/pm2_app_lifecycle.sh`, `conf/dask_scheduler_check.sh`, and
-      `conf/https_smoke.sh` must match that commit. `py311_quiescent.sh`
-      runs as root, so its hash matters most. The 2026-10-28 `prepare` directory stays valid: this
-      change to the aligner touches only `rollback`. Done 2026-10-30 for
-      `ea22a03` (see "VM24 preflight D record"); a later approved commit
-      needs a new checkout.
+- [ ] Operator: a checkout `SRC` of the approved commit on VM24, with no
+      tracked changes; step 1 repeats this check in the window. The sha256
+      of the seven scripts pinned in step 1 must match that commit.
+      `py311_quiescent.sh` runs as root, so its hash matters most. The
+      2026-10-28 `prepare` directory stays valid: this change to the
+      aligner touches only `rollback`. The `ea22a03` checkout passed these
+      checks for six scripts on 2026-10-30 (see "VM24 preflight D record"),
+      but any later approved commit needs its own new checkout.
+
+In-window gates, checked in order as they pass. Both must be checked before
+step 7:
+
 - [ ] In the window: preflights A to D pass immediately before the
-      stop.
+      stop. Preflight D here, like the record above, checks access only.
+- [ ] Owner: root in the window for the full quiescence check of step 6
+      (`root_quiescent` inside `stop_services`, run after every service
+      stopped). It must read every process's memory maps; as odbadmin it
+      fails closed while other users' processes run, and then no `apply`
+      is possible. Only this check looks for py311 use, and it must print
+      `OK quiescent`.
 
 Only Zarr may change. In the window, run no `pip`, `pyenv`, or `uv`
 command against py311 other than the ones below. Do not re-run `prepare`
 into `$D`, download wheels again, or edit anything in `$D`.
 
-Run the steps in order, in one shell on VM24. Each block stops at the first
-failure. On any failure, follow "Recovery" and report to the owner; never
-skip ahead.
+Run the steps in order, in one shell on VM24, one step at a time. Start a
+step only after the previous one printed its `OK` line, and never paste
+several steps together. Each block stops at the first failure. On any
+failure, follow "Recovery" and report to the owner; never skip ahead.
 
-1. Set the variables. `$D` is the 2026-10-28 `prepare` directory.
+If the shell is lost, its variables and functions are gone. Run the step 1
+blocks, the preflight D block of step 4, and the two definition blocks of
+step 5 again; none of them changes anything, and preflight D also passes
+with the services stopped. Then read the package state with
+`"$ZSTATE" --dir "$D"` and continue from the step or "Recovery" branch that
+state calls for. Do not repeat steps 2, 3, or 6 to find out where things
+stand.
+
+1. Set `SHA` to the first seven or more characters of the approved commit
+   recorded in the checklist, then set the variables. `$D` is the
+   2026-10-28 `prepare` directory.
 
    ```bash
    SRC=/home/odbadmin/tmp/tide-zarr-$SHA   # approved checkout, see checklist
@@ -1546,6 +1595,34 @@ skip ahead.
    DASKC="$SRC/conf/dask_scheduler_check.sh"
    D=/home/odbadmin/tmp/zarr-align-20261028T103416
    ```
+
+   Then check the checkout, read-only: it is at the approved commit, clean,
+   and all seven scripts the run sheet uses match their reviewed hashes.
+
+```bash
+(
+  set -euo pipefail
+  fail() { echo "FAIL preflight: $*; do not apply" >&2; exit 1; }
+  sha=${SHA:-}
+  [ "${#sha}" -ge 7 ] || fail "set SHA to the approved commit first"
+  case "$(git -C "$SRC" rev-parse HEAD)" in
+    "$sha"*) ;;
+    *) fail "$SRC is not at $sha" ;;
+  esac
+  [ -z "$(git -C "$SRC" status --porcelain)" ] || fail "$SRC has local changes"
+  cd "$SRC"
+  sha256sum -c - <<'SUMS' || fail "a script does not match its reviewed hash"
+a159c31e7c62eb939e0ff9038b79aea9969c5c905680adfcc7a7f7757c204da9  conf/py311_zarr_align.sh
+d0edc2c2782556a1f1c3c619ae6f59f49bacf8ec3161f3afc3ec4ae6d38a8018  conf/py311_zarr_state.sh
+12af24d65965ad1e80ef884c8530d3266c3bc1a95f1260feaa3f578ab6fc763f  conf/py311_quiescent.sh
+961d8ef7f0bf0da955b004015664ea737c77226478663f415ddb3bd73e26044d  conf/pm2_app_lifecycle.sh
+cde39dccce54eeb9a962b4a8e67f3afae569a94681db19b2c3253c3ab498bab3  conf/dask_scheduler_check.sh
+3d096450da7f363efe4b259bfb0b18a399fe31a8f48bf0c43ac7043654ed4730  conf/https_smoke.sh
+304a4f66edead6b86e0670ba54c7476dacc27ef4847cce2183929e6bbc969cc9  conf/pm2_restart_check.sh
+SUMS
+  echo "OK checkout: $SRC at $sha, clean, seven scripts match"
+)
+```
 
 2. Preflight A, read-only: the artifacts are intact, and py311 still
    matches the `prepare` snapshot. `apply` repeats the freeze comparison,
@@ -1626,7 +1703,8 @@ SUMS
    - D, run by the owner only, as root, read-only: the quiescence check can
      read the command line and memory maps of every live process. It
      ignores py311 use here, since the services still run; it proves the
-     step-6 check can pass at all.
+     step-6 check can pass at all. Its `OK inspectable` is not `OK quiescent`:
+     it says nothing about py311 use and never replaces step 6.
    - The block defines `root_quiescent [--inspectable-only]` and runs it
      with `--inspectable-only`. It stays defined in this shell: step 6's
      full check (`py311_quiescent`, inside `stop_services`) calls the same
@@ -1698,8 +1776,9 @@ SUMS
    ```
 
 5. Define the MHW checks and the maintenance helpers in the same shell,
-   then take the MHW baseline right before the stop, with
-   `mhw_check "$D-mhw-before"`.
+   then take the MHW baseline right before the stop, with the third block
+   below. `stop_services` refuses to stop anything without that baseline,
+   because every start compares against it.
 
 ```bash
 # Read-only MHW checks. Nothing here calls pm2 or writes outside OUT.
@@ -1803,9 +1882,12 @@ nanny_pid() { "$SRC/conf/pm2_app_lifecycle.sh" pid --pm2-home "$PM2H" --name das
 # a root-owned copy whose sha256 matches.
 py311_quiescent() { root_quiescent; }
 stop_services() (
-  # Refuse before stopping anything if the final check could not run.
+  # Refuse before stopping anything if the final check could not run, or if
+  # a later start would have no baseline to compare with.
   declare -F root_quiescent > /dev/null \
     || { echo "FAIL: root_quiescent is not defined; run step 4 in this shell first" >&2; exit 1; }
+  [ -f "$D-mhw-before/point.json" ] \
+    || { echo "FAIL: no MHW baseline in $D-mhw-before; run step 5 first" >&2; exit 1; }
   for a in mhwapi tide dask-worker dask-scheduler; do
     st=$(app_status "$a") || exit 1
     if [ "$a" = dask-worker ]; then
@@ -1851,35 +1933,67 @@ start_services() (
 )
 ```
 
-6. Stop every py311 service. If this fails, nothing was installed: follow
-   R0.
+```bash
+MHW_LOG=/home/odbadmin/proj/marineheatwave/API/tmp/err.log
+mhw_log_lines=$(wc -l < "$MHW_LOG") && mhw_check "$D-mhw-before"
+```
+
+6. Stop every py311 service. This must end with `OK quiescent` from the
+   full root check, then `OK services stopped`. If it fails, nothing was
+   installed: follow R0.
 
    ```bash
    stop_services
    ```
 
-7. Apply, then require the `after` state. If this fails, follow R1.
+7. Apply, then require the `after` state. Run this only after every
+   checklist item is checked and step 6 printed `OK services stopped`. The
+   chain repeats the full root check right before `apply`, which has no
+   quiescence check of its own, so `apply` cannot start while the check
+   fails. If this fails, follow R1.
 
    ```bash
-   "$ALIGN" apply --dir "$D" && "$ZSTATE" --dir "$D" --expect after
+   root_quiescent && "$ALIGN" apply --dir "$D" && "$ZSTATE" --dir "$D" --expect after
    ```
 
-8. Start the services against the validated 2.18.7, with all checks. If
-   this fails, follow R2.
+8. Start the services against the validated 2.18.7, with all checks. Run
+   this only after step 7 printed `OK apply` and `STATE after`. If it fails,
+   follow R2.
 
    ```bash
    start_services "$D-smoke" "$D-mhw-after"
    ```
 
-9. After `OK services started`:
+9. After `OK services started`, with the services up:
    - check the new lines of MHW's `err.log` for the Dask fallback message,
-     which should be absent now that the scheduler was up first;
-   - run the py311 test suite from the approved checkout (release sequence
-     step 2). The pin test should now pass.
+     which should be absent now that the scheduler was up first:
+
+     ```bash
+     tail -n +"$((mhw_log_lines + 1))" "$MHW_LOG" | grep -F 'Dask scheduler unavailable' \
+       || echo "OK no Dask fallback in the new lines of err.log"
+     ```
+
+   - run the py311 test suite of the approved commit as in release sequence
+     step 2: in a separate checkout with read-only store links, never in
+     `$SRC`, and with nothing installed into py311.
+     `test_pinned_runtime_versions` must now pass.
+
+   If either finds a problem, follow R4.
+
+The maintenance is done only when all of these hold, each recorded below:
+
+- step 7 printed `OK apply` and `STATE after`;
+- step 8 printed `OK services started`, which covers the Tide smoke, the
+  MHW checks with the point query matching the baseline, and one Dask
+  worker under its nanny with four clients;
+- step 9 found no Dask fallback, and the py311 suite passed its pin test.
+
+Anything less is not done, whatever the services appear to do. This
+maintenance changes only Zarr: it does not deploy the v0.3.2 runtime files.
 
 What to record here:
 
-- every `OK` line of steps 2 to 8, with times, and how long both APIs were
+- every `OK` line of steps 1 to 9, with times, and how long both APIs were
   down;
 - `OK apply`, the freeze diff (`diff $D/freeze-before.txt $D/freeze-after.txt`
   shows only the zarr line), and `pip-check-before.txt` vs
@@ -1889,6 +2003,23 @@ What to record here:
 - the Dask fallback finding and the py311 suite counts.
 
 ### Recovery
+
+Status: none of these branches has run on VM24, and none is validated there.
+The chains below ran only in sandboxes, with the scripts replaced by stubs
+(`tests/test_deployment_doc.py`). `py311_zarr_align.sh rollback` ran only
+against a stand-in Python in its tests; real pip only showed why it needs
+`--force-reinstall`, and the isolated 2026-10-27 container run rolled back to
+2.18.6 with pip. The PM2 rehearsal ran neither `apply` nor `rollback`.
+
+Where each failure leaves things:
+
+| Step fails | Services | Package | Next |
+|---|---|---|---|
+| 1 to 5, preflights and baseline | all up | unchanged | R0: stop and report |
+| 6, stop and full root check | some or all stopped | unchanged | R0: start them again |
+| 7, root check, `apply`, or state check | all stopped | read `STATE` | R1 |
+| 8, starts and checks | some started | 2.18.7 | R2: owner decides |
+| 9, Dask fallback or py311 suite | all up | 2.18.7 | R4: owner decides |
 
 Two rules hold in every branch:
 
@@ -1900,7 +2031,7 @@ Two rules hold in every branch:
   which apps are stopped, the failed step and its output, and the `STATE`
   line.
 
-**R0. Step 2, 3, 4, or 6 fails (nothing installed).** Before the stop,
+**R0. Step 1, 2, 3, 4, 5, or 6 fails (nothing installed).** Before the stop,
 nothing changed: report and stop. If step 6 failed part way, py311 is
 unchanged, so bring back whatever was stopped:
 
@@ -1911,12 +2042,17 @@ unchanged, so bring back whatever was stopped:
 
 If this also fails, stop and report.
 
+If the failure was the copy's hash (`q.sh: FAILED`), or step 1 failed, the
+checkout may have been altered. Run the step 1 check first: if it does not
+print `OK checkout`, run nothing more from `$SRC`, including the block above,
+and report. The owner decides how to bring the services back.
+
 **R1. Step 7 fails.** Run `"$ZSTATE" --dir "$D"` (read-only) and act on its
 `STATE` line:
 
-- `STATE before`: `apply` refused before installing (it printed
-  "nothing was installed"), or pip rolled its own install back and every
-  zarr file matches 2.18.6 again. Run the R0 block, then report.
+- `STATE before`: the root check refused, `apply` refused before installing
+  (it printed "nothing was installed"), or pip rolled its own install back
+  and every zarr file matches 2.18.6 again. Run the R0 block, then report.
 - `STATE after` or `STATE unknown`: stop and report. Do not start anything.
   The services stay stopped until the owner decides: roll back (R3), or,
   for `STATE after` only, accept 2.18.7 and run step 8.
@@ -1946,14 +2082,29 @@ stop_services \
 ```
 
 `stop_services` skips apps that are already stopped and stops errored ones.
-If `rollback` or the state check fails, stop and report; nothing starts.
+If it, `rollback`, or the state check fails, stop and report; nothing starts.
 That is the end of what this run sheet covers.
 
-To try again after a rollback, run `prepare` into a new directory.
+**R4. Step 9 finds a problem.** The services are up on 2.18.7 and stay up:
+restart nothing and do not roll back. Report the finding; the owner decides
+whether to accept it, or to roll back with R3. If the Dask fallback message
+appeared, tell the MHW maintainer too.
 
-Follow-up after the window: the 2026-11-18 cron will be the first MHW
-append under 2.18.7, which the isolated round trip covered. Check its log
-and cron mail.
+**Another attempt.** It needs a new sign-off of the window.
+
+- After R0 with no `apply`, `$D` stays valid. The `$D-mhw-before` and
+  `$D-mhw-r0` directories already exist and the MHW check refuses an
+  existing output directory, so rename them aside with `mv`. Preflight B's
+  PID 96946 no longer holds if MHW was restarted: resolve the interpreter
+  again (see "MHW facts") and update that PID.
+- Once `apply` has started, `$D` has its `applied` marker and accepts no
+  second `apply`, even after a failed install or a rollback. Run `prepare`
+  into a new directory first (see "Procedure"), which the owner must
+  approve, because it downloads the wheels again.
+
+Follow-up after the window: the next `update_mhw.sh` run on the 18th will be
+the first MHW append under 2.18.7, which the isolated round trip covered.
+Check its log and cron mail.
 
 ## Operational Notes
 
