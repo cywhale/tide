@@ -1395,7 +1395,7 @@ def test_steps_run_in_order_from_checkout_to_the_final_checks():
                '"$ZSTATE" --dir "$D" --expect before\n   ```',
                "root_quiescent --inspectable-only\n   ```",
                "mhw_check() {", "stop_services() (",
-               'mhw_log_lines=$(wc -l < "$MHW_LOG") && mhw_check "$D-mhw-before"',
+               '&& mhw_log_id=$(stat',
                "   stop_services\n",
                'root_quiescent && "$ALIGN" apply --dir "$D"',
                'start_services "$D-smoke" "$D-mhw-after"',
@@ -1498,7 +1498,7 @@ def test_done_is_defined_and_needs_every_gate():
     assert "The maintenance is done only when all of these hold" in flat
     for must in ("step 7 printed `OK apply` and `STATE after`",
                  "step 8 printed `OK services started`",
-                 "step 9 found no Dask fallback, and the py311 suite passed its pin test"):
+                 "step 9 printed `OK no Dask fallback in the new lines of err.log`"):
         assert must in flat, must
     assert "it does not deploy the v0.3.2 runtime files" in flat
 
@@ -1599,3 +1599,132 @@ def test_step_1_refuses_a_committed_script_that_differs_from_its_reviewed_hash(s
                           capture_output=True, text=True).stdout.strip()
     r = run(head)
     assert r.returncode != 0 and "does not match its reviewed hash" in r.stderr
+
+
+# --- Step 9: the err.log check fails closed ------------------------------------
+
+STEP_5_MARK = _block_with("mhw_log_id=$(stat")
+STEP_9_LOG = _block_with("OK no Dask fallback in the new lines of err.log")
+FALLBACK = "Dask scheduler unavailable; falling back to local execution."
+MHW_LOG_PATH = "/home/odbadmin/proj/marineheatwave/API/tmp/err.log"
+# GNU `stat -c '%d:%i'`, which macOS lacks; a container run covers the real one.
+FAKE_STAT = '''#!/usr/bin/env python3
+import os, sys
+assert sys.argv[1:3] == ["-c", "%d:%i"]
+try:
+    st = os.stat(sys.argv[3])
+except OSError as e:
+    sys.exit("stat: %s" % e)
+print("%d:%d" % (st.st_dev, st.st_ino))
+'''
+
+
+@pytest.fixture
+def step_9(tmp_path):
+    import shutil
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "stat").write_text(FAKE_STAT)
+    (bindir / "stat").chmod(0o755)
+    log = tmp_path / "err.log"
+    sha = Path(shutil.which("sha256sum")).parent   # /sbin on macOS
+    assert STEP_5_MARK.count(MHW_LOG_PATH) == 1
+    mark = STEP_5_MARK.replace(MHW_LOG_PATH, str(log))
+
+    def run(between, before="old line\nold line 2\n", baseline_ok=True, again=False):
+        log.write_text(before)
+        stub = ('mhw_check() { [ -z "${BASELINE_FAILS:-}" ]; }\n'
+                + ("" if baseline_ok else "BASELINE_FAILS=1\n"))
+        # A repeat of the block whose baseline is refused must not move the mark.
+        repeat = "BASELINE_FAILS=1\n" + mark if again else ""
+        script = (stub + mark + between + "\n" + repeat
+                  + STEP_9_LOG.rstrip() + " && echo STEP_9_PASSED\n")
+        env = {"PATH": f"{bindir}:/usr/bin:/bin:{sha}", "HOME": str(tmp_path),
+               "LOG": str(log), "BIN": str(bindir)}
+        return subprocess.run(["bash", "-c", script], env=env, cwd=tmp_path,
+                              capture_output=True, text=True, timeout=60)
+    return run
+
+
+def _step_9_passed(r):
+    assert r.returncode == 0, r.stderr
+    assert "OK no Dask fallback" in r.stdout and "STEP_9_PASSED" in r.stdout
+    assert "FAIL step 9" not in r.stderr
+
+
+def _step_9_failed(r, why):
+    assert "OK no Dask fallback" not in r.stdout and "STEP_9_PASSED" not in r.stdout
+    assert f"FAIL step 9: " in r.stderr and why in r.stderr, r.stderr
+
+
+@pytest.mark.parametrize("between", [':', 'echo "worker booted" >> "$LOG"'])
+def test_step_9_passes_only_a_complete_read_without_the_message(step_9, between):
+    _step_9_passed(step_9(between))
+
+
+def test_step_9_ignores_the_message_before_the_mark(step_9):
+    # An earlier fallback is not this maintenance's: only new lines count.
+    _step_9_passed(step_9('echo "worker booted" >> "$LOG"', before=FALLBACK + "\n"))
+
+
+def test_step_9_handles_an_empty_log_at_the_mark(step_9):
+    _step_9_passed(step_9('echo "worker booted" >> "$LOG"', before=""))
+    _step_9_failed(step_9(f'echo "{FALLBACK}" >> "$LOG"', before=""), "Dask fallback")
+
+
+@pytest.mark.parametrize("between, why", [
+    (f'echo "{FALLBACK}" >> "$LOG"', "Dask fallback in the new lines"),
+    (f'printf "a\\n%s\\nb\\n" "{FALLBACK}" >> "$LOG"', "Dask fallback in the new lines"),
+    ('unlink "$LOG"', "cannot read"),
+    ('printf "#!/bin/bash\\nexit 1\\n" > "$BIN/tail"; chmod 755 "$BIN/tail"', "cannot read"),
+    # Rotated: the same content under a new inode, with the fallback hidden in it.
+    (f'mv "$LOG" "$LOG.1"; cp "$LOG.1" "$LOG"; echo "{FALLBACK}" >> "$LOG"', "rotated or replaced"),
+    (': > "$LOG"', "truncated or rewritten"),
+    ('echo x > "$LOG"', "truncated or rewritten"),
+    # Truncated in place, same inode, regrown past the mark: an offset alone
+    # would start after the message and miss it.
+    (f'{{ echo "{FALLBACK}"; head -c 500 /dev/zero | tr "\\0" x; echo; }} > "$LOG"',
+     "truncated or rewritten"),
+    ('unset mhw_log_id', "no err.log mark"),
+    ('unset mhw_log_bytes', "no err.log mark"),
+    ('unset mhw_log_head', "no err.log mark"),
+    ('unset MHW_LOG', "no err.log mark"),
+])
+def test_step_9_fails_closed(step_9, between, why):
+    _step_9_failed(step_9(between), why)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+def test_step_9_fails_closed_on_an_unreadable_log(step_9):
+    _step_9_failed(step_9('chmod 000 "$LOG"'), "cannot read")
+
+
+def test_step_9_has_no_mark_when_the_baseline_failed(step_9):
+    _step_9_failed(step_9(':', baseline_ok=False), "no err.log mark")
+
+
+def test_step_5_cannot_move_the_mark_past_a_fallback(step_9):
+    r = step_9(f'echo "{FALLBACK}" >> "$LOG"', again=True)
+    _step_9_failed(r, "Dask fallback in the new lines")
+
+
+def test_step_9_does_not_depend_on_a_pipeline_status_to_pass():
+    code = "\n".join(c for c in _commands(STEP_9_LOG))
+    assert "set -euo pipefail" in code
+    assert "| grep" not in code and '|| echo "OK' not in code
+    # The search is apart from the read, so a failed read cannot look like no match.
+    assert 'new=$(tail -c +"$((mhw_log_bytes + 1))" "$MHW_LOG") || fail' in code
+    assert code.count("same_log\n") == 2
+    assert STEP_5_MARK.index('mhw_check "$D-mhw-before"') < STEP_5_MARK.index("mhw_log_id=")
+
+
+def test_a_failed_step_9_check_cannot_count_as_done():
+    flat = _flat(SHEET)
+    assert "step 9 printed `OK no Dask fallback in the new lines of err.log`, and the " \
+           "py311 suite passed its pin test." in flat
+    assert "A problem the owner accepts under R4 is recorded as an exception, not as a pass." in flat
+    assert "If the log check failed without finding the message, nothing is known about " \
+           "the fallback" in flat
+    assert "the check still did not pass." in flat
+    assert "so step 9's log check fails and R4 applies." in flat
+    assert "Also say whether a restart appends to `API/tmp/err.log`" in flat

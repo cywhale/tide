@@ -1222,6 +1222,13 @@ Tested:
   checkout at the commit and refuses a missing or wrong `SHA`, local
   changes, and a committed script that differs from its pinned hash; when
   the root check fails, step 7's `apply` does not start.
+- Step 9's log check, in the same sandbox and with real GNU tools in an
+  offline container (Debian 12, 2026-10-30): it prints `OK` for new lines
+  without the message, and for the message only before the mark. It exits
+  non-zero, without `OK`, when the message is in the new lines, the log is
+  missing or unreadable, `tail` fails, the mark is missing, or the log was
+  rotated, replaced, truncated, or truncated and regrown past the mark. It
+  has not run on VM24.
 - The same `root_quiescent`, with only `sudo` dropped, ran as root in a
   throwaway offline container (Debian 12, GNU coreutils, a root-owned
   `/usr/bin/python3`, 2026-10-30): with `--inspectable-only`,
@@ -1532,7 +1539,9 @@ Sign-off gates, each open until the person named answers:
       not check this item.
 - [ ] MHW maintainer: agree to stopping and starting `mhwapi`,
       `dask-worker`, and `dask-scheduler` through PM2 (never run against
-      the real apps), and to the smoke expectations.
+      the real apps), and to the smoke expectations. Also say whether a
+      restart appends to `API/tmp/err.log`: this is not recorded here, and
+      if it truncates the log, step 9's log check cannot pass and goes to R4.
 - [ ] Owner or the maintainer of the host Dask runbook: confirm that no
       service other than Tide and MHW needs the Dask scheduler in the
       window. Only those two were connected on 2026-10-28.
@@ -1582,7 +1591,8 @@ step 5 again; none of them changes anything, and preflight D also passes
 with the services stopped. Then read the package state with
 `"$ZSTATE" --dir "$D"` and continue from the step or "Recovery" branch that
 state calls for. Do not repeat steps 2, 3, or 6 to find out where things
-stand.
+stand. The `err.log` mark of step 5 is lost with the shell, so step 9's log
+check fails and R4 applies.
 
 1. Set `SHA` to the first seven or more characters of the approved commit
    recorded in the checklist, then set the variables. `$D` is the
@@ -1778,7 +1788,9 @@ SUMS
 5. Define the MHW checks and the maintenance helpers in the same shell,
    then take the MHW baseline right before the stop, with the third block
    below. `stop_services` refuses to stop anything without that baseline,
-   because every start compares against it.
+   because every start compares against it. The same block marks where
+   `err.log` stands, for step 9; it marks only after a new baseline, so
+   running it again cannot move the mark.
 
 ```bash
 # Read-only MHW checks. Nothing here calls pm2 or writes outside OUT.
@@ -1935,7 +1947,11 @@ start_services() (
 
 ```bash
 MHW_LOG=/home/odbadmin/proj/marineheatwave/API/tmp/err.log
-mhw_log_lines=$(wc -l < "$MHW_LOG") && mhw_check "$D-mhw-before"
+mhw_check "$D-mhw-before" \
+  && mhw_log_id=$(stat -c '%d:%i' "$MHW_LOG") \
+  && mhw_log_bytes=$(wc -c < "$MHW_LOG") \
+  && mhw_log_head=$(head -c "$mhw_log_bytes" "$MHW_LOG" | sha256sum) \
+  && echo "OK baseline: err.log marked at $mhw_log_bytes bytes"
 ```
 
 6. Stop every py311 service. This must end with `OK quiescent` from the
@@ -1965,12 +1981,36 @@ mhw_log_lines=$(wc -l < "$MHW_LOG") && mhw_check "$D-mhw-before"
    ```
 
 9. After `OK services started`, with the services up:
-   - check the new lines of MHW's `err.log` for the Dask fallback message,
-     which should be absent now that the scheduler was up first:
+   - check the lines added to MHW's `err.log` since step 5 for the Dask
+     fallback message, which should be absent now that the scheduler was up
+     first. Only a complete read that finds no message prints `OK`. The
+     block exits non-zero if it finds the message, if the log cannot be
+     read, if the mark from step 5 is missing, or if the log was rotated,
+     replaced, or truncated, because then the new lines cannot be told
+     from the old ones:
 
      ```bash
-     tail -n +"$((mhw_log_lines + 1))" "$MHW_LOG" | grep -F 'Dask scheduler unavailable' \
-       || echo "OK no Dask fallback in the new lines of err.log"
+     (
+       set -euo pipefail
+       fail() { echo "FAIL step 9: $*; follow R4" >&2; exit 1; }
+       [ -n "${MHW_LOG:-}" ] && [ -n "${mhw_log_id:-}" ] \
+         && [ -n "${mhw_log_bytes:-}" ] && [ -n "${mhw_log_head:-}" ] \
+         || fail "no err.log mark from step 5 in this shell"
+       same_log() {
+         [ -f "$MHW_LOG" ] && [ -r "$MHW_LOG" ] || fail "cannot read $MHW_LOG"
+         [ "$(stat -c '%d:%i' "$MHW_LOG")" = "$mhw_log_id" ] \
+           || fail "$MHW_LOG was rotated or replaced since step 5"
+         [ "$(head -c "$mhw_log_bytes" "$MHW_LOG" | sha256sum)" = "$mhw_log_head" ] \
+           || fail "$MHW_LOG was truncated or rewritten since step 5"
+       }
+       same_log
+       new=$(tail -c +"$((mhw_log_bytes + 1))" "$MHW_LOG") || fail "cannot read $MHW_LOG"
+       same_log
+       case "$new" in
+         *'Dask scheduler unavailable'*) fail "Dask fallback in the new lines of err.log" ;;
+       esac
+       echo "OK no Dask fallback in the new lines of err.log"
+     )
      ```
 
    - run the py311 test suite of the approved commit as in release sequence
@@ -1978,7 +2018,7 @@ mhw_log_lines=$(wc -l < "$MHW_LOG") && mhw_check "$D-mhw-before"
      `$SRC`, and with nothing installed into py311.
      `test_pinned_runtime_versions` must now pass.
 
-   If either finds a problem, follow R4.
+   If either fails, follow R4.
 
 The maintenance is done only when all of these hold, each recorded below:
 
@@ -1986,9 +2026,11 @@ The maintenance is done only when all of these hold, each recorded below:
 - step 8 printed `OK services started`, which covers the Tide smoke, the
   MHW checks with the point query matching the baseline, and one Dask
   worker under its nanny with four clients;
-- step 9 found no Dask fallback, and the py311 suite passed its pin test.
+- step 9 printed `OK no Dask fallback in the new lines of err.log`, and the
+  py311 suite passed its pin test.
 
-Anything less is not done, whatever the services appear to do. This
+Anything less is not done, whatever the services appear to do. A problem the
+owner accepts under R4 is recorded as an exception, not as a pass. This
 maintenance changes only Zarr: it does not deploy the v0.3.2 runtime files.
 
 What to record here:
@@ -2000,7 +2042,7 @@ What to record here:
   `pip-check-after.txt` (identical);
 - `STATE after`;
 - numcodecs 0.15.1 and numpy 2.2.4, unchanged;
-- the Dask fallback finding and the py311 suite counts.
+- step 9's log check result and the py311 suite counts.
 
 ### Recovery
 
@@ -2019,7 +2061,7 @@ Where each failure leaves things:
 | 6, stop and full root check | some or all stopped | unchanged | R0: start them again |
 | 7, root check, `apply`, or state check | all stopped | read `STATE` | R1 |
 | 8, starts and checks | some started | 2.18.7 | R2: owner decides |
-| 9, Dask fallback or py311 suite | all up | 2.18.7 | R4: owner decides |
+| 9, log check or py311 suite | all up | 2.18.7 | R4: owner decides |
 
 Two rules hold in every branch:
 
@@ -2088,7 +2130,10 @@ That is the end of what this run sheet covers.
 **R4. Step 9 finds a problem.** The services are up on 2.18.7 and stay up:
 restart nothing and do not roll back. Report the finding; the owner decides
 whether to accept it, or to roll back with R3. If the Dask fallback message
-appeared, tell the MHW maintainer too.
+appeared, tell the MHW maintainer too. If the log check failed without
+finding the message, nothing is known about the fallback: the log could not
+be read, or its new lines could not be identified. Read `err.log` by hand
+and report what it shows; the check still did not pass.
 
 **Another attempt.** It needs a new sign-off of the window.
 
