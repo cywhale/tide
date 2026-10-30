@@ -113,7 +113,7 @@ if [ -n "${PM2_HOME:-}" ] && [ "$PM2_HOME" != "$TARGET_HOME" ]; then
 fi
 export PM2_HOME=$TARGET_HOME
 
-# apps [wait]: one "NAME STATUS PID RESTARTS" line per PM2 app, sorted.
+# apps [MOVING]: one "NAME STATUS PID RESTARTS" line per PM2 app, sorted.
 # Only these status and PID pairs are read; anything else fails the whole
 # read, so no pm2 action follows it:
 #   online   a positive integer PID (else its PID, executable, and process
@@ -123,13 +123,15 @@ export PM2_HOME=$TARGET_HOME
 #            `process: {}`), as for odbbathy on VM24;
 #   errored  PID 0, as PM2's exit handler leaves it (God.js handleExit).
 # launching and stopping are transitions, accepted with an integer PID only
-# with "wait", while polling for this script's own pm2 stop or restart to
-# finish; the result is then checked against the strict list again. Unknown
-# statuses and malformed names or restart counts always fail.
+# for the one app named MOVING, which only the polling for this script's own
+# pm2 stop or restart of NAME passes; the result is then checked against the
+# strict list again. Every other app is held to the list above at every read,
+# so another app in a transition fails the read even while NAME is polled.
+# Unknown statuses and malformed names or restart counts always fail.
 apps() {
   "$PM2" jlist | python3 -I -c '
 import json, sys
-wait = sys.argv[1] == "wait"
+moving = sys.argv[1]
 def bad(p, why):
     sys.exit("unexpected PM2 entry %r: %s" % (p.get("name"), why))
 for p in json.load(sys.stdin):
@@ -148,19 +150,21 @@ for p in json.load(sys.stdin):
     elif status in ("stopped", "errored"):
         ok = is_int and pid == 0
     elif status in ("launching", "stopping"):
-        ok = wait and is_int and pid >= 0
+        ok = name == moving and is_int and pid >= 0
     else:
         ok = False
     if not ok:
         bad(p, "status %r with pid %r" % (status, pid))
     print(name, status, pid, restarts)
-' "${1:-strict}" | LC_ALL=C sort
+' "${1:-}" | LC_ALL=C sort
 }
 
-# state [wait]: "STATUS PID RESTARTS" of the one app named NAME.
+# state [wait]: "STATUS PID RESTARTS" of the one app named NAME; with "wait",
+# NAME alone may be in a transition (see apps).
 state() {
-  local all n
-  all=$(apps "${1:-strict}") || return 1
+  local all n moving=""
+  [ "${1:-}" = wait ] && moving=$NAME
+  all=$(apps "$moving") || return 1
   n=$(awk -v n="$NAME" '$1 == n' <<< "$all" | wc -l | tr -d ' ')
   [ "$n" = 1 ] || { echo "expected exactly one PM2 app named $NAME, found $n" >&2; return 1; }
   awk -v n="$NAME" '$1 == n {print $2, $3, $4}' <<< "$all"

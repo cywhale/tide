@@ -1136,9 +1136,11 @@ and each exits non-zero unless every check passes.
     no or a null `pid`, which PM2 5.4.2 gives an app it loaded as stopped
     from its dump (VM24's `odbbathy`); `errored` with PID 0. Any other pair,
     an unknown status, or a malformed entry fails the read before any pm2
-    action. `launching` and `stopping` are accepted only while polling for
-    the script's own `pm2 stop` or `pm2 restart` to finish, and the result
-    is then checked against the strict list.
+    action. `launching` and `stopping` are accepted only for the target app,
+    only while polling for the script's own `pm2 stop` or `pm2 restart` of
+    it to finish, and the result is then checked against the strict list.
+    Every other app is held to the strict list at every read, including
+    during that polling.
 - `conf/dask_scheduler_check.sh drained|ready` reads the scheduler's own
   `/health`, `/metrics`, and `/json/identity.json` on `127.0.0.1:8787`. It
   never creates a Dask client. `drained` needs zero clients and zero tasks
@@ -1171,8 +1173,10 @@ Tested:
   called: online without a positive integer PID, stopped or errored with a
   non-zero or non-integer PID, errored without one, `launching` or
   `stopping` with any PID including 0, and unknown statuses. A `stopping`
-  or `launching` read right after the script's own action is waited
-  through; an unknown status there fails at once. The scheduler checks
+  or `launching` read of the target right after the script's own action is
+  waited through; an unknown status there fails at once, and so does
+  another app in `launching` or `stopping` during that polling, whether or
+  not the target is in a transition too. The scheduler checks
   fail closed on clients, tasks, worker count, worker status, nanny owner,
   and an unreachable scheduler.
 - Sandbox runs of the run sheet's own blocks (`tests/test_deployment_doc.py`)

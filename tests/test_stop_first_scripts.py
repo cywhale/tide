@@ -76,11 +76,14 @@ if cmd == "jlist":
     out = [entry(a) for a in st["apps"]]
     if sc.startswith("transit") and st.get("after") == 1:
         # the first jlist after the action still shows PM2 mid-transition
-        mid = {"transit": {"stop": ("stopping", 9000100), "restart": ("launching", 0)},
+        # (transit-both: gateway too; transit-other: gateway only)
+        move = {"stop": ("stopping", 9000100), "restart": ("launching", 0)}
+        mid = {"transit": move, "transit-both": move, "transit-other": move,
                "transit-unknown": {"stop": ("waiting restart", 0),
                                    "restart": ("one-launch-status", 0)}}[sc][st["last_cmd"]]
+        moved = {"transit-both": {t, "gateway"}, "transit-other": {"gateway"}}.get(sc, {t})
         for e in out:
-            if e["name"] == t:
+            if e["name"] in moved:
                 e["pm2_env"]["status"], e["pid"] = mid
     print(json.dumps(out))
 elif cmd in ("stop", "restart"):
@@ -415,6 +418,21 @@ def test_an_unknown_status_after_the_action_fails_at_once(life, mode, kw):
     assert r.returncode != 0
     assert "unexpected PM2 entry 'tide'" in r.stderr and f"after {mode}" in r.stderr
     assert "NEXT_STEP_WOULD_RUN" not in r.stdout
+
+
+@pytest.mark.parametrize("scenario", ["transit-both", "transit-other"])
+@pytest.mark.parametrize("mode, kw", [
+    ("stop", {"procs": TIDE_TREE}),
+    ("start", {"status": "stopped", "pid": 0, "start_procs": TIDE_NEW})])
+def test_only_the_polled_app_may_be_in_a_transition(life, scenario, mode, kw):
+    # While tide is polled after its own stop or restart, gateway in launching
+    # or stopping fails the read, whether or not tide is in a transition too.
+    r, calls, _ = life(mode, "tide", scenario=scenario, **kw)
+    assert r.returncode != 0
+    assert "unexpected PM2 entry 'gateway'" in r.stderr and f"after {mode}" in r.stderr
+    assert "NEXT_STEP_WOULD_RUN" not in r.stdout and "OK " not in r.stdout
+    assert calls == ["jlist", "jlist", {"stop": "stop tide", "start": "restart tide"}[mode],
+                     "jlist"]
 
 
 @pytest.mark.parametrize("status, pid", [("online", "MISSING"), ("errored", None)])
