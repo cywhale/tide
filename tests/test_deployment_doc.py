@@ -1278,3 +1278,88 @@ def test_stop_services_refuses_to_stop_anything_without_root_quiescent(helpers):
     r, steps = run("stop_services && echo APPLY_WOULD_RUN", root="")
     assert r.returncode != 0 and "root_quiescent is not defined" in r.stderr
     assert steps == [] and "APPLY_WOULD_RUN" not in r.stdout
+
+
+# --- Records: the owner's preflight D on VM24 ----------------------------------
+
+PREFLIGHT_D_OUTPUT = """\
+root:root 700 /root/odbz-quiescent.E2c1M5
+root:root 500 /root/odbz-quiescent.E2c1M5/q.sh
+/root/odbz-quiescent.E2c1M5/q.sh: OK
+OK inspectable: all 491 live processes could be read
+exit 0
+"""
+
+
+def _section(title):
+    start = TEXT.index(title)
+    end = TEXT.find("\n### ", start + len(title))
+    return TEXT[start:end]
+
+
+def _checklist():
+    sheet = TEXT[TEXT.index("### Production run sheet"):TEXT.index("Only Zarr may change.")]
+    return [" ".join(i.split()) for i in re.findall(r"^- \[[ x]\] .*?(?=^- \[|\Z)", sheet,
+                                                    flags=re.S | re.M)]
+
+
+def test_preflight_d_record_keeps_the_owner_output_verbatim():
+    record = _section("### VM24 preflight D record (read-only, 2026-10-30)")
+    outputs = re.findall(r"^ *```text\n(.*?)^ *```", record, flags=re.S | re.M)
+    assert [textwrap.dedent(o) for o in outputs] == [PREFLIGHT_D_OUTPUT]
+    flat = " ".join(record.split())
+    assert "2026-10-30 15:17:38 CST (VM24 local time, Asia/Taipei): PASS, exit 0" in flat
+    assert "No `WARN` was printed, so the trap removed the copy and its directory." in flat
+    # The checker the copy matched is the one in this commit.
+    import hashlib
+    assert hashlib.sha256(QUIESCE_SCRIPT.read_bytes()).hexdigest() in flat
+    assert "`/home/odbadmin/tmp/tide-zarr-ea22a03`" in flat
+
+
+def test_preflight_d_is_recorded_as_access_only_not_as_apply_readiness():
+    flat = " ".join(_section("### VM24 preflight D record (read-only, 2026-10-30)").split())
+    assert "What it does not show: that no process used py311." in flat
+    assert "must still pass in the window after every service has stopped" in flat
+    assert "This does not make `apply` runnable and is not a deployment." in flat
+    # The Zarr maintenance part only: the runtime deployment notes above it
+    # define when that other deployment "is complete".
+    zarr = " ".join(TEXT[TEXT.index("### Dask and Zarr evidence"):
+                         TEXT.index("## Operational Notes")].split()).lower()
+    for overclaim in ("apply is ready", "ready to apply", "apply can now run",
+                      "deployment complete", "deployment is complete", "deployed to production",
+                      "py311 is quiescent", "showed that no process used py311",
+                      "confirmed that no process uses py311", "quiescence passed"):
+        assert overclaim not in zarr, overclaim
+    items = _checklist()
+    done = [i for i in items if i.startswith("- [x] Owner, before the window: preflight D")]
+    assert len(done) == 1
+    assert "does not show that no process used py311" in done[0]
+    assert "does not make `apply` runnable" in done[0]
+    # The in-window steps stay open: the full check and preflights A to D.
+    for open_item in ("- [ ] Owner: root in the window for the full quiescence check of step 6",
+                      "- [ ] In the window: preflights A to D pass immediately before the stop."):
+        assert [i for i in items if i.startswith(open_item)], open_item
+
+
+def test_window_stays_open_and_no_cron_follow_up_is_listed():
+    items = _checklist()
+    window = [i for i in items if "the window, with its date and time" in i]
+    assert len(window) == 1 and window[0].startswith("- [ ] Owner and MHW maintainer")
+    assert "no window is set yet" in window[0]
+    assert not re.search(r"\b20\d\d-\d\d-\d\d\b", window[0])     # no date assumed
+    for item in items:
+        if item.startswith("- [ ]"):
+            low = item.lower()
+            assert not ("cron" in low and re.search(r"pause|investigate|confirm", low)), item
+
+
+def test_checklist_still_blocks_apply_until_the_approvals():
+    items = _checklist()
+    for still_open in ("- [ ] Owner and MHW maintainer: the window",
+                       "- [ ] Owner: approve the stop-first order",
+                       "- [ ] MHW maintainer: agree to stopping and starting",
+                       "- [ ] Owner or the maintainer of the host Dask runbook: confirm",
+                       "- [ ] Owner: reachable during the whole window",
+                       "- [ ] Reviewer: approve this run sheet and its scripts."):
+        assert [i for i in items if i.startswith(still_open)], still_open
+    assert "Do not run `apply` while any item is open." in " ".join(TEXT.split())

@@ -1210,8 +1210,9 @@ Tested:
   exit 1 naming a live process run from the py311 path; a tampered
   checkout file `FAILED` and was not run; `--all` returned 2; a
   `/usr/bin/python3` owned by another user or group-writable stopped it
-  before the copy; `/root` was left empty each time. It has not run as
-  root on VM24.
+  before the copy; `/root` was left empty each time. On VM24, as root,
+  only `root_quiescent --inspectable-only` has run (preflight D,
+  2026-10-30); the full check has not.
 - `conf/py311_quiescent.sh` against a fake `/proc`: a py311 command line, a
   mapped py311 library from a process started through the pyenv shim, a
   live process whose maps cannot be read (fails closed), and a process that
@@ -1247,6 +1248,9 @@ Tested:
   and C, preflight B with the parser fixed, and the pre-stop checks of the
   four apps (executable and one match root each), cut off before any pm2
   action.
+- Read-only on VM24, 2026-10-30 (see "VM24 preflight D record"): the
+  `ea22a03` checkout and its hashes, preflights A and C, and the owner's
+  preflight D as root, which checks access only.
 
 Derived from source, not run against the real services:
 
@@ -1256,8 +1260,11 @@ Derived from source, not run against the real services:
 - `py311_quiescent.sh` on a real Linux `/proc`, run as root: macOS has no
   `/proc`, so the rehearsal used `pgrep` on the venv path and the unit tests
   a fake `/proc`. As odbadmin on VM24 it fails closed as designed (147
-  processes of other users unreadable, 2026-10-29); the root run is still
-  open. The nanny-port lookup with `ss` did run on VM24 (preflight B).
+  processes of other users unreadable, 2026-10-29). As root on VM24 only
+  the access check has run (preflight D, `--inspectable-only`, 491
+  processes readable, 2026-10-30); the full check, which looks for py311
+  use, has not run on VM24 and runs in the window after the stops. The
+  nanny-port lookup with `ss` did run on VM24 (preflight B).
 
 Unknown until the window:
 
@@ -1332,6 +1339,43 @@ restarted. `pm2 jlist` was the only PM2 command.
 - The production Dask certificates are valid until 2027-11-25 (the CA until
   2036-10-21), and odbadmin can read the four keys. Only the expiry dates
   were read.
+
+### VM24 preflight D record (read-only, 2026-10-30)
+
+Nothing was installed or applied, no pm2 command ran, and no service was
+stopped or restarted.
+
+- Checkout `/home/odbadmin/tmp/tide-zarr-ea22a03`, detached at `ea22a03`
+  (the merge of PR #5), built from a git bundle by the operator: clean, no
+  tracked or untracked changes, `git fsck` clean. The six run-sheet
+  scripts match the commit's blobs and sha256 values; the pinned `H` of
+  preflight D equals the sha256 of `conf/py311_quiescent.sh`
+  (`12af24d65965ad1e80ef884c8530d3266c3bc1a95f1260feaa3f578ab6fc763f`).
+  Preflights A and C passed again (15:04 CST): `prepared` present, no
+  `applied`, both wheels match, zarr 2.18.6, freeze identical to the
+  `prepare` snapshot, `STATE before`.
+- Preflight D, run by the owner as root, 2026-10-30 15:17:38 CST (VM24
+  local time, Asia/Taipei): PASS, exit 0. The root-owned copy matched the
+  pinned hash (`q.sh: OK`), and `--inspectable-only` read all 491 live
+  processes. No `WARN` was printed, so the trap removed the copy and its
+  directory. Output:
+
+  ```text
+  root:root 700 /root/odbz-quiescent.E2c1M5
+  root:root 500 /root/odbz-quiescent.E2c1M5/q.sh
+  /root/odbz-quiescent.E2c1M5/q.sh: OK
+  OK inspectable: all 491 live processes could be read
+  exit 0
+  ```
+
+- What it shows: root can read the command line and memory maps of every
+  live process, so the full check can run at all. What it does not show:
+  that no process used py311. `--inspectable-only` ignores py311 use, and
+  the services were running. The full quiescence check (step 6,
+  `root_quiescent` without the flag, inside `stop_services`) must still
+  pass in the window after every service has stopped.
+- This does not make `apply` runnable and is not a deployment. The
+  checklist items still open above must all be checked first.
 
 ### MHW post-start smoke (proposed)
 
@@ -1448,7 +1492,8 @@ proposal.
 - [x] Isolated stop-first rehearsal, 2026-10-29 (see "What is tested").
 - [ ] Owner and MHW maintainer: the window, with its date and time. It
       must not overlap the MHW cron at 04:50 on the 18th. Both APIs are
-      down for the whole sequence.
+      down for the whole sequence. The owner will choose a window that does
+      not conflict with the existing schedules; no window is set yet.
 - [ ] Owner: approve the stop-first order, including stopping and starting
       the Dask scheduler and worker in the window, or choose another.
 - [ ] MHW maintainer: agree to stopping and starting `mhwapi`,
@@ -1459,23 +1504,28 @@ proposal.
       window. Only those two were connected on 2026-10-28.
 - [ ] Owner: reachable during the whole window for the recovery decisions
       below.
-- [ ] Owner: root for the read-only quiescence check in the window
-      (`sudo` for odbadmin, or a root-capable operator running that one
-      command). It must read every process's memory maps; as odbadmin it
+- [ ] Owner: root in the window for the full quiescence check of step 6
+      (`root_quiescent` inside `stop_services`, run after every service
+      stopped). It must read every process's memory maps; as odbadmin it
       fails closed while other users' processes run, and then no `apply`
-      is possible.
-- [ ] Owner, before the window: preflight D (step 4), the read-only root
-      `--inspectable-only` check through the root-owned copy, with its
-      output, time, and the copy's hash line recorded here. Only the owner
-      runs it; it changes nothing on VM24.
+      is possible. Preflight D below shows that root can read them; it did
+      not check py311 use.
+- [x] Owner, before the window: preflight D (step 4), the read-only root
+      `--inspectable-only` check through the root-owned copy. PASS on
+      2026-10-30 15:17:38 CST: the copy's hash line `q.sh: OK`, all 491
+      live processes readable, exit 0 (see "VM24 preflight D record").
+      This shows only that root can read every process; it does not show
+      that no process used py311, and it does not make `apply` runnable.
 - [ ] Reviewer: approve this run sheet and its scripts.
-- [ ] Operator: a checkout `SRC` of the approved commit on VM24, with no
+- [x] Operator: a checkout `SRC` of the approved commit on VM24, with no
       tracked changes. The sha256 of its `conf/py311_zarr_align.sh`,
       `conf/py311_zarr_state.sh`, `conf/py311_quiescent.sh`,
       `conf/pm2_app_lifecycle.sh`, `conf/dask_scheduler_check.sh`, and
       `conf/https_smoke.sh` must match that commit. `py311_quiescent.sh`
       runs as root, so its hash matters most. The 2026-10-28 `prepare` directory stays valid: this
-      change to the aligner touches only `rollback`.
+      change to the aligner touches only `rollback`. Done 2026-10-30 for
+      `ea22a03` (see "VM24 preflight D record"); a later approved commit
+      needs a new checkout.
 - [ ] In the window: preflights A to D pass immediately before the
       stop.
 
