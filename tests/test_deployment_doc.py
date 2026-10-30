@@ -909,11 +909,11 @@ def test_quiescence_runs_as_root_in_the_run_sheet(helpers):
     assert r.returncode == 0, r.stderr
     log = (helpers[1].parent / "steps.log").read_text()
     assert "sudo -- " in log and "py311_quiescent.sh" in log
+    # Preflight D runs a root-owned, hash-checked copy, not the checkout file
+    # (see the preflight D tests below).
     preflight = [b for b in BLOCKS if "--inspectable-only" in b]
-    assert len(preflight) == 1
-    assert _chain(preflight[0]) == [
-        '"$ZSTATE" --dir "$D" --expect before',
-        'sudo -- "$SRC/conf/py311_quiescent.sh" --inspectable-only']
+    assert preflight == [ROOT_D]
+    assert 'sudo -- "$SRC/conf/py311_quiescent.sh" --inspectable-only' not in ROOT_D
 
 
 def test_start_services_order(helpers):
@@ -977,3 +977,202 @@ def test_recovery_blocks_gate_starts_on_a_known_state():
                              'start_services "$D-r0-smoke" "$D-mhw-r0"']
     r2 = " ".join(TEXT.split())
     assert '`"$ZSTATE" --dir "$D" --expect after && start_services "$D-r2-smoke" "$D-mhw-r2"`' in r2
+
+
+# --- Run sheet: preflight D, the owner's read-only root check -----------------
+
+ROOT_D = _block_with("py311_quiescent.sh\" <<'EOF'")
+ROOT_D_LAUNCHER, _, _rest = ROOT_D.partition("<<'EOF'\n")
+ROOT_D_BODY = _rest.split("\nEOF\n")[0] + "\n"
+ROOT_SYS_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+ROOT_TOOLS = {"id": 1, "stat": 2, "mktemp": 1, "install": 1, "sha256sum": 1}
+
+# Stand-ins for the root block's absolute-path tools, so it runs without root
+# on macOS (BSD tools) and Linux alike. They log to calls.log next to them and
+# read their controls from files there, since the block runs under env -i.
+STUB_HEAD = '''#!/usr/bin/python3 -I
+import os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+def log(*a):
+    with open(os.path.join(here, "calls.log"), "a") as f:
+        f.write(" ".join(a) + "\\n")
+def control(name):
+    p = os.path.join(here, name)
+    return open(p).read() if os.path.exists(p) else None
+'''
+ROOT_STUBS = {
+    "id": '''log("id", *sys.argv[1:])
+print((control("uid") or "0").strip())
+''',
+    "stat": '''import grp, pwd
+log("stat", *sys.argv[1:])
+args, fmt, files = sys.argv[1:], None, []
+while args:
+    a = args.pop(0)
+    if a == "-c":
+        fmt = args.pop(0)
+    elif a != "-L":
+        files.append(a)
+for f in files:
+    if f == "/usr/bin/python3" and control("python_stat") is not None:
+        out = control("python_stat").strip()
+        if not out:
+            sys.exit(1)
+        print(out)
+        continue
+    st = os.stat(f)
+    print(fmt.replace("%U", pwd.getpwuid(st.st_uid).pw_name)
+             .replace("%G", grp.getgrgid(st.st_gid).gr_name)
+             .replace("%a", "%o" % (st.st_mode & 0o7777)).replace("%n", f))
+''',
+    "mktemp": '''import random, string
+log("mktemp", *sys.argv[1:])
+assert sys.argv[1] == "-d" and sys.argv[2].endswith("XXXXXX")
+d = sys.argv[2][:-6] + "".join(random.choice(string.ascii_letters) for _ in range(6))
+os.mkdir(d, 0o700)
+print(d)
+''',
+    "install": '''import shutil
+log("install", *sys.argv[1:])
+args = sys.argv[1:]
+mode = int(args[args.index("-m") + 1], 8)
+src, dst = args[args.index("--") + 1:]
+shutil.copyfile(src, dst)
+os.chmod(dst, mode)
+''',
+    "sha256sum": '''import hashlib
+log("sha256sum", *sys.argv[1:])
+assert sys.argv[1:] == ["-c", "-"]
+bad = 0
+for line in sys.stdin:
+    want, path = line.rstrip("\\n").split("  ", 1)
+    ok = hashlib.sha256(open(path, "rb").read()).hexdigest() == want
+    print("%s: %s" % (path, "OK" if ok else "FAILED"))
+    bad += not ok
+if bad:
+    print("sha256sum: WARNING: %d computed checksum did NOT match" % bad, file=sys.stderr)
+    sys.exit(1)
+''',
+}
+# The checker stand-in: logs its arguments, may leave a file beside itself so
+# that os.rmdir fails, and exits with the given status.
+FAKE_CHECKER = '''#!/bin/bash
+echo "q.sh $*" >> "{log}"
+[ -z "{extra}" ] || : > "$(dirname "$0")/extra"
+echo "checker ran"
+exit {code}
+'''
+
+
+def test_preflight_c_is_only_the_state_check():
+    assert BLOCKS.count('"$ZSTATE" --dir "$D" --expect before\n') == 1
+    assert not [b for b in BLOCKS if "--inspectable-only" in b and b is not ROOT_D]
+
+
+def test_root_preflight_runs_a_hash_checked_root_copy_from_an_empty_environment():
+    assert " ".join(ROOT_D_LAUNCHER.replace("\\\n", " ").split()) == (
+        f"/usr/bin/sudo /usr/bin/env -i PATH={ROOT_SYS_PATH} /bin/bash --noprofile "
+        '--norc -s -- "$SRC/conf/py311_quiescent.sh"')
+    import hashlib
+    pinned = re.findall(r"^H=([0-9a-f]{64})$", ROOT_D_BODY, re.M)
+    assert pinned == [hashlib.sha256(QUIESCE_SCRIPT.read_bytes()).hexdigest()]
+    lines = _commands(ROOT_D_BODY)
+    assert lines[:3] == ["set -euo pipefail", "umask 077", f"export PATH={ROOT_SYS_PATH}"]
+    pos = {k: next(i for i, l in enumerate(lines) if k in l) for k in (
+        "/usr/bin/id -u", "command -v python3", "/usr/bin/stat -L", "/usr/bin/mktemp",
+        "trap ", "/usr/bin/install", "/usr/bin/sha256sum", '"$T/q.sh" --inspectable-only')}
+    assert list(pos.values()) == sorted(pos.values())   # checks before the copy, trap right after mktemp
+    assert "/usr/bin/mktemp -d /root/odbz-quiescent.XXXXXX" in ROOT_D_BODY
+    assert "/usr/bin/install -m 0500 -o root -g root" in ROOT_D_BODY
+    assert "/tmp" not in ROOT_D_BODY
+    # Nothing outside the checked set runs: no rm or rmdir, every tool by path.
+    for line in lines:
+        assert not re.search(r"(^|[\s;&|(])(/usr)?(/bin/)?rm(dir)?\s", line), line
+    for tool in ROOT_TOOLS:
+        assert not re.search(rf"(^|[\s;&|(]){tool}\s", ROOT_D_BODY.replace(f"/usr/bin/{tool}", "")), tool
+    assert "os.unlink(f)" in ROOT_D_BODY and "os.rmdir(d)" in ROOT_D_BODY
+
+
+@pytest.fixture
+def root_d(tmp_path):
+    if not Path("/usr/bin/python3").exists():
+        pytest.skip("needs /usr/bin/python3, as on VM24")
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    for name, body in ROOT_STUBS.items():
+        (stubs / name).write_text(STUB_HEAD + body)
+        (stubs / name).chmod(0o755)
+    base = tmp_path / "rootdir"          # stands in for /root
+    base.mkdir(mode=0o700)
+    log = tmp_path / "checker.log"
+    src = tmp_path / "src" / "conf" / "py311_quiescent.sh"
+    src.parent.mkdir(parents=True)
+
+    def run(code=0, extra="", uid="0", python_stat=None, tamper=False):
+        import hashlib
+        checker = FAKE_CHECKER.format(log=log, extra=extra, code=code)
+        src.write_text(checker + ("# swapped after the hash was taken\n" if tamper else ""))
+        body = ROOT_D_BODY
+        for tool, n in ROOT_TOOLS.items():
+            assert body.count(f"/usr/bin/{tool} ") == n, tool
+            body = body.replace(f"/usr/bin/{tool} ", f"{stubs}/{tool} ")
+        assert body.count("/root/odbz-quiescent.") == 1
+        body = body.replace("/root/odbz-quiescent.", f"{base}/odbz-quiescent.")
+        body, n = re.subn(r"^H=[0-9a-f]{64}$",
+                          "H=" + hashlib.sha256(checker.encode()).hexdigest(), body, flags=re.M)
+        assert n == 1
+        (stubs / "uid").write_text(uid)
+        if python_stat is None:
+            (stubs / "python_stat").unlink(missing_ok=True)
+        else:
+            (stubs / "python_stat").write_text(python_stat)
+        for f in (log, stubs / "calls.log"):
+            f.unlink(missing_ok=True)
+        r = subprocess.run(["/usr/bin/env", "-i", f"PATH={ROOT_SYS_PATH}", "/bin/bash",
+                            "--noprofile", "--norc", "-s", "--", str(src)],
+                           input=body, capture_output=True, text=True, timeout=60)
+        calls = (stubs / "calls.log").read_text().splitlines() if (stubs / "calls.log").exists() else []
+        ran = log.read_text().splitlines() if log.exists() else []
+        return r, calls, ran, sorted(p.name for p in base.iterdir())
+    return run
+
+
+@pytest.mark.parametrize("code", [0, 1, 3])
+def test_root_preflight_keeps_the_check_status_and_removes_its_copy(root_d, code):
+    r, calls, ran, left = root_d(code=code)
+    assert r.returncode == code, r.stderr
+    assert ran == ["q.sh --inspectable-only"]
+    assert f"exit {code}" in r.stdout and "q.sh: OK" in r.stdout
+    assert any(c.startswith("install -m 0500 -o root -g root -- ") for c in calls)
+    assert left == [] and "WARN: could not remove" not in r.stderr
+
+
+def test_root_preflight_never_runs_a_copy_whose_hash_differs(root_d):
+    r, calls, ran, left = root_d(tamper=True)
+    assert r.returncode == 1
+    assert "q.sh: FAILED" in r.stdout and ran == []
+    assert left == [] and "WARN: could not remove" not in r.stderr
+
+
+@pytest.mark.parametrize("code", [0, 1])
+def test_root_preflight_cleanup_failure_warns_and_keeps_the_status(root_d, code):
+    r, _, ran, left = root_d(code=code, extra="1")
+    assert r.returncode == code
+    assert ran == ["q.sh --inspectable-only"]
+    assert "WARN: could not remove" in r.stderr
+    assert len(left) == 1 and left[0].startswith("odbz-quiescent.")
+
+
+@pytest.mark.parametrize("uid, python_stat, why", [
+    ("1000", None, "FAIL: not uid 0"),
+    ("0", "odbadmin 755", "FAIL: /usr/bin/python3 is 'odbadmin' mode '755'"),
+    ("0", "root 775", "FAIL: /usr/bin/python3 is 'root' mode '775'"),
+    ("0", "root 757", "FAIL: /usr/bin/python3 is 'root' mode '757'"),
+    ("0", "root rwx", "FAIL: /usr/bin/python3 is 'root' mode 'rwx'"),
+    ("0", "", "FAIL: /usr/bin/python3 is '?' mode '?'"),
+])
+def test_root_preflight_stops_before_copying_anything(root_d, uid, python_stat, why):
+    r, calls, ran, left = root_d(uid=uid, python_stat=python_stat)
+    assert r.returncode == 1 and why in r.stderr
+    assert not [c for c in calls if c.split()[0] in ("mktemp", "install", "sha256sum")]
+    assert ran == [] and left == []
