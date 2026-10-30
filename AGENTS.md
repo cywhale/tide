@@ -125,11 +125,18 @@ run.
 Never `pip install` into the shared VM24 py311 by hand. It also serves MHW
 and the Dask scheduler and worker, and Tide and MHW run with `--reload`, so
 they reload as soon as package files change. The owner-authorized Zarr
-2.18.7 alignment goes only through `conf/py311_zarr_align.sh`: `prepare`,
-then `apply` or `rollback` chained with `&&` to the restart and smoke. Run
-it in an approved window, after the open items under "Py311 Zarr alignment"
-in `dev_tpxo10/DEPLOYMENT_VM24.md` are confirmed. Do not assume the MHW
-cron uses py311.
+2.18.7 alignment goes only through `conf/py311_zarr_align.sh`, from the
+"Production run sheet" in `dev_tpxo10/DEPLOYMENT_VM24.md`: the proposed
+order stops MHW, Tide, the Dask worker, and the Dask scheduler with
+`conf/pm2_app_lifecycle.sh`, requires no process to use py311
+(`conf/py311_quiescent.sh`, run as root, fails closed on any live process it
+cannot inspect), applies,
+requires `conf/py311_zarr_state.sh` to report the expected state, and only
+then starts the services with their checks. Services never start against
+`STATE unknown`. Run it in an approved window, after every open item in
+that checklist is confirmed. Start a stopped PM2 app with `pm2 restart`
+(as the lifecycle script does), never `pm2 start NAME`, which can create a
+new app. Do not assume the MHW cron uses py311.
 
 For deployment scripts, do not assume an interactive shell PATH.
 `conf/start_app.sh` runs only an explicitly set absolute `GUNICORN_BIN` or
@@ -139,8 +146,10 @@ environment; `tests/test_start_app_launcher.py` enforces this. Public API
 users cannot select TPXO9; TPXO9 is deprecated and retained only for
 operator rollback.
 
-Never run a test or canary instance through PM2 on VM24: the `tide` entry's
-`pre_stop` kills every process whose command line contains `tide_app`. Start
+Never run a test or canary instance through PM2 on VM24: the `tide` entry is
+the production app, and its `pre_stop` would kill every process whose command
+line contains `tide_app` (PM2 5.4.2 never runs `pre_stop`; do not rely on it
+either way). Start
 a canary from a separate checkout or worktree, never by writing new code
 into the release directory (production runs with `--reload`, so any edit
 there reloads the live workers). Run it with the py311 Gunicorn on

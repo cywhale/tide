@@ -14,7 +14,9 @@
 #   It installs zarr 2.18.7 offline, hash-pinned, with --no-deps. It then
 #   requires the freeze to differ from prepare's only in the zarr line,
 #   `pip check` to be unchanged, and zarr to import as 2.18.7.
-# rollback installs 2.18.6 the same way and requires the freeze and
+# rollback installs 2.18.6 the same way, with --force-reinstall so that a
+#   damaged 2.18.6 whose metadata is intact is rewritten from the wheel
+#   instead of reported as "already satisfied", and requires the freeze and
 #   `pip check` to equal prepare's again.
 # pip check counts only in one of its two result formats (see pip_check);
 #   anything else stops the script and is never compared or recorded.
@@ -34,7 +36,7 @@ HASH_FROM=a5334311fae8859870d78561ebb6bd0ab01accc392a6cf4dcaa25d83b4a2f22c
 HASH_TO=ac3dc4033e9ae4e9d7b5e27c97ea3eaf1003cc0a07f010bd83d5134bf8c4b223
 
 die() { echo "FAIL: $*" >&2; exit 1; }
-usage() { sed -n '2,27p' "$0" >&2; exit 2; }
+usage() { sed -n '2,29p' "$0" >&2; exit 2; }
 
 pip_() { "$PY" -I -m pip --disable-pip-version-check "$@"; }
 
@@ -99,11 +101,14 @@ pip_check() {
   mv "$out.tmp" "$out"
 }
 
-# install VERSION LOG: offline, hash-pinned, no dependency changes. pipefail
-# makes a pip failure fail the pipeline even though tee succeeds.
+# install VERSION LOG [PIP_OPTION...]: offline, hash-pinned, no dependency
+# changes. pipefail makes a pip failure fail the pipeline even though tee
+# succeeds.
 install() {
+  local v=$1 log=$2
+  shift 2
   pip_ install --no-deps --no-index --find-links "$DIR/wheels" --require-hashes \
-    -r "$DIR/zarr-$1.req" 2>&1 | tee "$DIR/$2"
+    "$@" -r "$DIR/zarr-$v.req" 2>&1 | tee "$DIR/$log"
 }
 
 cmd_prepare() {
@@ -160,7 +165,7 @@ cmd_apply() {
 cmd_rollback() {
   local v
   [ -f "$DIR/prepared" ] || die "$DIR was not prepared; nothing to roll back to"
-  install "$FROM" rollback.log \
+  install "$FROM" rollback.log --force-reinstall \
     || die "pip install of zarr $FROM failed; py311 state is unknown. Do not restart or smoke"
   snapshot freeze-rollback.txt
   cmp -s "$DIR/freeze-before.txt" "$DIR/freeze-rollback.txt" \

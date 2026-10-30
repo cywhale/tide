@@ -6,6 +6,7 @@ must parse, production smoke comparisons go through the public 443 frontend
 is never disabled, and PM2 dummy configs under /home/odbadmin/tmp are .cjs
 (that tree is in ES module scope).
 """
+import os
 import re
 import subprocess
 import textwrap
@@ -201,6 +202,17 @@ def test_canary_does_not_use_expired_release_certificate():
 
 ALIGN_SCRIPT = DOC.parents[1] / "conf" / "py311_zarr_align.sh"
 STUB_STEP = '#!/bin/bash\necho "$(basename "$0") $*" >> "$STEPS_LOG"\n'
+# py311_zarr_state.sh stand-in: the fake py311's zarr version decides the
+# state; ZSTATE_UNKNOWN forces STATE unknown.
+FAKE_ZSTATE = r'''#!/bin/bash
+echo "zstate $*" >> "$STEPS_LOG"
+expect=""
+while [ $# -gt 0 ]; do case "$1" in --expect) expect=$2; shift 2 ;; *) shift ;; esac; done
+[ -z "$ZSTATE_UNKNOWN" ] || { echo "STATE unknown"; exit 1; }
+case "$(cat "$FAKE_PY/zarr")" in 2.18.6) s=before ;; 2.18.7) s=after ;; *) s=unknown ;; esac
+echo "STATE $s"
+[ "$s" != unknown ] && { [ -z "$expect" ] || [ "$s" = "$expect" ]; }
+'''
 
 
 def _align_block(mode):
@@ -212,20 +224,29 @@ def _align_block(mode):
 MHW_LAUNCHER = "/home/odbadmin/proj/marineheatwave/API/conf/start_app.sh"
 
 
-def test_align_blocks_chain_restart_and_smoke_with_and():
+def _chain(block):
+    cmds = _commands(block)
+    assert len(cmds) == 1, cmds                # one && chain, nothing after it
+    return [" ".join(s.split()) for s in cmds[0].split("&&")]
+
+
+def test_align_blocks_require_a_known_state_before_anything_starts():
     assert len([b for b in BLOCKS if '"$ALIGN" prepare --dir "$D"' in b]) == 1
-    for mode, out in (("apply", "after"), ("rollback", "rollback")):
-        cmds = _commands(_align_block(mode))
-        assert len(cmds) == 1, cmds            # one && chain, nothing after it
-        steps = [s.strip() for s in cmds[0].split("&&")]
-        assert len(steps) == 5, steps
-        assert steps[0] == f'"$ALIGN" {mode} --dir "$D"'
-        assert "pm2_restart_check.sh" in steps[1] and "--name tide" in steps[1]
-        assert "--update-env" not in cmds[0]
-        assert "https_smoke.sh" in steps[2] and "--prod-port 443" in steps[2]
-        assert "pm2_restart_check.sh" in steps[3]
-        assert f"--name mhwapi --expect-exec {MHW_LAUNCHER}" in " ".join(steps[3].split())
-        assert steps[4] == f'mhw_check "$D-mhw-{out}" "$D-mhw-before"'
+    assert _chain(_align_block("apply")) == [
+        '"$ALIGN" apply --dir "$D"', '"$ZSTATE" --dir "$D" --expect after']
+    assert _chain(_align_block("rollback")) == [
+        "stop_services", '"$ALIGN" rollback --dir "$D"',
+        '"$ZSTATE" --dir "$D" --expect before',
+        'start_services "$D-rollback-smoke" "$D-mhw-rollback"']
+    # The normal start is its own step, after the apply block succeeded.
+    assert 'start_services "$D-smoke" "$D-mhw-after"' in ALL_COMMANDS
+    assert "stop_services" in ALL_COMMANDS
+    zarr = TEXT[TEXT.index("## Py311 Zarr alignment"):TEXT.index("## Operational Notes")]
+    cmds = [c for b in re.findall(r"^ *```bash\n(.*?)^ *```", zarr, flags=re.S | re.M)
+            for c in _commands(textwrap.dedent(b)) if not c.startswith("#")]
+    assert cmds
+    assert not any("--update-env" in c or re.search(r"\bpm2 (start|stop|restart)\b", c)
+                   for c in cmds)
 
 
 def test_run_sheet_reuses_the_prepared_directory():
@@ -255,14 +276,21 @@ def align_chain(tmp_path):
         p.chmod(0o755)
     log = tmp_path / "steps.log"
     d = tmp_path / "zarr-align-x"
+    zstate = tmp_path / "zstate"
+    zstate.write_text(FAKE_ZSTATE)
+    zstate.chmod(0o755)
 
-    # The run sheet defines mhw_check in an earlier block of the same shell.
-    mhw_stub = 'mhw_check() { echo "mhw_check $*" >> "$STEPS_LOG"; }\n'
+    # The run sheet defines mhw_check and the service helpers in earlier
+    # blocks of the same shell; here they only record that they ran.
+    mhw_stub = ('mhw_check() { echo "mhw_check $*" >> "$STEPS_LOG"; }\n'
+                'stop_services() { echo "stop_services" >> "$STEPS_LOG"; }\n'
+                'start_services() { echo "start_services $*" >> "$STEPS_LOG"; }\n')
 
-    def run(block, fail="", check="conflicts", dirpath=d):
+    def run(block, fail="", check="conflicts", dirpath=d, zstate_unknown=""):
         env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "SRC": str(src),
                "ALIGN": str(wrapper), "D": str(dirpath), "FAKE_PY": str(state),
-               "FAKE_FAIL": fail, "FAKE_CHECK": check, "STEPS_LOG": str(log)}
+               "FAKE_FAIL": fail, "FAKE_CHECK": check, "STEPS_LOG": str(log),
+               "ZSTATE": str(zstate), "ZSTATE_UNKNOWN": zstate_unknown}
         return subprocess.run(["bash", "-c", mhw_stub + block], env=env,
                               cwd=tmp_path, capture_output=True, text=True,
                               timeout=60)
@@ -295,24 +323,32 @@ def test_align_apply_chain_stops_when_verification_freeze_fails(align_chain):
     assert r.returncode != 0 and _steps(log) == []
 
 
-def test_align_apply_then_rollback_chains_run_restart_and_smoke(align_chain):
+def test_align_apply_then_rollback_chains(align_chain):
     run, log, state = align_chain
-    order = ["pm2_restart_check.sh", "https_smoke.sh",
-             "pm2_restart_check.sh", "mhw_check"]
     r = run(_align_block("apply"))
     assert r.returncode == 0, r.stderr
-    steps = _steps(log)
-    assert [s.split()[0] for s in steps] == order
-    assert "--name tide" in steps[0] and "--prod-port 443" in steps[1]
-    assert "--name mhwapi" in steps[2]
+    assert _steps(log) == ["zstate --dir {} --expect after".format(log.parent / "zarr-align-x")]
     assert (state / "zarr").read_text().strip() == "2.18.7"
 
-    r = run(_align_block("rollback"), "install")  # failed rollback: no restart
-    assert r.returncode != 0 and len(_steps(log)) == 4
+    log.unlink()
+    r = run(_align_block("rollback"), "install")  # failed rollback: nothing starts
+    assert r.returncode != 0 and _steps(log) == ["stop_services"]
+    log.unlink()
     r = run(_align_block("rollback"))
     assert r.returncode == 0, r.stderr
-    assert [s.split()[0] for s in _steps(log)[4:]] == order
+    steps = _steps(log)
+    assert [s.split()[0] for s in steps] == ["stop_services", "zstate", "start_services"]
+    assert steps[1].endswith("--expect before")
     assert (state / "zarr").read_text().strip() == "2.18.6"
+
+
+def test_rollback_chain_starts_nothing_when_the_state_is_unknown(align_chain):
+    run, log, _ = align_chain
+    assert run(_align_block("apply")).returncode == 0
+    log.unlink()
+    r = run(_align_block("rollback"), zstate_unknown="1")
+    assert r.returncode != 0
+    assert [s.split()[0] for s in _steps(log)] == ["stop_services", "zstate"]
 
 
 @pytest.mark.parametrize("check", ["traceback-stdout", "traceback-stderr",
@@ -323,7 +359,7 @@ def test_align_chains_stop_when_pip_check_is_not_recognised(align_chain, check):
     assert r.returncode != 0 and _steps(log) == []
     assert (state / "zarr").read_text().strip() == "2.18.7"
     r = run(_align_block("rollback"), check=check)
-    assert r.returncode != 0 and _steps(log) == []
+    assert r.returncode != 0 and _steps(log) == ["stop_services"]   # nothing starts
 
 
 @pytest.mark.parametrize("check", ["traceback-stdout", "unknown", "warning"])
@@ -508,6 +544,10 @@ def test_mhw_check_passes_and_compares_with_the_baseline(mhw):
     assert "point query identical" in r.stdout
     r = run(f'mhw_check "{tmp}/after" "{tmp}/before"')   # never overwrites
     assert r.returncode != 0 and "PASS" not in r.stdout
+    # Also inside an && list, where bash ignores set -e in the function.
+    r = run(f'true && mhw_check "{tmp}/after" "{tmp}/before" && echo NEXT')
+    assert r.returncode != 0 and "already exists" in r.stderr
+    assert "PASS" not in r.stdout and "NEXT" not in r.stdout
 
 
 def test_mhw_check_only_sends_reads_to_the_public_frontend(mhw):
@@ -587,21 +627,353 @@ def test_mhw_proc_check_fails_on_the_wrong_process(mhw, ps, ss, why):
 
 
 def test_service_order_stays_a_proposal_until_approved():
-    section = TEXT[TEXT.index("### Service handling during the install"):
-                   TEXT.index("### MHW restart and post-restart smoke")]
+    section = TEXT[TEXT.index("### Dask and Zarr evidence"):
+                   TEXT.index("### MHW post-start smoke")]
     flat = " ".join(section.split())
-    assert "Proposed order, not validated" in flat
-    assert "This order is **not approved**" in flat
-    assert "never against the real `mhwapi`" in flat
-    for overclaim in ("(recommended)", "Recommendation:", "race is bounded",
-                      "Validated tools only", "restart failed workers",
-                      "No running process imports Zarr",
-                      "identical 2.18.6 code", "Zarr code"):
-        assert overclaim not in flat, overclaim
-    assert "stopping the APIs does not remove the import risk" in flat
-    assert "The impact on the Dask worker is unknown under both options." in flat
-    assert "Neither order is shown to be safe." in flat
+    assert "### Service handling: stop first (proposed, not approved)" in section
+    assert "it has never run in production" in flat
+    assert "Decision: stop the Dask scheduler too." in flat
+    assert "Stopping the APIs does not remove the import risk." in flat
     assert "It shows one moment, not what will arrive during a later window." in flat
-    sheet = " ".join(TEXT[TEXT.index("### Production run sheet"):].split())
+    for heading in ("Tested:", "Derived from source, not run against the real services:",
+                    "Unknown until the window:"):
+        assert heading in flat, heading
+    for overclaim in ("production-validated", "validated in production",
+                      "(recommended)", "Recommendation:", "race is bounded",
+                      "No running process imports Zarr", "identical 2.18.6 code",
+                      "Zarr code", "pre_stop kills"):
+        assert overclaim not in flat, overclaim
+    sheet = " ".join(TEXT[TEXT.index("### Production run sheet"):
+                          TEXT.index("## Operational Notes")].split())
     assert "Do not run `apply` while any item is open." in sheet
-    assert "- [ ] Owner: approve the service order" in sheet
+    for item in ("- [ ] Owner: approve the stop-first order",
+                 "- [ ] MHW maintainer: agree to stopping and starting",
+                 "- [ ] Owner and MHW maintainer: the window",
+                 "- [ ] Owner: reachable during the whole window"):
+        assert item in sheet, item
+    assert "Services start only against a known package state" in sheet
+    assert "With `STATE unknown`, nothing starts." in sheet
+
+
+def test_no_runbook_text_claims_pm2_runs_pre_stop():
+    flat = " ".join(TEXT.split())
+    assert "pre_stop` kills every" not in flat
+    assert "pre_stop of `tide` kills" not in flat
+    assert "PM2 5.4.2 never runs" in flat
+
+
+# --- Run sheet: preflight B ---------------------------------------------------
+
+PREFLIGHT_B = _block_with("OK preflight B")
+
+
+@pytest.fixture
+def preflight_b(tmp_path):
+    """Preflight B with the production paths moved into tmp_path and every
+    external command replaced by a stub driven by files in tmp_path/w."""
+    w = tmp_path / "w"
+    w.mkdir()
+    pm2h = tmp_path / "pm2home"
+    pm2h.mkdir()
+    (pm2h / "pm2.pid").write_text("3352\n")
+    tls = tmp_path / "tls"
+    for f in ("certs/ca.crt", "certs/mhw-client.crt", "private/mhw-client.key"):
+        (tls / f).parent.mkdir(parents=True, exist_ok=True)
+        (tls / f).write_text("")
+    src = tmp_path / "src"
+    (src / "conf").mkdir(parents=True)
+    stubs = {
+        "pm2_restart_check.sh": '#!/bin/bash\necho "daemon ok"\n',
+        "pm2_app_lifecycle.sh": ('#!/bin/bash\nmode=$1; shift\n'
+                                 'while [ $# -gt 0 ]; do case "$1" in --name) n=$2; shift 2 ;; *) shift ;; esac; done\n'
+                                 'if [ "$mode" = pid ]; then echo 101867; exit 0; fi\n'
+                                 'echo "$(cat "$W/status.$n" 2>/dev/null || echo online) 1 0"\n'),
+        "dask_scheduler_check.sh": '#!/bin/bash\necho "$*" > "$W/dask.args"\n[ ! -e "$W/dask.fail" ]\n',
+    }
+    for name, body in stubs.items():
+        (src / "conf" / name).write_text(body)
+        (src / "conf" / name).chmod(0o755)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "ps").write_text(
+        '#!/bin/bash\nwhile [ $# -gt 0 ]; do case "$1" in -p) p=$2; shift 2 ;; *) shift ;; esac; done\n'
+        'cat "$W/ps.$p"\n')
+    (bindir / "pgrep").write_text('#!/bin/bash\n[ -e "$W/pgrep.hit" ]\n')
+    for f in ("ps", "pgrep"):
+        (bindir / f).chmod(0o755)
+    (w / "ps.3352").write_text(f"PM2 v5.4.2: God Daemon ({pm2h})\n")
+    (w / "ps.96946").write_text("bash /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh\n")
+    block = (PREFLIGHT_B.replace("/home/odbadmin/.pm2", str(pm2h))
+             .replace("/home/odbadmin/.config/dask/tls", str(tls)))
+
+    def run():
+        env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(tmp_path),
+               "SRC": str(src), "W": str(w)}
+        return subprocess.run(["bash", "-c", block], env=env, cwd=tmp_path,
+                              capture_output=True, text=True, timeout=60)
+    return run, w
+
+
+def test_preflight_b_passes_and_asks_dask_for_the_nanny_and_clients(preflight_b):
+    run, w = preflight_b
+    r = run()
+    assert r.returncode == 0, r.stderr
+    assert "OK preflight B" in r.stdout
+    assert (w / "dask.args").read_text().split() == [
+        "ready", "--workers", "1", "--nanny-pid", "101867", "--clients", "4",
+        "--timeout", "10"]
+
+
+@pytest.mark.parametrize("change, why", [
+    ("version", "check pre_stop support"),
+    ("launcher", "no longer PID 96946"),
+    ("update", "the MHW update is running"),
+    ("stopped", "dask-worker is not online"),
+    ("dask", "Dask is not one worker"),
+])
+def test_preflight_b_refuses(preflight_b, change, why):
+    run, w = preflight_b
+    if change == "version":
+        (w / "ps.3352").write_text((w / "ps.3352").read_text().replace("5.4.2", "6.0.1"))
+    elif change == "launcher":
+        (w / "ps.96946").write_text("sleep 60\n")
+    elif change == "update":
+        (w / "pgrep.hit").write_text("")
+    elif change == "stopped":
+        (w / "status.dask-worker").write_text("stopped")
+    else:
+        (w / "dask.fail").write_text("")
+    r = run()
+    assert r.returncode != 0
+    assert why in r.stderr and "do not apply" in r.stderr
+    assert "OK preflight B" not in r.stdout
+
+
+# --- Run sheet: maintenance helpers ------------------------------------------
+
+HELPERS = _block_with("start_services() (")
+QUIESCE_SCRIPT = DOC.parents[1] / "conf" / "py311_quiescent.sh"
+
+# pm2_app_lifecycle.sh stand-in: one status file per app; stop and start flip
+# it, FAIL_AT ("start tide", "stop dask-worker", ...) fails that one call.
+FAKE_LIFE = r'''#!/bin/bash
+mode=$1; shift
+n=""; match=""; exe=""
+while [ $# -gt 0 ]; do
+  case "$1" in --name) n=$2; shift 2 ;; --match) match=$2; shift 2 ;;
+    --expect-exec) exe=$2; shift 2 ;; *) shift ;; esac
+done
+f="$W/status.$n"
+case "$mode" in
+  status) echo "$(cat "$f") 1 0" ;;
+  pid) echo 101867 ;;
+  stop|start)
+    echo "$mode $n match=$match exe=$exe" >> "$STEPS_LOG"
+    [ "${FAIL_AT:-}" != "$mode $n" ] || exit 1
+    if [ "$mode" = stop ]; then echo stopped > "$f"; else echo online > "$f"; fi ;;
+esac
+'''
+FAKE_STEP = '#!/bin/bash\necho "$(basename "$0") $*" >> "$STEPS_LOG"\n[ "${FAIL_AT:-}" != "$(basename "$0") $1" ]\n'
+
+
+@pytest.fixture
+def helpers(tmp_path):
+    w = tmp_path / "w"
+    w.mkdir()
+    src = tmp_path / "src"
+    (src / "conf").mkdir(parents=True)
+    for name, body in (("pm2_app_lifecycle.sh", FAKE_LIFE), ("https_smoke.sh", FAKE_STEP),
+                       ("dask_scheduler_check.sh", FAKE_STEP)):
+        (src / "conf" / name).write_text(body)
+        (src / "conf" / name).chmod(0o755)
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    # The real quiescence script, reading a fake /proc; and a sudo stand-in
+    # that only records that it was used and runs the command as is.
+    quiesce = QUIESCE_SCRIPT.read_text().replace("PROC=/proc\n", f"PROC={proc}\n")
+    assert quiesce != QUIESCE_SCRIPT.read_text()
+    (src / "conf" / "py311_quiescent.sh").write_text(quiesce)
+    (src / "conf" / "py311_quiescent.sh").chmod(0o755)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "sudo").write_text('#!/bin/bash\necho "sudo $*" >> "$STEPS_LOG"\n'
+                                 '[ "$1" = -- ] && shift\nexec "$@"\n')
+    (bindir / "sudo").chmod(0o755)
+    log = tmp_path / "steps.log"
+    block = HELPERS
+    mhw_stub = 'mhw_check() { echo "mhw_check $*" >> "$STEPS_LOG"; [ "${FAIL_AT:-}" != mhw_check ]; }\n'
+
+    def run(cmd, status=None, fail=""):
+        for a in ("dask-scheduler", "dask-worker", "tide", "mhwapi"):
+            (w / f"status.{a}").write_text((status or {}).get(a, "online"))
+        log.unlink(missing_ok=True)
+        env = {"PATH": f"{bindir}:/usr/bin:/bin", "HOME": str(tmp_path), "SRC": str(src),
+               "DASKC": str(src / "conf" / "dask_scheduler_check.sh"),
+               "D": str(tmp_path / "d"), "W": str(w), "STEPS_LOG": str(log),
+               "FAIL_AT": fail}
+        r = subprocess.run(["bash", "-c", mhw_stub + block + "\n" + cmd], env=env,
+                           cwd=tmp_path, capture_output=True, text=True, timeout=60)
+        return r, [" ".join(l.split()[:2]) if not l.startswith("dask_scheduler_check.sh")
+                   else l for l in (log.read_text().splitlines() if log.exists() else [])]
+    return run, proc
+
+
+def test_app_passes_the_match_word_and_executable_per_app(helpers):
+    run, _ = helpers
+    r, _ = run("app stop mhwapi && app stop tide && app stop dask-worker && app stop dask-scheduler")
+    assert r.returncode == 0, r.stderr
+    log = (helpers[1].parent / "steps.log").read_text().splitlines()
+    py = "/home/odbadmin/.pyenv/versions/py311/bin"
+    assert log == [
+        f"stop mhwapi match=mhw_app:app exe={MHW_LAUNCHER}",
+        f"stop tide match=tide_app:app exe={py}/gunicorn",
+        f"stop dask-worker match={py}/dask-worker exe={py}/dask-worker",
+        f"stop dask-scheduler match={py}/dask-scheduler exe={py}/dask-scheduler",
+    ]
+    r, _ = run("app stop gateway")
+    assert r.returncode != 0 and "unknown app" in r.stderr
+
+
+def test_stop_services_order_and_quiescence(helpers):
+    run, _ = helpers
+    r, steps = run("stop_services")
+    assert r.returncode == 0, r.stderr
+    # The root quiescence check comes last, after every service stopped.
+    assert steps == ["stop mhwapi", "stop tide", "dask_scheduler_check.sh drained",
+                     "stop dask-worker", "stop dask-scheduler", "sudo --"]
+    assert "OK quiescent" in r.stdout and "OK services stopped" in r.stdout
+
+
+@pytest.mark.parametrize("fail, done", [
+    ("stop tide", ["stop mhwapi", "stop tide"]),
+    ("dask_scheduler_check.sh drained",
+     ["stop mhwapi", "stop tide", "dask_scheduler_check.sh drained"]),
+    ("stop dask-worker", ["stop mhwapi", "stop tide", "dask_scheduler_check.sh drained",
+                          "stop dask-worker"]),
+])
+def test_stop_services_stops_at_the_first_failure(helpers, fail, done):
+    run, _ = helpers
+    r, steps = run("stop_services && echo APPLY_WOULD_RUN", fail=fail)
+    assert r.returncode != 0
+    assert steps == done
+    assert "APPLY_WOULD_RUN" not in r.stdout
+
+
+def test_stop_services_skips_stopped_apps_and_the_drain_without_a_scheduler(helpers):
+    run, _ = helpers
+    r, steps = run("stop_services", status={"mhwapi": "stopped", "dask-scheduler": "stopped"})
+    assert r.returncode == 0, r.stderr
+    assert steps == ["stop tide", "stop dask-worker", "sudo --"]
+    assert "note: mhwapi already stopped" in r.stdout
+
+
+@pytest.mark.parametrize("where", ["cmdline", "maps"])
+def test_py311_quiescent_finds_a_process_using_py311(helpers, where):
+    run, proc = helpers
+    (proc / "4242").mkdir()
+    py = "/home/odbadmin/.pyenv/versions/py311/"
+    (proc / "4242" / "cmdline").write_bytes(
+        (py + "bin/python3.11\0x.py\0").encode() if where == "cmdline" else b"python\0x.py\0")
+    (proc / "4242" / "maps").write_text(
+        f"7f00 r-xp 0 00:00 0 {py}lib/python3.11/site-packages/numpy/core/_m.so\n"
+        if where == "maps" else "7f00 r-xp 0 00:00 0 /usr/lib/libc.so\n")
+    r, steps = run("stop_services && echo APPLY_WOULD_RUN")
+    assert r.returncode != 0
+    assert "processes use py311" in r.stderr and "4242" in r.stderr
+    assert "APPLY_WOULD_RUN" not in r.stdout
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads every file")
+def test_stop_services_fails_closed_on_a_process_it_cannot_inspect(helpers):
+    # Regression (Codex review of PR #4): an unreadable /proc/<pid>/maps was
+    # counted and the check passed. A live process that cannot be inspected
+    # may use py311, so the stop must not reach apply.
+    run, proc = helpers
+    (proc / "77").mkdir()
+    (proc / "77" / "cmdline").write_bytes(b"/usr/sbin/sshd\0")
+    (proc / "77" / "status").write_text("Uid:\t0\t0\t0\t0\n")
+    (proc / "77" / "maps").write_text("")
+    (proc / "77" / "maps").chmod(0)
+    try:
+        r, steps = run("stop_services && echo APPLY_WOULD_RUN")
+    finally:
+        (proc / "77" / "maps").chmod(0o644)
+    assert r.returncode != 0
+    assert "could not be inspected" in r.stderr and "77 uid=0" in r.stderr
+    assert "APPLY_WOULD_RUN" not in r.stdout and "OK quiescent" not in r.stdout
+
+
+def test_quiescence_runs_as_root_in_the_run_sheet(helpers):
+    run, _ = helpers
+    r, _ = run("py311_quiescent")
+    assert r.returncode == 0, r.stderr
+    log = (helpers[1].parent / "steps.log").read_text()
+    assert "sudo -- " in log and "py311_quiescent.sh" in log
+    preflight = [b for b in BLOCKS if "--inspectable-only" in b]
+    assert len(preflight) == 1
+    assert _chain(preflight[0]) == [
+        '"$ZSTATE" --dir "$D" --expect before',
+        'sudo -- "$SRC/conf/py311_quiescent.sh" --inspectable-only']
+
+
+def test_start_services_order(helpers):
+    run, _ = helpers
+    stopped = {a: "stopped" for a in ("dask-scheduler", "dask-worker", "tide", "mhwapi")}
+    r, steps = run('start_services "$D-smoke" "$D-mhw-after"', status=stopped)
+    assert r.returncode == 0, r.stderr
+    d = str(helpers[1].parent / "d")
+    assert steps == [
+        "start dask-scheduler", "dask_scheduler_check.sh ready --workers 0",
+        "start dask-worker", "dask_scheduler_check.sh ready --workers 1 --nanny-pid 101867",
+        "start tide", "https_smoke.sh --host",
+        "start mhwapi", f"mhw_check {d}-mhw-after",
+        "dask_scheduler_check.sh ready --workers 1 --nanny-pid 101867 --clients 4"]
+    assert "OK services started" in r.stdout
+
+
+@pytest.mark.parametrize("fail, last", [
+    ("start dask-scheduler", "start dask-scheduler"),
+    ("start dask-worker", "start dask-worker"),
+    ("dask_scheduler_check.sh ready", "dask_scheduler_check.sh ready --workers 0"),
+    ("https_smoke.sh --host", "https_smoke.sh --host"),
+    ("mhw_check", None),
+])
+def test_start_services_stops_at_the_first_failure(helpers, fail, last):
+    run, _ = helpers
+    stopped = {a: "stopped" for a in ("dask-scheduler", "dask-worker", "tide", "mhwapi")}
+    # As in the run sheet's recovery chains: inside an && list.
+    r, steps = run('true && start_services "$D-smoke" "$D-mhw-after" && echo NEXT',
+                   status=stopped, fail=fail)
+    assert r.returncode != 0
+    assert "OK services started" not in r.stdout and "NEXT" not in r.stdout
+    if last:
+        assert steps[-1] == last
+    else:
+        assert steps[-1].startswith("mhw_check")
+    if fail in ("start dask-scheduler", "start dask-worker", "dask_scheduler_check.sh ready"):
+        assert "start tide" not in steps and "start mhwapi" not in steps
+
+
+def test_start_services_starts_only_what_is_down(helpers):
+    run, _ = helpers
+    r, steps = run('start_services "$D-s" "$D-m"', status={"tide": "errored", "mhwapi": "stopped"})
+    assert r.returncode == 0, r.stderr
+    assert [s for s in steps if s.startswith("start")] == ["start tide", "start mhwapi"]
+    assert steps[0] == "dask_scheduler_check.sh ready --workers 1"
+    assert "note: dask-scheduler already online" in r.stdout
+
+
+def test_start_services_refuses_an_app_in_an_unexpected_state(helpers):
+    run, _ = helpers
+    r, steps = run('start_services "$D-s" "$D-m"', status={"dask-scheduler": "launching"})
+    assert r.returncode != 0 and "unexpected state" in r.stderr
+    assert steps == []
+
+
+def test_recovery_blocks_gate_starts_on_a_known_state():
+    r0 = [b for b in BLOCKS if 'start_services "$D-r0-smoke"' in b]
+    assert len(r0) == 1
+    assert _chain(r0[0]) == ['"$ZSTATE" --dir "$D" --expect before',
+                             'start_services "$D-r0-smoke" "$D-mhw-r0"']
+    r2 = " ".join(TEXT.split())
+    assert '`"$ZSTATE" --dir "$D" --expect after && start_services "$D-r2-smoke" "$D-mhw-r2"`' in r2
