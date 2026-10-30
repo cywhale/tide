@@ -788,22 +788,23 @@ def helpers(tmp_path):
         (src / "conf" / name).chmod(0o755)
     proc = tmp_path / "proc"
     proc.mkdir()
-    # The real quiescence script, reading a fake /proc; and a sudo stand-in
-    # that only records that it was used and runs the command as is.
+    # The real quiescence script, reading a fake /proc; and, unless a test
+    # passes the real one, a root_quiescent stand-in that records the call
+    # and runs that script as is.
     quiesce = QUIESCE_SCRIPT.read_text().replace("PROC=/proc\n", f"PROC={proc}\n")
     assert quiesce != QUIESCE_SCRIPT.read_text()
     (src / "conf" / "py311_quiescent.sh").write_text(quiesce)
     (src / "conf" / "py311_quiescent.sh").chmod(0o755)
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    (bindir / "sudo").write_text('#!/bin/bash\necho "sudo $*" >> "$STEPS_LOG"\n'
-                                 '[ "$1" = -- ] && shift\nexec "$@"\n')
-    (bindir / "sudo").chmod(0o755)
     log = tmp_path / "steps.log"
     block = HELPERS
     mhw_stub = 'mhw_check() { echo "mhw_check $*" >> "$STEPS_LOG"; [ "${FAIL_AT:-}" != mhw_check ]; }\n'
 
-    def run(cmd, status=None, fail=""):
+    root_stub = ('root_quiescent() { echo "root_quiescent $*" >> "$STEPS_LOG"; '
+                 '"$SRC/conf/py311_quiescent.sh" "$@"; }\n')
+
+    def run(cmd, status=None, fail="", root=None):
         for a in ("dask-scheduler", "dask-worker", "tide", "mhwapi"):
             (w / f"status.{a}").write_text((status or {}).get(a, "online"))
         log.unlink(missing_ok=True)
@@ -811,7 +812,8 @@ def helpers(tmp_path):
                "DASKC": str(src / "conf" / "dask_scheduler_check.sh"),
                "D": str(tmp_path / "d"), "W": str(w), "STEPS_LOG": str(log),
                "FAIL_AT": fail}
-        r = subprocess.run(["bash", "-c", mhw_stub + block + "\n" + cmd], env=env,
+        root_def = root_stub if root is None else root
+        r = subprocess.run(["bash", "-c", mhw_stub + root_def + block + "\n" + cmd], env=env,
                            cwd=tmp_path, capture_output=True, text=True, timeout=60)
         return r, [" ".join(l.split()[:2]) if not l.startswith("dask_scheduler_check.sh")
                    else l for l in (log.read_text().splitlines() if log.exists() else [])]
@@ -840,7 +842,7 @@ def test_stop_services_order_and_quiescence(helpers):
     assert r.returncode == 0, r.stderr
     # The root quiescence check comes last, after every service stopped.
     assert steps == ["stop mhwapi", "stop tide", "dask_scheduler_check.sh drained",
-                     "stop dask-worker", "stop dask-scheduler", "sudo --"]
+                     "stop dask-worker", "stop dask-scheduler", "root_quiescent"]
     assert "OK quiescent" in r.stdout and "OK services stopped" in r.stdout
 
 
@@ -863,7 +865,7 @@ def test_stop_services_skips_stopped_apps_and_the_drain_without_a_scheduler(help
     run, _ = helpers
     r, steps = run("stop_services", status={"mhwapi": "stopped", "dask-scheduler": "stopped"})
     assert r.returncode == 0, r.stderr
-    assert steps == ["stop tide", "stop dask-worker", "sudo --"]
+    assert steps == ["stop tide", "stop dask-worker", "root_quiescent"]
     assert "note: mhwapi already stopped" in r.stdout
 
 
@@ -908,12 +910,12 @@ def test_quiescence_runs_as_root_in_the_run_sheet(helpers):
     r, _ = run("py311_quiescent")
     assert r.returncode == 0, r.stderr
     log = (helpers[1].parent / "steps.log").read_text()
-    assert "sudo -- " in log and "py311_quiescent.sh" in log
+    assert "root_quiescent" in log
     # Preflight D runs a root-owned, hash-checked copy, not the checkout file
     # (see the preflight D tests below).
     preflight = [b for b in BLOCKS if "--inspectable-only" in b]
     assert preflight == [ROOT_D]
-    assert 'sudo -- "$SRC/conf/py311_quiescent.sh" --inspectable-only' not in ROOT_D
+    assert ROOT_D.endswith("}\n" + ROOT_D_CALL)
 
 
 def test_start_services_order(helpers):
@@ -981,7 +983,8 @@ def test_recovery_blocks_gate_starts_on_a_known_state():
 
 # --- Run sheet: preflight D, the owner's read-only root check -----------------
 
-ROOT_D = _block_with("py311_quiescent.sh\" <<'EOF'")
+ROOT_D = _block_with("py311_quiescent.sh\" \"$@\" <<'EOF'")
+ROOT_D_CALL = "root_quiescent --inspectable-only\n"
 ROOT_D_LAUNCHER, _, _rest = ROOT_D.partition("<<'EOF'\n")
 ROOT_D_BODY = _rest.split("\nEOF\n")[0] + "\n"
 ROOT_SYS_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
@@ -1064,23 +1067,26 @@ exit {code}
 '''
 
 
+
 def test_preflight_c_is_only_the_state_check():
     assert BLOCKS.count('"$ZSTATE" --dir "$D" --expect before\n') == 1
     assert not [b for b in BLOCKS if "--inspectable-only" in b and b is not ROOT_D]
 
 
-def test_root_preflight_runs_a_hash_checked_root_copy_from_an_empty_environment():
-    assert " ".join(ROOT_D_LAUNCHER.replace("\\\n", " ").split()) == (
-        f"/usr/bin/sudo /usr/bin/env -i PATH={ROOT_SYS_PATH} /bin/bash --noprofile "
-        '--norc -s -- "$SRC/conf/py311_quiescent.sh"')
+def test_root_quiescent_runs_a_hash_checked_root_copy_from_an_empty_environment():
+    assert ROOT_D.endswith("}\n" + ROOT_D_CALL)
+    assert " ".join(ROOT_D_LAUNCHER.replace("\\\n", " ").split()).endswith(
+        f"root_quiescent() {{ /usr/bin/sudo /usr/bin/env -i PATH={ROOT_SYS_PATH} /bin/bash "
+        '--noprofile --norc -s -- "$SRC/conf/py311_quiescent.sh" "$@"')
     import hashlib
     pinned = re.findall(r"^H=([0-9a-f]{64})$", ROOT_D_BODY, re.M)
     assert pinned == [hashlib.sha256(QUIESCE_SCRIPT.read_bytes()).hexdigest()]
     lines = _commands(ROOT_D_BODY)
     assert lines[:3] == ["set -euo pipefail", "umask 077", f"export PATH={ROOT_SYS_PATH}"]
     pos = {k: next(i for i, l in enumerate(lines) if k in l) for k in (
-        "/usr/bin/id -u", "command -v python3", "/usr/bin/stat -L", "/usr/bin/mktemp",
-        "trap ", "/usr/bin/install", "/usr/bin/sha256sum", '"$T/q.sh" --inspectable-only')}
+        '[ "$#" = 1 ]', "/usr/bin/id -u", "command -v python3", "/usr/bin/stat -L",
+        "/usr/bin/mktemp", "trap ", "/usr/bin/install", "/usr/bin/sha256sum",
+        '"$T/q.sh" ${M:+"$M"}')}
     assert list(pos.values()) == sorted(pos.values())   # checks before the copy, trap right after mktemp
     assert "/usr/bin/mktemp -d /root/odbz-quiescent.XXXXXX" in ROOT_D_BODY
     assert "/usr/bin/install -m 0500 -o root -g root" in ROOT_D_BODY
@@ -1093,8 +1099,15 @@ def test_root_preflight_runs_a_hash_checked_root_copy_from_an_empty_environment(
     assert "os.unlink(f)" in ROOT_D_BODY and "os.rmdir(d)" in ROOT_D_BODY
 
 
-@pytest.fixture
-def root_d(tmp_path):
+def test_step_6_quiescence_goes_through_root_quiescent():
+    assert "py311_quiescent() { root_quiescent; }" in HELPERS
+    assert "py311_quiescent.sh" not in HELPERS.replace("root_quiescent", "")
+    assert not re.search(r"(^|[\s;&|(])s[u]do\s", HELPERS)
+    assert re.search(r"stop_services\(\) \(\n(  #.*\n)*  declare -F root_quiescent ", HELPERS)
+
+
+def _root_sandbox(tmp_path):
+    """Stubs for the root block's tools, a stand-in for /root, a checker log."""
     if not Path("/usr/bin/python3").exists():
         pytest.skip("needs /usr/bin/python3, as on VM24")
     stubs = tmp_path / "stubs"
@@ -1102,38 +1115,58 @@ def root_d(tmp_path):
     for name, body in ROOT_STUBS.items():
         (stubs / name).write_text(STUB_HEAD + body)
         (stubs / name).chmod(0o755)
-    base = tmp_path / "rootdir"          # stands in for /root
+    base = tmp_path / "rootdir"
     base.mkdir(mode=0o700)
-    log = tmp_path / "checker.log"
-    src = tmp_path / "src" / "conf" / "py311_quiescent.sh"
-    src.parent.mkdir(parents=True)
+    return stubs, base, tmp_path / "checker.log"
 
-    def run(code=0, extra="", uid="0", python_stat=None, tamper=False):
-        import hashlib
+
+def _root_function(stubs, base, checker):
+    """root_quiescent as defined in step 4, runnable without root: sudo is
+    dropped (env -i and everything after it stay), the tools are the stubs,
+    /root is BASE, and H pins CHECKER."""
+    import hashlib
+    text = ROOT_D[:-len(ROOT_D_CALL)]
+    assert text.count("/usr/bin/sudo /usr/bin/env -i ") == 1
+    text = text.replace("/usr/bin/sudo /usr/bin/env -i ", "/usr/bin/env -i ")
+    for tool, n in ROOT_TOOLS.items():
+        assert text.count(f"/usr/bin/{tool} ") == n, tool
+        text = text.replace(f"/usr/bin/{tool} ", f"{stubs}/{tool} ")
+    assert text.count("/root/odbz-quiescent.") == 1
+    text = text.replace("/root/odbz-quiescent.", f"{base}/odbz-quiescent.")
+    text, n = re.subn(r"^H=[0-9a-f]{64}$", "H=" + hashlib.sha256(checker.encode()).hexdigest(),
+                      text, flags=re.M)
+    assert n == 1
+    return text
+
+
+def _root_controls(stubs, uid="0", python_stat=None):
+    (stubs / "uid").write_text(uid)
+    (stubs / "python_stat").unlink(missing_ok=True)
+    if python_stat is not None:
+        (stubs / "python_stat").write_text(python_stat)
+    (stubs / "calls.log").unlink(missing_ok=True)
+
+
+def _lines(p):
+    return [l.rstrip() for l in p.read_text().splitlines()] if p.exists() else []
+
+
+@pytest.fixture
+def root_d(tmp_path):
+    stubs, base, log = _root_sandbox(tmp_path)
+    src = tmp_path / "src"
+    (src / "conf").mkdir(parents=True)
+
+    def run(code=0, extra="", uid="0", python_stat=None, tamper=False, call=ROOT_D_CALL):
         checker = FAKE_CHECKER.format(log=log, extra=extra, code=code)
-        src.write_text(checker + ("# swapped after the hash was taken\n" if tamper else ""))
-        body = ROOT_D_BODY
-        for tool, n in ROOT_TOOLS.items():
-            assert body.count(f"/usr/bin/{tool} ") == n, tool
-            body = body.replace(f"/usr/bin/{tool} ", f"{stubs}/{tool} ")
-        assert body.count("/root/odbz-quiescent.") == 1
-        body = body.replace("/root/odbz-quiescent.", f"{base}/odbz-quiescent.")
-        body, n = re.subn(r"^H=[0-9a-f]{64}$",
-                          "H=" + hashlib.sha256(checker.encode()).hexdigest(), body, flags=re.M)
-        assert n == 1
-        (stubs / "uid").write_text(uid)
-        if python_stat is None:
-            (stubs / "python_stat").unlink(missing_ok=True)
-        else:
-            (stubs / "python_stat").write_text(python_stat)
-        for f in (log, stubs / "calls.log"):
-            f.unlink(missing_ok=True)
-        r = subprocess.run(["/usr/bin/env", "-i", f"PATH={ROOT_SYS_PATH}", "/bin/bash",
-                            "--noprofile", "--norc", "-s", "--", str(src)],
-                           input=body, capture_output=True, text=True, timeout=60)
-        calls = (stubs / "calls.log").read_text().splitlines() if (stubs / "calls.log").exists() else []
-        ran = log.read_text().splitlines() if log.exists() else []
-        return r, calls, ran, sorted(p.name for p in base.iterdir())
+        (src / "conf" / "py311_quiescent.sh").write_text(
+            checker + ("# swapped after the hash was taken\n" if tamper else ""))
+        _root_controls(stubs, uid, python_stat)
+        log.unlink(missing_ok=True)
+        r = subprocess.run(["bash", "-c", _root_function(stubs, base, checker) + call],
+                           env={"PATH": "/usr/bin:/bin", "SRC": str(src)},
+                           capture_output=True, text=True, timeout=60)
+        return r, _lines(stubs / "calls.log"), _lines(log), sorted(p.name for p in base.iterdir())
     return run
 
 
@@ -1145,6 +1178,22 @@ def test_root_preflight_keeps_the_check_status_and_removes_its_copy(root_d, code
     assert f"exit {code}" in r.stdout and "q.sh: OK" in r.stdout
     assert any(c.startswith("install -m 0500 -o root -g root -- ") for c in calls)
     assert left == [] and "WARN: could not remove" not in r.stderr
+
+
+def test_root_quiescent_without_the_flag_runs_the_full_check(root_d):
+    r, _, ran, left = root_d(call="root_quiescent\n")
+    assert r.returncode == 0, r.stderr
+    assert ran == ["q.sh"] and left == []
+
+
+@pytest.mark.parametrize("call", ["root_quiescent --all\n",
+                                  "root_quiescent --inspectable-only --proc /x\n",
+                                  "root_quiescent ''\n"])
+def test_root_quiescent_refuses_other_arguments_before_copying(root_d, call):
+    r, calls, ran, left = root_d(call=call)
+    assert r.returncode == 2 and "FAIL: arguments must be" in r.stderr
+    assert not [c for c in calls if c.split()[0] in ("id", "mktemp", "install")]
+    assert ran == [] and left == []
 
 
 def test_root_preflight_never_runs_a_copy_whose_hash_differs(root_d):
@@ -1176,3 +1225,56 @@ def test_root_preflight_stops_before_copying_anything(root_d, uid, python_stat, 
     assert r.returncode == 1 and why in r.stderr
     assert not [c for c in calls if c.split()[0] in ("mktemp", "install", "sha256sum")]
     assert ran == [] and left == []
+
+
+# --- Step 6: stop_services with the real root_quiescent ------------------------
+
+@pytest.fixture
+def stop_with_root(helpers, tmp_path):
+    run, _ = helpers
+    stubs, base, log = _root_sandbox(tmp_path)
+    checker_path = tmp_path / "src" / "conf" / "py311_quiescent.sh"
+
+    def go(code=0, tamper=False, uid="0"):
+        checker = FAKE_CHECKER.format(log=log, extra="", code=code)
+        checker_path.write_text(checker + ("# swapped after the hash was taken\n" if tamper else ""))
+        _root_controls(stubs, uid)
+        log.unlink(missing_ok=True)
+        r, steps = run("stop_services && echo APPLY_WOULD_RUN",
+                       root=_root_function(stubs, base, checker))
+        return r, steps, _lines(log), sorted(p.name for p in base.iterdir())
+    return go
+
+
+STOPS = ["stop mhwapi", "stop tide", "dask_scheduler_check.sh drained",
+         "stop dask-worker", "stop dask-scheduler"]
+
+
+def test_stop_services_passes_through_the_full_root_check(stop_with_root):
+    r, steps, ran, left = stop_with_root()
+    assert r.returncode == 0, r.stderr
+    assert steps == STOPS and ran == ["q.sh"]           # full check, no flag
+    assert "q.sh: OK" in r.stdout and "OK services stopped" in r.stdout
+    assert "APPLY_WOULD_RUN" in r.stdout and left == []
+
+
+@pytest.mark.parametrize("change, why", [
+    ({"tamper": True}, "q.sh: FAILED"),
+    ({"code": 1}, "exit 1"),
+    ({"uid": "1000"}, "FAIL: not uid 0"),
+])
+def test_stop_services_halts_when_the_root_check_does_not_pass(stop_with_root, change, why):
+    r, steps, ran, left = stop_with_root(**change)
+    assert r.returncode != 0
+    assert why in r.stdout + r.stderr
+    assert steps == STOPS                       # stopped, then the check failed: R0
+    assert ran == ([] if "code" not in change else ["q.sh"])   # a swapped file never runs
+    assert "OK services stopped" not in r.stdout and "APPLY_WOULD_RUN" not in r.stdout
+    assert left == []
+
+
+def test_stop_services_refuses_to_stop_anything_without_root_quiescent(helpers):
+    run, _ = helpers
+    r, steps = run("stop_services && echo APPLY_WOULD_RUN", root="")
+    assert r.returncode != 0 and "root_quiescent is not defined" in r.stderr
+    assert steps == [] and "APPLY_WOULD_RUN" not in r.stdout

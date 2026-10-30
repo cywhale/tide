@@ -1186,21 +1186,32 @@ Tested:
   target state, the quiescence step halting the stop on a py311 process or
   on a process it cannot read, and the recovery chains, which start nothing
   on `STATE unknown`.
-- Sandbox runs of the preflight D root block (`tests/test_deployment_doc.py`,
-  not as root: `id`, `stat`, `mktemp`, `install`, and `sha256sum` replaced
-  by stand-ins, the copy in a temporary directory instead of `/root`, the
-  checker replaced by a stub). The copy's directory is removed after a
-  passing check, a failing check, any other exit status, and a hash
-  mismatch, which never runs the copy; each keeps its exit status. A
-  cleanup that fails warns and keeps the status. A non-root uid, or a
-  `/usr/bin/python3` owned by another user or writable by group or other,
-  stops before anything is copied. The same block, unchanged, also ran as
-  root in a throwaway offline container (Debian 12, GNU coreutils, a
-  root-owned `/usr/bin/python3`, 2026-10-30): `OK inspectable` and exit 0;
-  a tampered copy `FAILED` and was not run; a `/usr/bin/python3` owned by
-  another user or group-writable stopped it before the copy; a missing
-  source failed at `install`; `/root` was left empty each time. The block
-  has not run as root on VM24.
+- Sandbox runs of `root_quiescent` from the preflight D block
+  (`tests/test_deployment_doc.py`, not as root: `sudo` dropped, `id`,
+  `stat`, `mktemp`, `install`, and `sha256sum` replaced by stand-ins, the
+  copy in a temporary directory instead of `/root`, the checker replaced by
+  a stub). The copy's directory is removed after a passing check, a
+  failing check, any other exit status, and a hash mismatch, which never
+  runs the copy; each keeps its exit status. A cleanup that fails warns and
+  keeps the status. A non-root uid, or a `/usr/bin/python3` owned by
+  another user or writable by group or other, stops before anything is
+  copied; any argument other than `--inspectable-only` returns 2 before
+  that. Without the flag the copy runs the full check.
+- Step 6 in the same sandbox: `stop_services` with the real
+  `root_quiescent` runs the full check on the copy after the four stops
+  and passes; a swapped checker (never run), a failing check, or a
+  non-root uid fails it after the stops, without `OK services stopped` and
+  without reaching `apply`; with `root_quiescent` undefined it stops
+  nothing.
+- The same `root_quiescent`, with only `sudo` dropped, ran as root in a
+  throwaway offline container (Debian 12, GNU coreutils, a root-owned
+  `/usr/bin/python3`, 2026-10-30): with `--inspectable-only`,
+  `OK inspectable` and exit 0; without it, `OK quiescent` and exit 0, and
+  exit 1 naming a live process run from the py311 path; a tampered
+  checkout file `FAILED` and was not run; `--all` returned 2; a
+  `/usr/bin/python3` owned by another user or group-writable stopped it
+  before the copy; `/root` was left empty each time. It has not run as
+  root on VM24.
 - `conf/py311_quiescent.sh` against a fake `/proc`: a py311 command line, a
   mapped py311 library from a process started through the pyenv shim, a
   live process whose maps cannot be read (fails closed), and a process that
@@ -1566,6 +1577,13 @@ SUMS
      read the command line and memory maps of every live process. It
      ignores py311 use here, since the services still run; it proves the
      step-6 check can pass at all.
+   - The block defines `root_quiescent [--inspectable-only]` and runs it
+     with `--inspectable-only`. It stays defined in this shell: step 6's
+     full check (`py311_quiescent`, inside `stop_services`) calls the same
+     function without the flag, so both root runs go through the copy
+     below. In the window, run this block again in the same shell before
+     step 5; `stop_services` refuses to stop anything if `root_quiescent`
+     is not defined.
    - The checkout is writable by odbadmin, and so by every service running
      as odbadmin, so root never runs `$SRC/conf/py311_quiescent.sh` in
      place: the file could be swapped between a hash check and the run.
@@ -1578,20 +1596,29 @@ SUMS
      not writable by group or other. That Python runs the checker's own
      code and removes the copy and its directory afterwards (`os.unlink`,
      `os.rmdir`), so the block calls no `rm` or `rmdir`.
-   - The block exits with the check's own status: 0 only for
-     `OK inspectable`; 1 for a hash mismatch (the copy never runs) or a
-     failed check. A failed cleanup prints a warning and keeps that
-     status. Expected output: `root:root 700 /root/odbz-quiescent.…`,
-     `root:root 500 …/q.sh`, `…/q.sh: OK`,
-     `OK inspectable: all N live processes could be read`, `exit 0`.
+   - `root_quiescent` returns the check's own status: 0 only for
+     `OK inspectable` (or, without the flag, `OK quiescent`); 1 for a hash
+     mismatch (the copy never runs) or a failed check; 2 for any argument
+     other than `--inspectable-only`. A failed cleanup prints a warning and
+     keeps that status. Expected output here:
+     `root:root 700 /root/odbz-quiescent.…`, `root:root 500 …/q.sh`,
+     `…/q.sh: OK`, `OK inspectable: all N live processes could be read`,
+     `exit 0`.
 
    ```bash
-   /usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
-     /bin/bash --noprofile --norc -s -- "$SRC/conf/py311_quiescent.sh" <<'EOF'
+   # root_quiescent [--inspectable-only]: run the checkout's
+   # py311_quiescent.sh as root only through a root-owned copy whose sha256
+   # matches; returns the check's status. Step 6 uses it too.
+   root_quiescent() {
+     /usr/bin/sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+       /bin/bash --noprofile --norc -s -- "$SRC/conf/py311_quiescent.sh" "$@" <<'EOF'
    set -euo pipefail
    umask 077
    export PATH=/usr/sbin:/usr/bin:/sbin:/bin
    S=${1:?the checkout copy of py311_quiescent.sh}
+   M=${2:-}
+   [ "$#" = 1 ] || { [ "$#" = 2 ] && [ "$M" = --inspectable-only ]; } \
+     || { echo "FAIL: arguments must be SCRIPT [--inspectable-only]" >&2; exit 2; }
    H=12af24d65965ad1e80ef884c8530d3266c3bc1a95f1260feaa3f578ab6fc763f
    [ "$(/usr/bin/id -u)" = 0 ] || { echo "FAIL: not uid 0" >&2; exit 1; }
    [ "$(command -v python3)" = /usr/bin/python3 ] \
@@ -1612,10 +1639,12 @@ SUMS
    /usr/bin/install -m 0500 -o root -g root -- "$S" "$T/q.sh"
    /usr/bin/stat -c '%U:%G %a %n' "$T" "$T/q.sh"
    echo "$H  $T/q.sh" | /usr/bin/sha256sum -c -
-   rc=0; /bin/bash --noprofile --norc "$T/q.sh" --inspectable-only || rc=$?
+   rc=0; /bin/bash --noprofile --norc "$T/q.sh" ${M:+"$M"} || rc=$?
    echo "exit $rc"
    exit "$rc"
    EOF
+   }
+   root_quiescent --inspectable-only
    ```
 
 5. Define the MHW checks and the maintenance helpers in the same shell,
@@ -1688,11 +1717,12 @@ mhw_check() { mhw_proc_check && mhw_http_check "$@"; }
 ```
 
 ```bash
-# Maintenance helpers. They use SRC, DASKC, and D from step 1 and mhw_check
-# from the block above.
+# Maintenance helpers. They use SRC, DASKC, and D from step 1, root_quiescent
+# from step 4, and mhw_check from the block above.
 #   app stop|start NAME   one PM2 app through pm2_app_lifecycle.sh
-#   py311_quiescent       as root: no live process runs or maps a file from
-#                         py311, and none could not be inspected
+#   py311_quiescent       as root, through root_quiescent's hash-checked copy:
+#                         no live process runs or maps a file from py311, and
+#                         none could not be inspected
 #   stop_services         MHW, Tide, drain, worker, scheduler, then quiescent
 #   start_services SMOKE_OUT MHW_OUT
 #                         scheduler, worker, Tide + smoke, MHW + smoke, Dask
@@ -1718,9 +1748,14 @@ app_status() (
 )
 nanny_pid() { "$SRC/conf/pm2_app_lifecycle.sh" pid --pm2-home "$PM2H" --name dask-worker; }
 # Reading other users' memory maps needs root; as odbadmin the check
-# cannot pass while their processes run (see the checklist).
-py311_quiescent() { sudo -- "$SRC/conf/py311_quiescent.sh"; }
+# cannot pass while their processes run (see the checklist). Root never runs
+# the odbadmin-writable checkout file in place: root_quiescent (step 4) runs
+# a root-owned copy whose sha256 matches.
+py311_quiescent() { root_quiescent; }
 stop_services() (
+  # Refuse before stopping anything if the final check could not run.
+  declare -F root_quiescent > /dev/null \
+    || { echo "FAIL: root_quiescent is not defined; run step 4 in this shell first" >&2; exit 1; }
   for a in mhwapi tide dask-worker dask-scheduler; do
     st=$(app_status "$a") || exit 1
     if [ "$a" = dask-worker ]; then
