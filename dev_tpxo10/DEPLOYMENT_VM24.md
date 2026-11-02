@@ -965,7 +965,11 @@ plus `pyenv sh-activate`, whose output was printed and never evaluated. No
   - The app opens `data/mhw.zarr` (consolidated) and connects to the Dask
     scheduler. If the connection fails, it logs `Dask scheduler unavailable;
     falling back to local execution.` and still serves.
-  - Output and errors are merged into `API/tmp/err.log`.
+  - Output and errors are merged into `API/tmp/err.log`. The MHW maintainer
+    set this limit on 2026-11-02: this maintenance must not change MHW's
+    logging setup or how `err.log` behaves, so the run sheet only reads the
+    log. Whether a restart appends to it is not recorded, and step 9 does
+    not depend on that.
 - **Reload and restart mechanics.**
   - Both APIs run Gunicorn 23.0.0 with `--reload`. py311 has no `inotify`
     package, so Gunicorn uses its polling reloader, which checks the loaded
@@ -1223,12 +1227,15 @@ Tested:
   changes, and a committed script that differs from its pinned hash; when
   the root check fails, step 7's `apply` does not start.
 - Step 9's log check, in the same sandbox and with real GNU tools in an
-  offline container (Debian 12, 2026-10-30): it prints `OK` for new lines
-  without the message, and for the message only before the mark. It exits
-  non-zero, without `OK`, when the message is in the new lines, the log is
-  missing or unreadable, `tail` fails, the mark is missing, or the log was
-  rotated, replaced, truncated, or truncated and regrown past the mark. It
-  has not run on VM24.
+  offline container (Debian 12, 2026-11-02): on an appended log it prints
+  `OK` for new lines without the message, and for the message only before
+  the mark. On a log that was rotated, replaced, or truncated, including
+  truncated in place under a writer that keeps its offset, it scans the
+  whole active log, and prints `OK` and the `NOTE` only without the message.
+  It exits non-zero, without `OK`, when the message is in what it scans, the
+  log is missing or unreadable, a read fails, the mark is missing, or the
+  log is appended to, rotated, or truncated during the scan. It leaves the
+  log as it found it. It has not run on VM24.
 - The same `root_quiescent`, with only `sudo` dropped, ran as root in a
   throwaway offline container (Debian 12, GNU coreutils, a root-owned
   `/usr/bin/python3`, 2026-10-30): with `--inspectable-only`,
@@ -1539,9 +1546,7 @@ Sign-off gates, each open until the person named answers:
       not check this item.
 - [ ] MHW maintainer: agree to stopping and starting `mhwapi`,
       `dask-worker`, and `dask-scheduler` through PM2 (never run against
-      the real apps), and to the smoke expectations. Also say whether a
-      restart appends to `API/tmp/err.log`: this is not recorded here, and
-      if it truncates the log, step 9's log check cannot pass and goes to R4.
+      the real apps), and to the smoke expectations.
 - [ ] Owner or the maintainer of the host Dask runbook: confirm that no
       service other than Tide and MHW needs the Dask scheduler in the
       window. Only those two were connected on 2026-10-28.
@@ -1981,35 +1986,55 @@ mhw_check "$D-mhw-before" \
    ```
 
 9. After `OK services started`, with the services up:
-   - check the lines added to MHW's `err.log` since step 5 for the Dask
-     fallback message, which should be absent now that the scheduler was up
-     first. Only a complete read that finds no message prints `OK`. The
-     block exits non-zero if it finds the message, if the log cannot be
-     read, if the mark from step 5 is missing, or if the log was rotated,
-     replaced, or truncated, because then the new lines cannot be told
-     from the old ones:
+   - check MHW's `err.log` for the Dask fallback message, which should be
+     absent now that the scheduler was up first. The block only reads: it
+     never clears, renames, or reconfigures the log, and it does not need a
+     restart to append. What it scans depends on what happened to the log
+     since step 5:
+     - **Same file, same content up to the mark (appended):** only what was
+       added after the mark.
+     - **Rotated, replaced, or truncated:** the whole active log, followed
+       by a `NOTE`. A message left over from before step 5 in that log also
+       fails the check. Lines that moved out of the active log before this
+       scan cannot be seen, and the `NOTE` says so.
+
+     It prints `OK` only after a complete read that finds no message, with
+     the log unchanged from before the read to after it. It exits non-zero
+     if it finds the message, if the log cannot be read, if the mark from
+     step 5 is missing, or if the log changed during the scan. A log that
+     changed during the scan proves nothing either way: run the block
+     again, and follow R4 if it keeps failing.
 
      ```bash
      (
        set -euo pipefail
+       export LC_ALL=C
        fail() { echo "FAIL step 9: $*; follow R4" >&2; exit 1; }
        [ -n "${MHW_LOG:-}" ] && [ -n "${mhw_log_id:-}" ] \
          && [ -n "${mhw_log_bytes:-}" ] && [ -n "${mhw_log_head:-}" ] \
          || fail "no err.log mark from step 5 in this shell"
-       same_log() {
-         [ -f "$MHW_LOG" ] && [ -r "$MHW_LOG" ] || fail "cannot read $MHW_LOG"
-         [ "$(stat -c '%d:%i' "$MHW_LOG")" = "$mhw_log_id" ] \
-           || fail "$MHW_LOG was rotated or replaced since step 5"
-         [ "$(head -c "$mhw_log_bytes" "$MHW_LOG" | sha256sum)" = "$mhw_log_head" ] \
-           || fail "$MHW_LOG was truncated or rewritten since step 5"
-       }
-       same_log
-       new=$(tail -c +"$((mhw_log_bytes + 1))" "$MHW_LOG") || fail "cannot read $MHW_LOG"
-       same_log
+       [ -f "$MHW_LOG" ] && [ -r "$MHW_LOG" ] || fail "cannot read $MHW_LOG"
+       before=$(stat -c '%d:%i %s %y' "$MHW_LOG") || fail "cannot read $MHW_LOG"
+       from=1
+       note="NOTE err.log was rotated, replaced, or truncated since step 5: the whole active log was scanned, but not lines moved out of it before this scan"
+       if [ "${before%% *}" = "$mhw_log_id" ]; then
+         prefix=$(head -c "$mhw_log_bytes" "$MHW_LOG" | sha256sum) || fail "cannot read $MHW_LOG"
+         if [ "$prefix" = "$mhw_log_head" ]; then
+           from=$((mhw_log_bytes + 1))
+           note=""
+         fi
+       fi
+       new=$(tail -c +"$from" "$MHW_LOG") || fail "cannot read $MHW_LOG"
        case "$new" in
-         *'Dask scheduler unavailable'*) fail "Dask fallback in the new lines of err.log" ;;
+         *'Dask scheduler unavailable'*) fail "Dask fallback in err.log" ;;
        esac
+       after=$(stat -c '%d:%i %s %y' "$MHW_LOG") || fail "cannot read $MHW_LOG"
+       if [ "$after" != "$before" ]; then
+         echo "FAIL step 9: err.log changed during the scan; run this block again, and follow R4 if it keeps failing" >&2
+         exit 1
+       fi
        echo "OK no Dask fallback in the new lines of err.log"
+       [ -z "$note" ] || echo "$note"
      )
      ```
 
@@ -2042,7 +2067,8 @@ What to record here:
   `pip-check-after.txt` (identical);
 - `STATE after`;
 - numcodecs 0.15.1 and numpy 2.2.4, unchanged;
-- step 9's log check result and the py311 suite counts.
+- step 9's log check result, with its `NOTE` line if it printed one, and
+  the py311 suite counts.
 
 ### Recovery
 
@@ -2132,8 +2158,9 @@ restart nothing and do not roll back. Report the finding; the owner decides
 whether to accept it, or to roll back with R3. If the Dask fallback message
 appeared, tell the MHW maintainer too. If the log check failed without
 finding the message, nothing is known about the fallback: the log could not
-be read, or its new lines could not be identified. Read `err.log` by hand
-and report what it shows; the check still did not pass.
+be read, the mark was lost, or the log kept changing during the scan. Read
+`err.log` by hand and report what it shows; the check still did not pass.
+Do not clear, rename, or reconfigure the log to make the check pass.
 
 **Another attempt.** It needs a new sign-off of the window.
 

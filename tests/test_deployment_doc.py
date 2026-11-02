@@ -8,6 +8,7 @@ is never disabled, and PM2 dummy configs under /home/odbadmin/tmp are .cjs
 """
 import os
 import re
+import shutil
 import subprocess
 import textwrap
 import time
@@ -1534,8 +1535,13 @@ def test_open_sign_offs_stay_open_and_the_owner_intent_is_only_an_intent():
     flat = _flat(ZARR_PART)
     assert "That is the owner's stated intent. It is not yet the approval of this exact order" in flat
     assert "it is not the MHW maintainer's agreement or a confirmation from other Dask users" in flat
-    # No date assumed for the window or for what follows it.
-    assert not re.search(r"2026-1[12]-\d\d|2027-", flat.replace("2027-11-25", ""))
+    # No date assumed for the window or for what follows it. The exceptions
+    # record things that already happened.
+    undated = flat.replace("2027-11-25", "")
+    for record in ("set this limit on 2026-11-02", "(Debian 12, 2026-11-02)"):
+        assert undated.count(record) == 1, record
+        undated = undated.replace(record, "")
+    assert not re.search(r"2026-1[12]-\d\d|2027-", undated)
     assert "the next `update_mhw.sh` run on the 18th" in flat
 
 
@@ -1601,27 +1607,43 @@ def test_step_1_refuses_a_committed_script_that_differs_from_its_reviewed_hash(s
     assert r.returncode != 0 and "does not match its reviewed hash" in r.stderr
 
 
-# --- Step 9: the err.log check fails closed ------------------------------------
+# --- Step 9: the err.log check fails closed, whatever the log does -------------
 
 STEP_5_MARK = _block_with("mhw_log_id=$(stat")
 STEP_9_LOG = _block_with("OK no Dask fallback in the new lines of err.log")
 FALLBACK = "Dask scheduler unavailable; falling back to local execution."
 MHW_LOG_PATH = "/home/odbadmin/proj/marineheatwave/API/tmp/err.log"
-# GNU `stat -c '%d:%i'`, which macOS lacks; a container run covers the real one.
-FAKE_STAT = '''#!/usr/bin/env python3
+# GNU `stat -c`, which macOS lacks; a container run covers the real one.
+FAKE_STAT = """#!/usr/bin/env python3
 import os, sys
-assert sys.argv[1:3] == ["-c", "%d:%i"]
+assert sys.argv[1] == "-c" and sys.argv[2] in ("%d:%i", "%d:%i %s %y")
 try:
     st = os.stat(sys.argv[3])
 except OSError as e:
     sys.exit("stat: %s" % e)
-print("%d:%d" % (st.st_dev, st.st_ino))
-'''
+out = "%d:%d" % (st.st_dev, st.st_ino)
+if sys.argv[2] != "%d:%i":
+    out += " %d %d" % (st.st_size, st.st_mtime_ns)
+print(out)
+"""
+NOTE = "NOTE err.log was rotated, replaced, or truncated since step 5"
+ADD_FALLBACK = f'echo "{FALLBACK}" >> "$LOG"'
+ROTATE = 'mv "$LOG" "$LOG.1"; '
+FAIL_TAIL = 'printf "#!/bin/bash\\nexit 1\\n" > "$BIN/tail"; chmod 755 "$BIN/tail"'
+LONG = 'head -c 500 /dev/zero | tr "\\0" x; echo'
+
+
+def _during(tool, action, when="after"):
+    """Run `action` while the block's `tool` reads, as a writer would."""
+    real = shutil.which(tool)
+    run = f'{real} "$@"; rc=$?\n'
+    body = f'{action}\n{run}' if when == "before" else f'{run}{action}\n'
+    return (f"cat > \"$BIN/{tool}\" <<'WRAP'\n#!/bin/bash\n{body}exit $rc\nWRAP\n"
+            f'chmod 755 "$BIN/{tool}"')
 
 
 @pytest.fixture
 def step_9(tmp_path):
-    import shutil
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "stat").write_text(FAKE_STAT)
@@ -1631,14 +1653,17 @@ def step_9(tmp_path):
     assert STEP_5_MARK.count(MHW_LOG_PATH) == 1
     mark = STEP_5_MARK.replace(MHW_LOG_PATH, str(log))
 
-    def run(between, before="old line\nold line 2\n", baseline_ok=True, again=False):
+    def run(between, before="old line\nold line 2\n", baseline_ok=True, again=False,
+            rerun=None):
         log.write_text(before)
         stub = ('mhw_check() { [ -z "${BASELINE_FAILS:-}" ]; }\n'
                 + ("" if baseline_ok else "BASELINE_FAILS=1\n"))
         # A repeat of the block whose baseline is refused must not move the mark.
         repeat = "BASELINE_FAILS=1\n" + mark if again else ""
-        script = (stub + mark + between + "\n" + repeat
-                  + STEP_9_LOG.rstrip() + " && echo STEP_9_PASSED\n")
+        script = stub + mark + between + "\n" + repeat
+        if rerun is not None:
+            script += STEP_9_LOG.rstrip() + "\n" + rerun + "\n"
+        script += STEP_9_LOG.rstrip() + " && echo STEP_9_PASSED\n"
         env = {"PATH": f"{bindir}:/usr/bin:/bin:{sha}", "HOME": str(tmp_path),
                "LOG": str(log), "BIN": str(bindir)}
         return subprocess.run(["bash", "-c", script], env=env, cwd=tmp_path,
@@ -1646,45 +1671,149 @@ def step_9(tmp_path):
     return run
 
 
-def _step_9_passed(r):
+def _step_9_passed(r, note=False):
     assert r.returncode == 0, r.stderr
     assert "OK no Dask fallback" in r.stdout and "STEP_9_PASSED" in r.stdout
     assert "FAIL step 9" not in r.stderr
+    assert (NOTE in r.stdout) is note
 
 
 def _step_9_failed(r, why):
     assert "OK no Dask fallback" not in r.stdout and "STEP_9_PASSED" not in r.stdout
-    assert f"FAIL step 9: " in r.stderr and why in r.stderr, r.stderr
+    assert NOTE not in r.stdout
+    assert "FAIL step 9: " in r.stderr and why in r.stderr, r.stderr
 
 
+# Appended: only what follows the mark counts, and there is no NOTE.
 @pytest.mark.parametrize("between", [':', 'echo "worker booted" >> "$LOG"'])
-def test_step_9_passes_only_a_complete_read_without_the_message(step_9, between):
+def test_step_9_passes_an_appended_log_without_the_message(step_9, between):
     _step_9_passed(step_9(between))
 
 
-def test_step_9_ignores_the_message_before_the_mark(step_9):
+def test_step_9_ignores_the_message_before_the_mark_of_an_appended_log(step_9):
     # An earlier fallback is not this maintenance's: only new lines count.
     _step_9_passed(step_9('echo "worker booted" >> "$LOG"', before=FALLBACK + "\n"))
 
 
 def test_step_9_handles_an_empty_log_at_the_mark(step_9):
-    _step_9_passed(step_9('echo "worker booted" >> "$LOG"', before=""))
-    _step_9_failed(step_9(f'echo "{FALLBACK}" >> "$LOG"', before=""), "Dask fallback")
+    # GNU head prints nothing for `-c 0`; BSD head refuses it, so stand in here.
+    # A container run covers the real one.
+    head = ("cat > \"$BIN/head\" <<'WRAP'\n#!/bin/bash\n"
+            '[ "$1" = -c ] && [ "$(($2))" = 0 ] && exit 0\n'
+            f'exec {shutil.which("head")} "$@"\nWRAP\n'
+            'chmod 755 "$BIN/head"; ')
+    _step_9_passed(step_9(head + 'echo "worker booted" >> "$LOG"', before=""))
+    _step_9_failed(step_9(head + ADD_FALLBACK, before=""), "Dask fallback")
+
+
+# Rotated, replaced, or truncated: the active log is scanned from its start.
+# `{line}` is the command that writes the line under test into the log.
+HOLE = 'python3 -c "import os; os.truncate(os.environ[\'LOG\'], 4096)"'
+LOG_CHANGES = {
+    "truncated in place": ': > "$LOG"; {line} >> "$LOG"',
+    "truncated and shorter": 'echo x > "$LOG"; {line} >> "$LOG"',
+    # Same inode, regrown past the mark: an offset alone would skip the start.
+    "truncated and regrown": '{{ {line}; {long}; }} > "$LOG.tmp"; cat "$LOG.tmp" > "$LOG"; '
+                             'unlink "$LOG.tmp"',
+    "rewritten to the same size": 'head -c 21 /dev/zero | tr "\\0" y > "$LOG"; {line} >> "$LOG"',
+    "rotated by rename": ROTATE + ': > "$LOG"; {line} >> "$LOG"',
+    "rotated and regrown": ROTATE + '{{ {line}; {long}; }} >> "$LOG"',
+    "replaced after unlink": 'unlink "$LOG"; : > "$LOG"; {line} >> "$LOG"',
+    # copytruncate under a writer that keeps its offset: a hole, then new lines.
+    "truncated under a writer": ': > "$LOG"; ' + HOLE + '; {line} >> "$LOG"',
+}
+
+
+@pytest.mark.parametrize("change", sorted(LOG_CHANGES))
+def test_step_9_scans_the_active_log_after_any_log_change(step_9, change):
+    template = LOG_CHANGES[change]
+    clean = template.format(line='echo "worker booted"', long=LONG)
+    hit = template.format(line=f'echo "{FALLBACK}"', long=LONG)
+    _step_9_passed(step_9(clean), note=True)
+    _step_9_failed(step_9(hit), "Dask fallback in err.log")
+
+
+def test_step_9_passes_an_active_log_that_is_still_empty(step_9):
+    _step_9_passed(step_9(': > "$LOG"'), note=True)
+    _step_9_passed(step_9(ROTATE + ': > "$LOG"'), note=True)
+
+
+def test_step_9_scans_a_copy_from_its_start(step_9):
+    # A new inode holding the old lines: the whole file counts, so an old message
+    # fails. It goes to R4 and is read by hand rather than assumed to be old.
+    copy = ROTATE + 'cp "$LOG.1" "$LOG"; echo "worker booted" >> "$LOG"'
+    _step_9_passed(step_9(copy), note=True)
+    _step_9_failed(step_9(copy, before=FALLBACK + "\n"), "Dask fallback in err.log")
+
+
+def test_step_9_sees_the_message_past_invalid_bytes(step_9):
+    r = step_9(f'printf "\\xff\\xfe\\n%s\\n" "{FALLBACK}" >> "$LOG"')
+    _step_9_failed(r, "Dask fallback in err.log")
+
+
+# The fallback gate stays, in any position.
+@pytest.mark.parametrize("between", [
+    ADD_FALLBACK,
+    f'printf "a\\n%s\\nb\\n" "{FALLBACK}" >> "$LOG"',
+])
+def test_step_9_fails_on_the_message_in_the_new_lines(step_9, between):
+    _step_9_failed(step_9(between), "Dask fallback in err.log")
+
+
+# During the scan.
+@pytest.mark.parametrize("tool, when", [("tail", "before"), ("tail", "after"),
+                                        ("head", "before"), ("head", "after")])
+@pytest.mark.parametrize("action", [
+    'echo "worker booted" >> "$LOG"',
+    ROTATE + 'echo "worker booted" > "$LOG"',
+    ': > "$LOG"',
+])
+def test_step_9_does_not_pass_a_log_that_changes_during_the_scan(step_9, tool, when, action):
+    _step_9_failed(step_9(_during(tool, action, when)), "changed during the scan")
+
+
+def test_step_9_catches_a_fallback_written_after_the_read_reached_eof(step_9):
+    # The reviewed race: the message lands after `tail`, before the last check.
+    r = step_9(_during("tail", ADD_FALLBACK))
+    _step_9_failed(r, "changed during the scan")
+    assert "Dask fallback in err.log" not in r.stderr
+
+
+def test_step_9_rerun_finds_the_fallback_written_during_the_scan(step_9):
+    r = step_9(_during("tail", ADD_FALLBACK), rerun='unlink "$BIN/tail"')
+    _step_9_failed(r, "changed during the scan")
+    assert "Dask fallback in err.log" in r.stderr
+
+
+def test_step_9_rerun_passes_after_a_clean_line_during_the_scan(step_9):
+    r = step_9(_during("tail", 'echo "worker booted" >> "$LOG"'), rerun='unlink "$BIN/tail"')
+    assert r.stderr.count("FAIL step 9: ") == 1 and "changed during the scan" in r.stderr
+    assert "STEP_9_PASSED" in r.stdout and NOTE not in r.stdout
+
+
+def test_step_9_fails_on_a_fallback_read_during_the_scan(step_9):
+    r = step_9(_during("tail", ADD_FALLBACK, when="before"))
+    _step_9_failed(r, "Dask fallback in err.log")
+
+
+# Read errors.
+FAIL_HEAD = FAIL_TAIL.replace("tail", "head")
+FAIL_SHA = FAIL_TAIL.replace("tail", "sha256sum")
+# Installed after the mark: the first `stat` is the scan's, the second one fails.
+FAIL_LAST_STAT = ("mv \"$BIN/stat\" \"$BIN/stat.real\"; cat > \"$BIN/stat\" <<'WRAP'\n#!/bin/bash\n"
+                  'n=$(cat "$BIN/n" 2>/dev/null || echo 0); echo $((n + 1)) > "$BIN/n"\n'
+                  '[ "$n" = 0 ] || exit 1\nexec "$BIN/stat.real" "$@"\nWRAP\n'
+                  'chmod 755 "$BIN/stat"')
 
 
 @pytest.mark.parametrize("between, why", [
-    (f'echo "{FALLBACK}" >> "$LOG"', "Dask fallback in the new lines"),
-    (f'printf "a\\n%s\\nb\\n" "{FALLBACK}" >> "$LOG"', "Dask fallback in the new lines"),
     ('unlink "$LOG"', "cannot read"),
-    ('printf "#!/bin/bash\\nexit 1\\n" > "$BIN/tail"; chmod 755 "$BIN/tail"', "cannot read"),
-    # Rotated: the same content under a new inode, with the fallback hidden in it.
-    (f'mv "$LOG" "$LOG.1"; cp "$LOG.1" "$LOG"; echo "{FALLBACK}" >> "$LOG"', "rotated or replaced"),
-    (': > "$LOG"', "truncated or rewritten"),
-    ('echo x > "$LOG"', "truncated or rewritten"),
-    # Truncated in place, same inode, regrown past the mark: an offset alone
-    # would start after the message and miss it.
-    (f'{{ echo "{FALLBACK}"; head -c 500 /dev/zero | tr "\\0" x; echo; }} > "$LOG"',
-     "truncated or rewritten"),
+    ('unlink "$LOG"; mkdir "$LOG"', "cannot read"),
+    (FAIL_TAIL, "cannot read"),
+    (FAIL_HEAD, "cannot read"),
+    (FAIL_SHA, "cannot read"),
+    (FAIL_LAST_STAT, "cannot read"),
+    (ROTATE + 'echo x > "$LOG"; ' + FAIL_TAIL, "cannot read"),
     ('unset mhw_log_id', "no err.log mark"),
     ('unset mhw_log_bytes', "no err.log mark"),
     ('unset mhw_log_head', "no err.log mark"),
@@ -1704,8 +1833,27 @@ def test_step_9_has_no_mark_when_the_baseline_failed(step_9):
 
 
 def test_step_5_cannot_move_the_mark_past_a_fallback(step_9):
-    r = step_9(f'echo "{FALLBACK}" >> "$LOG"', again=True)
-    _step_9_failed(r, "Dask fallback in the new lines")
+    r = step_9(ADD_FALLBACK, again=True)
+    _step_9_failed(r, "Dask fallback in err.log")
+
+
+def test_step_9_does_not_touch_the_log(step_9, tmp_path):
+    log = tmp_path / "err.log"
+    r = step_9('echo "worker booted" >> "$LOG"; stat -c "%d:%i %s %y" "$LOG" > "$BIN/seen"')
+    _step_9_passed(r)
+    st = log.stat()
+    assert (tmp_path / "bin/seen").read_text().split() \
+        == [f"{st.st_dev}:{st.st_ino}", str(st.st_size), str(st.st_mtime_ns)]
+    assert log.read_text() == "old line\nold line 2\nworker booted\n"
+    assert [f.name for f in tmp_path.iterdir() if f.name.startswith("err.log")] == ["err.log"]
+
+
+def test_step_9_only_reads_the_log():
+    code = "\n".join(_commands(STEP_9_LOG))
+    assert not re.search(r"(^|\s)(mv|cp|rm|truncate|logrotate|tee|pm2|chmod|chown)\s", code)
+    assert '> "$MHW_LOG"' not in code and '>> "$MHW_LOG"' not in code
+    # Its only redirections send the failure lines to stderr.
+    assert sorted(re.findall(r">+&?[^\s;]*", code)) == [">&2", ">&2"]
 
 
 def test_step_9_does_not_depend_on_a_pipeline_status_to_pass():
@@ -1713,8 +1861,11 @@ def test_step_9_does_not_depend_on_a_pipeline_status_to_pass():
     assert "set -euo pipefail" in code
     assert "| grep" not in code and '|| echo "OK' not in code
     # The search is apart from the read, so a failed read cannot look like no match.
-    assert 'new=$(tail -c +"$((mhw_log_bytes + 1))" "$MHW_LOG") || fail' in code
-    assert code.count("same_log\n") == 2
+    assert 'new=$(tail -c +"$from" "$MHW_LOG") || fail' in code
+    # The last check comes after the read, so nothing between them can pass unseen.
+    assert code.count("""stat -c '%d:%i %s %y' "$MHW_LOG\"""") == 2
+    assert code.index("before=$(stat") < code.index("prefix=$(head") \
+        < code.index("new=$(tail") < code.index("after=$(stat") < code.index('echo "OK no Dask')
     assert STEP_5_MARK.index('mhw_check "$D-mhw-before"') < STEP_5_MARK.index("mhw_log_id=")
 
 
@@ -1727,4 +1878,14 @@ def test_a_failed_step_9_check_cannot_count_as_done():
            "the fallback" in flat
     assert "the check still did not pass." in flat
     assert "so step 9's log check fails and R4 applies." in flat
-    assert "Also say whether a restart appends to `API/tmp/err.log`" in flat
+    assert "with its `NOTE` line if it printed one" in flat
+
+
+def test_the_run_sheet_adapts_to_how_err_log_behaves():
+    flat = _flat(TEXT)
+    assert "must not change MHW's logging setup or how `err.log` behaves" in flat
+    assert "Do not clear, rename, or reconfigure the log to make the check pass." in flat
+    assert "Also say whether a restart appends" not in flat
+    assert "step 9 does not depend on that" in flat
+    # The rest of the MHW maintainer's gate stays open.
+    assert "- [ ] MHW maintainer: agree to stopping and starting" in TEXT
