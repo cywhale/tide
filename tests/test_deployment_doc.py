@@ -8,6 +8,7 @@ is never disabled, and PM2 dummy configs under /home/odbadmin/tmp are .cjs
 """
 import os
 import re
+import shutil
 import subprocess
 import textwrap
 import time
@@ -233,7 +234,7 @@ def _chain(block):
 def test_align_blocks_require_a_known_state_before_anything_starts():
     assert len([b for b in BLOCKS if '"$ALIGN" prepare --dir "$D"' in b]) == 1
     assert _chain(_align_block("apply")) == [
-        '"$ALIGN" apply --dir "$D"', '"$ZSTATE" --dir "$D" --expect after']
+        "root_quiescent", '"$ALIGN" apply --dir "$D"', '"$ZSTATE" --dir "$D" --expect after']
     assert _chain(_align_block("rollback")) == [
         "stop_services", '"$ALIGN" rollback --dir "$D"',
         '"$ZSTATE" --dir "$D" --expect before',
@@ -284,13 +285,15 @@ def align_chain(tmp_path):
     # blocks of the same shell; here they only record that they ran.
     mhw_stub = ('mhw_check() { echo "mhw_check $*" >> "$STEPS_LOG"; }\n'
                 'stop_services() { echo "stop_services" >> "$STEPS_LOG"; }\n'
-                'start_services() { echo "start_services $*" >> "$STEPS_LOG"; }\n')
+                'start_services() { echo "start_services $*" >> "$STEPS_LOG"; }\n'
+                'root_quiescent() { [ -z "${ROOT_FAIL:-}" ]; }\n')
 
-    def run(block, fail="", check="conflicts", dirpath=d, zstate_unknown=""):
+    def run(block, fail="", check="conflicts", dirpath=d, zstate_unknown="", root_fail=""):
         env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "SRC": str(src),
                "ALIGN": str(wrapper), "D": str(dirpath), "FAKE_PY": str(state),
                "FAKE_FAIL": fail, "FAKE_CHECK": check, "STEPS_LOG": str(log),
-               "ZSTATE": str(zstate), "ZSTATE_UNKNOWN": zstate_unknown}
+               "ZSTATE": str(zstate), "ZSTATE_UNKNOWN": zstate_unknown,
+               "ROOT_FAIL": root_fail}
         return subprocess.run(["bash", "-c", mhw_stub + block], env=env,
                               cwd=tmp_path, capture_output=True, text=True,
                               timeout=60)
@@ -798,6 +801,8 @@ def helpers(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "steps.log"
+    (tmp_path / "d-mhw-before").mkdir()
+    (tmp_path / "d-mhw-before" / "point.json").write_text("[]")
     block = HELPERS
     mhw_stub = 'mhw_check() { echo "mhw_check $*" >> "$STEPS_LOG"; [ "${FAIL_AT:-}" != mhw_check ]; }\n'
 
@@ -1363,3 +1368,584 @@ def test_checklist_still_blocks_apply_until_the_approvals():
                        "- [ ] Reviewer: approve this run sheet and its scripts."):
         assert [i for i in items if i.startswith(still_open)], still_open
     assert "Do not run `apply` while any item is open." in " ".join(TEXT.split())
+
+
+# --- Final readiness: the run sheet as one sequence ----------------------------
+
+SHEET = TEXT[TEXT.index("### Production run sheet"):TEXT.index("## Operational Notes")]
+ZARR_PART = TEXT[TEXT.index("## Py311 Zarr alignment"):TEXT.index("## Operational Notes")]
+SHEET_BLOCKS = [textwrap.dedent(b) for _, b in
+                re.findall(r"^( *)```bash\n(.*?)^\1```", SHEET, flags=re.S | re.M)]
+STEP_1_CHECK = _block_with("OK checkout:")
+RUN_SHEET_SCRIPTS = {"py311_zarr_align.sh", "py311_zarr_state.sh", "py311_quiescent.sh",
+                     "pm2_app_lifecycle.sh", "dask_scheduler_check.sh", "https_smoke.sh",
+                     "pm2_restart_check.sh"}
+
+
+def _flat(text):
+    return " ".join(text.split())
+
+
+def test_every_shell_fence_in_the_runbook_is_extracted():
+    # test_shell_blocks_parse runs bash -n on BLOCKS, so none may be missed.
+    assert len(BLOCKS) == len(re.findall(r"^ *```bash$", TEXT, flags=re.M))
+
+
+def test_steps_run_in_order_from_checkout_to_the_final_checks():
+    markers = ['"OK checkout: ', "OK preflight A", "OK preflight B",
+               '"$ZSTATE" --dir "$D" --expect before\n   ```',
+               "root_quiescent --inspectable-only\n   ```",
+               "mhw_check() {", "stop_services() (",
+               '&& mhw_log_id=$(stat',
+               "   stop_services\n",
+               'root_quiescent && "$ALIGN" apply --dir "$D"',
+               'start_services "$D-smoke" "$D-mhw-after"',
+               "OK no Dask fallback in the active err.log"]
+    pos = [SHEET.index(m) for m in markers]
+    assert pos == sorted(pos), markers
+    numbered = re.findall(r"^(\d)\. ", SHEET[:SHEET.index("What to record here:")], flags=re.M)
+    assert numbered == [str(n) for n in range(1, 10)]
+    assert "one step at a time" in _flat(SHEET)
+    assert "never paste several steps together" in _flat(SHEET)
+
+
+def test_run_sheet_runs_only_reviewed_scripts_pinned_at_their_current_hash():
+    import hashlib
+    code = "\n".join(SHEET_BLOCKS)
+    used = set(re.findall(r"conf/([\w.-]+\.sh)", code)) - {"start_app.sh"}  # MHW's launcher
+    assert used == RUN_SHEET_SCRIPTS
+    pinned = dict((name, h) for h, name in
+                  re.findall(r"^([0-9a-f]{64})  conf/([\w.-]+\.sh)$", STEP_1_CHECK, flags=re.M))
+    assert set(pinned) == RUN_SHEET_SCRIPTS
+    for name, h in pinned.items():
+        assert hashlib.sha256((DOC.parents[1] / "conf" / name).read_bytes()).hexdigest() == h, name
+        assert (DOC.parents[1] / "conf" / name).exists()
+    assert re.findall(r"^H=([0-9a-f]{64})$", ROOT_D_BODY, flags=re.M) == [pinned["py311_quiescent.sh"]]
+
+
+def test_root_runs_only_the_checked_copy():
+    # One root entry point, and it receives the checkout path only as the
+    # source to copy.
+    code = "\n".join(l for b in SHEET_BLOCKS for l in b.splitlines() if not l.startswith("#"))
+    assert len(re.findall(r"\bsudo\b", code)) == 1
+    assert "/usr/bin/sudo /usr/bin/env -i " in code
+    assert not re.search(r"\bdoas\b|\bsu -", code)
+    assert 'bash --noprofile --norc "$T/q.sh"' in ROOT_D_BODY
+    assert '"$S"' in ROOT_D_BODY and ROOT_D_BODY.count('"$S"') == 1     # only install reads it
+    assert '-- "$S" "$T/q.sh"' in ROOT_D_BODY
+    assert '"$SRC/conf/py311_quiescent.sh"' not in HELPERS
+
+
+def test_preflight_d_is_not_the_full_quiescence_check():
+    assert "--inspectable-only" not in HELPERS
+    assert "py311_quiescent() { root_quiescent; }" in HELPERS
+    flat = _flat(SHEET)
+    assert "Its `OK inspectable` is not `OK quiescent`: it says nothing about py311 use " \
+           "and never replaces step 6." in flat
+    assert "This must end with `OK quiescent` from the full root check" in flat
+    assert "Only this check looks for py311 use, and it must print `OK quiescent`." in flat
+
+
+def test_apply_runs_only_behind_the_full_root_check():
+    applies = [c for c in ALL_COMMANDS if '"$ALIGN" apply' in c]
+    assert applies == ['root_quiescent && "$ALIGN" apply --dir "$D" && "$ZSTATE" --dir "$D" --expect after']
+    flat = _flat(SHEET)
+    assert "Do not run `apply` while any item is open." in flat
+    assert "Run this only after every checklist item is checked and step 6 printed " \
+           "`OK services stopped`." in flat
+    assert "Run this only after step 7 printed `OK apply` and `STATE after`." in flat
+
+
+def test_apply_does_not_start_when_the_root_check_fails(align_chain, tmp_path):
+    run, log, state = align_chain
+    r = run(_align_block("apply"), root_fail="1")
+    assert r.returncode != 0
+    assert not (tmp_path / "zarr-align-x" / "applied").exists()
+    assert (state / "zarr").read_text().strip() == "2.18.6"
+    assert _steps(log) == []
+
+
+def test_stop_services_refuses_to_stop_anything_without_a_baseline(helpers, tmp_path):
+    run, _ = helpers
+    (tmp_path / "d-mhw-before" / "point.json").unlink()
+    r, steps = run("stop_services && echo APPLY_WOULD_RUN")
+    assert r.returncode != 0 and "no MHW baseline" in r.stderr
+    assert steps == [] and "APPLY_WOULD_RUN" not in r.stdout
+
+
+def test_every_failure_has_a_stop_point_and_a_next_action():
+    flat = _flat(SHEET)
+    assert "**R0. Step 1, 2, 3, 4, 5, or 6 fails (nothing installed).**" in flat
+    assert "**R1. Step 7 fails.**" in flat
+    assert "**R2. Step 8 fails.**" in flat
+    assert "**R3. Rollback is selected.**" in flat
+    assert "**R4. Step 9 finds a problem.**" in flat
+    table = re.findall(r"^\| (\d[^|]*?) \| [^|]+ \| [^|]+ \| (R\d[^|]*?) \|$", SHEET, flags=re.M)
+    assert [(s.split(",")[0], n[:2]) for s, n in table] == [
+        ("1 to 5", "R0"), ("6", "R0"), ("7", "R1"), ("8", "R2"), ("9", "R4")]
+    assert "If this fails, follow R1." in flat and "follow R2." in flat and "follow R4." in flat
+    assert "If it fails, nothing was installed: follow R0." in flat
+    assert "restart nothing and do not roll back" in flat
+    # A failed copy hash: nothing more runs from a checkout that may be altered.
+    assert "run nothing more from `$SRC`, including the block above, and report." in flat
+    assert "If it, `rollback`, or the state check fails, stop and report; nothing starts." in flat
+    assert "If the shell is lost, its variables and functions are gone." in flat
+    assert "Do not repeat steps 2, 3, or 6 to find out where things stand." in flat
+    assert "accepts no second `apply`" in flat
+
+
+def test_done_is_defined_and_needs_every_gate():
+    flat = _flat(SHEET)
+    assert "The maintenance is done only when all of these hold" in flat
+    for must in ("step 7 printed `OK apply` and `STATE after`",
+                 "step 8 printed `OK services started`",
+                 "step 9 printed `OK no Dask fallback in the active err.log`"):
+        assert must in flat, must
+    assert "it does not deploy the v0.3.2 runtime files" in flat
+
+
+def test_recovery_is_not_described_as_validated():
+    recovery = _flat(TEXT[TEXT.index("### Recovery"):TEXT.index("## Operational Notes")])
+    assert recovery.startswith("### Recovery Status: none of these branches has run on VM24, "
+                               "and none is validated there.")
+    assert "The PM2 rehearsal ran neither `apply` nor `rollback`." in recovery
+    low = _flat(ZARR_PART).lower()
+    for overclaim in ("rollback is validated", "rollback was validated", "rollback validated",
+                      "recovery is validated", "recovery was validated", "rollback drill",
+                      "rollback tested on vm24", "rollback verified on vm24",
+                      "rollback ran on vm24", "recovery ran on vm24"):
+        assert overclaim not in low, overclaim
+
+
+def test_open_sign_offs_stay_open_and_the_owner_intent_is_only_an_intent():
+    items = _checklist()
+    for gate in ("Owner and MHW maintainer: the window",
+                 "Owner: approve the stop-first order",
+                 "MHW maintainer: agree to stopping and starting",
+                 "Owner or the maintainer of the host Dask runbook: confirm",
+                 "Owner: accept the risk that the real `dask-scheduler`",
+                 "Owner: reachable during the whole window",
+                 "Owner: name who runs the run sheet",
+                 "Reviewer: approve this run sheet",
+                 "Operator: a checkout `SRC` of the approved commit",
+                 "In the window: preflights A to D",
+                 "Owner: root in the window for the full quiescence check"):
+        assert [i for i in items if i.startswith("- [ ] " + gate)], gate
+        assert not [i for i in items if i.startswith("- [x] " + gate)], gate
+    flat = _flat(ZARR_PART)
+    assert "That is the owner's stated intent. It is not yet the approval of this exact order" in flat
+    assert "it is not the MHW maintainer's agreement or a confirmation from other Dask users" in flat
+    # No date assumed for the window or for what follows it. The exceptions
+    # record things that already happened.
+    undated = flat.replace("2027-11-25", "")
+    for record in ("set this limit on 2026-11-02", "(Debian 12, 2026-11-02)",
+                   "scope on 2026-11-02", "scope, 2026-11-02"):
+        assert undated.count(record) == 1, record
+        undated = undated.replace(record, "")
+    assert not re.search(r"2026-1[12]-\d\d|2027-", undated)
+    assert "the next `update_mhw.sh` run on the 18th" in flat
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd,
+                   check=True, capture_output=True, text=True)
+
+
+@pytest.fixture
+def step_1(tmp_path):
+    import shutil
+    src = tmp_path / "src"
+    (src / "conf").mkdir(parents=True)
+    for name in RUN_SHEET_SCRIPTS:
+        shutil.copy(DOC.parents[1] / "conf" / name, src / "conf" / name)
+    _git(src, "init", "-q")
+    _git(src, "add", ".")
+    _git(src, "commit", "-q", "-m", "x")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=src, check=True,
+                          capture_output=True, text=True).stdout.strip()
+    sha = Path(shutil.which("sha256sum")).parent   # /sbin on macOS
+
+    def run(sha_value):
+        env = {"PATH": f"/usr/bin:/bin:{sha}", "HOME": str(tmp_path), "SRC": str(src)}
+        if sha_value is not None:
+            env["SHA"] = sha_value
+        return subprocess.run(["bash", "-c", STEP_1_CHECK], env=env, cwd=tmp_path,
+                              capture_output=True, text=True, timeout=60)
+    return run, src, head
+
+
+def test_step_1_passes_on_the_approved_clean_checkout(step_1):
+    run, _, head = step_1
+    r = run(head[:7])
+    assert r.returncode == 0, r.stderr
+    assert "seven scripts match" in r.stdout
+
+
+@pytest.mark.parametrize("sha_value, why", [(None, "set SHA"), ("", "set SHA"), ("abc", "set SHA"),
+                                            ("0000000", "is not at")])
+def test_step_1_refuses_a_missing_or_wrong_commit(step_1, sha_value, why):
+    run, _, _ = step_1
+    r = run(sha_value)
+    assert r.returncode != 0 and why in r.stderr and "OK checkout" not in r.stdout
+
+
+def test_step_1_refuses_a_dirty_checkout(step_1):
+    run, src, head = step_1
+    (src / "conf" / "py311_quiescent.sh").write_text("#!/bin/bash\n")
+    r = run(head[:7])
+    assert r.returncode != 0 and "local changes" in r.stderr
+
+
+def test_step_1_refuses_a_committed_script_that_differs_from_its_reviewed_hash(step_1):
+    run, src, _ = step_1
+    p = src / "conf" / "pm2_restart_check.sh"
+    p.write_text(p.read_text() + "# changed\n")
+    _git(src, "add", ".")
+    _git(src, "commit", "-q", "-m", "y")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=src, check=True,
+                          capture_output=True, text=True).stdout.strip()
+    r = run(head)
+    assert r.returncode != 0 and "does not match its reviewed hash" in r.stderr
+
+
+# --- Step 9: the err.log check fails closed, whatever the log does -------------
+
+STEP_5_MARK = _block_with("mhw_log_id=$(stat")
+STEP_9_LOG = _block_with("OK no Dask fallback in the active err.log")
+FALLBACK = "Dask scheduler unavailable; falling back to local execution."
+MHW_LOG_PATH = "/home/odbadmin/proj/marineheatwave/API/tmp/err.log"
+# GNU `stat -c`, which macOS lacks; a container run covers the real one.
+FAKE_STAT = """#!/usr/bin/env python3
+import os, sys
+assert sys.argv[1] == "-c" and sys.argv[2] in ("%d:%i", "%d:%i %s %y")
+try:
+    st = os.stat(sys.argv[3])
+except OSError as e:
+    sys.exit("stat: %s" % e)
+out = "%d:%d" % (st.st_dev, st.st_ino)
+if sys.argv[2] != "%d:%i":
+    out += " %d %d" % (st.st_size, st.st_mtime_ns)
+print(out)
+"""
+NOTE = "NOTE err.log was rotated, replaced, or truncated since step 5"
+ADD_FALLBACK = f'echo "{FALLBACK}" >> "$LOG"'
+ROTATE = 'mv "$LOG" "$LOG.1"; '
+FAIL_TAIL = 'printf "#!/bin/bash\\nexit 1\\n" > "$BIN/tail"; chmod 755 "$BIN/tail"'
+LONG = 'head -c 500 /dev/zero | tr "\\0" x; echo'
+
+
+def _during(tool, action, when="after"):
+    """Run `action` while the block's `tool` reads, as a writer would."""
+    real = shutil.which(tool)
+    run = f'{real} "$@"; rc=$?\n'
+    body = f'{action}\n{run}' if when == "before" else f'{run}{action}\n'
+    return (f"cat > \"$BIN/{tool}\" <<'WRAP'\n#!/bin/bash\n{body}exit $rc\nWRAP\n"
+            f'chmod 755 "$BIN/{tool}"')
+
+
+@pytest.fixture
+def step_9(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "stat").write_text(FAKE_STAT)
+    (bindir / "stat").chmod(0o755)
+    log = tmp_path / "err.log"
+    sha = Path(shutil.which("sha256sum")).parent   # /sbin on macOS
+    assert STEP_5_MARK.count(MHW_LOG_PATH) == 1
+    mark = STEP_5_MARK.replace(MHW_LOG_PATH, str(log))
+
+    def run(between, before="old line\nold line 2\n", baseline_ok=True, again=False,
+            rerun=None):
+        log.write_text(before)
+        stub = ('mhw_check() { [ -z "${BASELINE_FAILS:-}" ]; }\n'
+                + ("" if baseline_ok else "BASELINE_FAILS=1\n"))
+        # A repeat of the block whose baseline is refused must not move the mark.
+        repeat = "BASELINE_FAILS=1\n" + mark if again else ""
+        script = stub + mark + between + "\n" + repeat
+        if rerun is not None:
+            script += STEP_9_LOG.rstrip() + "\n" + rerun + "\n"
+        script += STEP_9_LOG.rstrip() + " && echo STEP_9_PASSED\n"
+        env = {"PATH": f"{bindir}:/usr/bin:/bin:{sha}", "HOME": str(tmp_path),
+               "LOG": str(log), "BIN": str(bindir)}
+        return subprocess.run(["bash", "-c", script], env=env, cwd=tmp_path,
+                              capture_output=True, text=True, timeout=60)
+    return run
+
+
+def _step_9_passed(r, note=False):
+    assert r.returncode == 0, r.stderr
+    assert "OK no Dask fallback" in r.stdout and "STEP_9_PASSED" in r.stdout
+    assert "FAIL step 9" not in r.stderr
+    assert (NOTE in r.stdout) is note
+
+
+def _step_9_failed(r, why):
+    assert "OK no Dask fallback" not in r.stdout and "STEP_9_PASSED" not in r.stdout
+    assert NOTE not in r.stdout
+    assert "FAIL step 9: " in r.stderr and why in r.stderr, r.stderr
+
+
+# Appended: only what follows the mark counts, and there is no NOTE.
+@pytest.mark.parametrize("between", [':', 'echo "worker booted" >> "$LOG"'])
+def test_step_9_passes_an_appended_log_without_the_message(step_9, between):
+    _step_9_passed(step_9(between))
+
+
+def test_step_9_ignores_the_message_before_the_mark_of_an_appended_log(step_9):
+    # An earlier fallback is not this maintenance's: only new lines count.
+    _step_9_passed(step_9('echo "worker booted" >> "$LOG"', before=FALLBACK + "\n"))
+
+
+def test_step_9_handles_an_empty_log_at_the_mark(step_9):
+    # GNU head prints nothing for `-c 0`; BSD head refuses it, so stand in here.
+    # A container run covers the real one.
+    head = ("cat > \"$BIN/head\" <<'WRAP'\n#!/bin/bash\n"
+            '[ "$1" = -c ] && [ "$(($2))" = 0 ] && exit 0\n'
+            f'exec {shutil.which("head")} "$@"\nWRAP\n'
+            'chmod 755 "$BIN/head"; ')
+    _step_9_passed(step_9(head + 'echo "worker booted" >> "$LOG"', before=""))
+    _step_9_failed(step_9(head + ADD_FALLBACK, before=""), "Dask fallback")
+
+
+# Rotated, replaced, or truncated: the active log is scanned from its start.
+# `{line}` is the command that writes the line under test into the log.
+HOLE = 'python3 -c "import os; os.truncate(os.environ[\'LOG\'], 4096)"'
+LOG_CHANGES = {
+    "truncated in place": ': > "$LOG"; {line} >> "$LOG"',
+    "truncated and shorter": 'echo x > "$LOG"; {line} >> "$LOG"',
+    # Same inode, regrown past the mark: an offset alone would skip the start.
+    "truncated and regrown": '{{ {line}; {long}; }} > "$LOG.tmp"; cat "$LOG.tmp" > "$LOG"; '
+                             'unlink "$LOG.tmp"',
+    "rewritten to the same size": 'head -c 21 /dev/zero | tr "\\0" y > "$LOG"; {line} >> "$LOG"',
+    "rotated by rename": ROTATE + ': > "$LOG"; {line} >> "$LOG"',
+    "rotated and regrown": ROTATE + '{{ {line}; {long}; }} >> "$LOG"',
+    "replaced after unlink": 'unlink "$LOG"; : > "$LOG"; {line} >> "$LOG"',
+    # copytruncate under a writer that keeps its offset: a hole, then new lines.
+    "truncated under a writer": ': > "$LOG"; ' + HOLE + '; {line} >> "$LOG"',
+}
+
+
+@pytest.mark.parametrize("change", sorted(LOG_CHANGES))
+def test_step_9_scans_the_active_log_after_any_log_change(step_9, change):
+    template = LOG_CHANGES[change]
+    clean = template.format(line='echo "worker booted"', long=LONG)
+    hit = template.format(line=f'echo "{FALLBACK}"', long=LONG)
+    _step_9_passed(step_9(clean), note=True)
+    _step_9_failed(step_9(hit), "Dask fallback in err.log")
+
+
+def test_step_9_passes_an_active_log_that_is_still_empty(step_9):
+    _step_9_passed(step_9(': > "$LOG"'), note=True)
+    _step_9_passed(step_9(ROTATE + ': > "$LOG"'), note=True)
+
+
+@pytest.mark.parametrize("between", [
+    # Rotated out, and the active log is clean: outside the gate, by the owner.
+    ROTATE + ADD_FALLBACK.replace('"$LOG"', '"$LOG.1"') + '; echo booted > "$LOG"',
+    ADD_FALLBACK + '; ' + ROTATE + 'echo booted > "$LOG"',
+    # Truncated away: no longer in the active log either.
+    ADD_FALLBACK + '; : > "$LOG"; echo booted >> "$LOG"',
+])
+def test_step_9_passes_with_the_note_when_the_message_left_the_active_log(step_9, between):
+    r = step_9(between)
+    _step_9_passed(r, note=True)
+    assert "content no longer in it was not checked and is outside this gate" in r.stdout
+
+
+def test_step_9_scans_a_copy_from_its_start(step_9):
+    # A new inode holding the old lines: the whole file counts, so an old message
+    # fails. It goes to R4 and is read by hand rather than assumed to be old.
+    copy = ROTATE + 'cp "$LOG.1" "$LOG"; echo "worker booted" >> "$LOG"'
+    _step_9_passed(step_9(copy), note=True)
+    _step_9_failed(step_9(copy, before=FALLBACK + "\n"), "Dask fallback in err.log")
+
+
+def test_step_9_sees_the_message_past_invalid_bytes(step_9):
+    r = step_9(f'printf "\\xff\\xfe\\n%s\\n" "{FALLBACK}" >> "$LOG"')
+    _step_9_failed(r, "Dask fallback in err.log")
+
+
+# The fallback gate stays, in any position.
+@pytest.mark.parametrize("between", [
+    ADD_FALLBACK,
+    f'printf "a\\n%s\\nb\\n" "{FALLBACK}" >> "$LOG"',
+])
+def test_step_9_fails_on_the_message_in_the_new_lines(step_9, between):
+    _step_9_failed(step_9(between), "Dask fallback in err.log")
+
+
+# During the scan.
+@pytest.mark.parametrize("tool, when", [("tail", "before"), ("tail", "after"),
+                                        ("head", "before"), ("head", "after")])
+@pytest.mark.parametrize("action", [
+    'echo "worker booted" >> "$LOG"',
+    ROTATE + 'echo "worker booted" > "$LOG"',
+    ': > "$LOG"',
+])
+def test_step_9_does_not_pass_a_log_that_changes_during_the_scan(step_9, tool, when, action):
+    _step_9_failed(step_9(_during(tool, action, when)), "changed during the scan")
+
+
+def test_step_9_catches_a_fallback_written_after_the_read_reached_eof(step_9):
+    # The reviewed race: the message lands after `tail`, before the last check.
+    r = step_9(_during("tail", ADD_FALLBACK))
+    _step_9_failed(r, "changed during the scan")
+    assert "Dask fallback in err.log" not in r.stderr
+
+
+def test_step_9_rerun_finds_the_fallback_written_during_the_scan(step_9):
+    r = step_9(_during("tail", ADD_FALLBACK), rerun='unlink "$BIN/tail"')
+    _step_9_failed(r, "changed during the scan")
+    assert "Dask fallback in err.log" in r.stderr
+
+
+def test_step_9_rerun_passes_after_a_clean_line_during_the_scan(step_9):
+    r = step_9(_during("tail", 'echo "worker booted" >> "$LOG"'), rerun='unlink "$BIN/tail"')
+    assert r.stderr.count("FAIL step 9: ") == 1 and "changed during the scan" in r.stderr
+    assert "STEP_9_PASSED" in r.stdout and NOTE not in r.stdout
+
+
+def test_step_9_fails_on_a_fallback_read_during_the_scan(step_9):
+    r = step_9(_during("tail", ADD_FALLBACK, when="before"))
+    _step_9_failed(r, "Dask fallback in err.log")
+
+
+# Read errors.
+FAIL_HEAD = FAIL_TAIL.replace("tail", "head")
+FAIL_SHA = FAIL_TAIL.replace("tail", "sha256sum")
+# Installed after the mark: the first `stat` is the scan's, the second one fails.
+FAIL_LAST_STAT = ("mv \"$BIN/stat\" \"$BIN/stat.real\"; cat > \"$BIN/stat\" <<'WRAP'\n#!/bin/bash\n"
+                  'n=$(cat "$BIN/n" 2>/dev/null || echo 0); echo $((n + 1)) > "$BIN/n"\n'
+                  '[ "$n" = 0 ] || exit 1\nexec "$BIN/stat.real" "$@"\nWRAP\n'
+                  'chmod 755 "$BIN/stat"')
+
+
+@pytest.mark.parametrize("between, why", [
+    ('unlink "$LOG"', "cannot read"),
+    ('unlink "$LOG"; mkdir "$LOG"', "cannot read"),
+    (FAIL_TAIL, "cannot read"),
+    (FAIL_HEAD, "cannot read"),
+    (FAIL_SHA, "cannot read"),
+    (FAIL_LAST_STAT, "cannot read"),
+    (ROTATE + 'echo x > "$LOG"; ' + FAIL_TAIL, "cannot read"),
+    ('unset mhw_log_id', "no err.log mark"),
+    ('unset mhw_log_bytes', "no err.log mark"),
+    ('unset mhw_log_head', "no err.log mark"),
+    ('unset MHW_LOG', "no err.log mark"),
+])
+def test_step_9_fails_closed(step_9, between, why):
+    _step_9_failed(step_9(between), why)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+def test_step_9_fails_closed_on_an_unreadable_log(step_9):
+    _step_9_failed(step_9('chmod 000 "$LOG"'), "cannot read")
+
+
+def test_step_9_has_no_mark_when_the_baseline_failed(step_9):
+    _step_9_failed(step_9(':', baseline_ok=False), "no err.log mark")
+
+
+def test_step_5_cannot_move_the_mark_past_a_fallback(step_9):
+    r = step_9(ADD_FALLBACK, again=True)
+    _step_9_failed(r, "Dask fallback in err.log")
+
+
+def test_step_9_does_not_touch_the_log(step_9, tmp_path):
+    log = tmp_path / "err.log"
+    r = step_9('echo "worker booted" >> "$LOG"; stat -c "%d:%i %s %y" "$LOG" > "$BIN/seen"')
+    _step_9_passed(r)
+    st = log.stat()
+    assert (tmp_path / "bin/seen").read_text().split() \
+        == [f"{st.st_dev}:{st.st_ino}", str(st.st_size), str(st.st_mtime_ns)]
+    assert log.read_text() == "old line\nold line 2\nworker booted\n"
+    assert [f.name for f in tmp_path.iterdir() if f.name.startswith("err.log")] == ["err.log"]
+
+
+def test_step_9_only_reads_the_log():
+    code = "\n".join(_commands(STEP_9_LOG))
+    assert not re.search(r"(^|\s)(mv|cp|rm|truncate|logrotate|tee|pm2|chmod|chown)\s", code)
+    assert '> "$MHW_LOG"' not in code and '>> "$MHW_LOG"' not in code
+    # Its only redirections send the failure lines to stderr.
+    assert sorted(re.findall(r">+&?[^\s;]*", code)) == [">&2", ">&2"]
+
+
+def test_step_9_does_not_depend_on_a_pipeline_status_to_pass():
+    code = "\n".join(c for c in _commands(STEP_9_LOG))
+    assert "set -euo pipefail" in code
+    assert "| grep" not in code and '|| echo "OK' not in code
+    # The search is apart from the read, so a failed read cannot look like no match.
+    assert 'new=$(tail -c +"$from" "$MHW_LOG") || fail' in code
+    # The last check comes after the read, so nothing between them can pass unseen.
+    assert code.count("""stat -c '%d:%i %s %y' "$MHW_LOG\"""") == 2
+    assert code.index("before=$(stat") < code.index("prefix=$(head") \
+        < code.index("new=$(tail") < code.index("after=$(stat") < code.index('echo "OK no Dask')
+    assert STEP_5_MARK.index('mhw_check "$D-mhw-before"') < STEP_5_MARK.index("mhw_log_id=")
+
+
+def test_a_failed_step_9_check_cannot_count_as_done():
+    flat = _flat(SHEET)
+    assert "step 9 printed `OK no Dask fallback in the active err.log`, with or without its " \
+           "`NOTE`, and the py311 suite passed its pin test." in flat
+    assert "A problem the owner accepts under R4 is recorded as an exception, not as a pass." in flat
+    assert "If the log check failed without finding the message, nothing is known about " \
+           "the fallback" in flat
+    assert "the check still did not pass." in flat
+    assert "so step 9's log check fails and R4 applies." in flat
+    assert "with its `NOTE` line if it printed one" in flat
+
+
+def test_the_run_sheet_adapts_to_how_err_log_behaves():
+    flat = _flat(TEXT)
+    assert "must not change MHW's logging setup or how `err.log` behaves" in flat
+    assert "Do not clear, rename, or reconfigure the log to make the check pass." in flat
+    assert "Also say whether a restart appends" not in flat
+    assert "step 9 does not depend on that" in flat
+    # The rest of the MHW maintainer's gate stays open.
+    assert "- [ ] MHW maintainer: agree to stopping and starting" in TEXT
+
+
+OWNER_SCOPE = ("只確認掃描時的 active MHW err.log；輪替到其他檔案、因而不在 active log 的舊內容"
+               "不屬於本 gate 範圍。")
+
+
+def _unbroken(text):
+    # Wrapping joins the Chinese quote with spaces that it does not have.
+    return re.sub(r"(?<=[^\x00-\x7f]) (?=[^\x00-\x7f])", "", _flat(text))
+
+
+def test_ok_with_the_note_passes_within_the_owners_scope():
+    flat = _unbroken(SHEET)
+    assert OWNER_SCOPE.replace(" ", "") in flat.replace(" ", "")
+    assert "`OK` with the `NOTE` passes step 9." in flat
+    assert "It asks for no search of rotated files and no further decision." in flat
+    assert "`OK` with the `NOTE` meets this condition within the owner's scope" in flat
+    assert "`OK` with the `NOTE` is a pass, not a problem, and does not come here." in flat
+    assert "- [x] Owner decision on step 9's scope, 2026-11-02" in SHEET
+    # Still a read of the active log only, and it says so.
+    assert "Lines that are no longer in it were not checked" in flat
+    assert "covers the active log only, not content rotated out of it" in flat
+
+
+def test_nothing_claims_the_rotated_content_was_checked_or_leaves_the_note_open():
+    flat = _flat(SHEET)
+    assert "new lines of err.log" not in flat
+    note = re.search(r'note="(NOTE [^"]*)"', STEP_9_LOG).group(1)
+    assert "was not checked" in note and "outside this gate" in note
+    for action in ("check the rotated", "read the rotated", "owner decides", "must", "follow R4"):
+        assert action not in note, action
+    for wrong in ("`NOTE` is an exception", "`NOTE` goes to R4", "`NOTE` needs", "`NOTE` requires",
+                  "rotated content was checked", "rotated files were checked"):
+        assert wrong not in flat, wrong
+
+
+def test_step_9_scope_decision_ticks_nothing_else():
+    items = _checklist()
+    ticked = [i.split(":")[0].split(",")[0] for i in items if i.startswith("- [x] ")]
+    assert len(ticked) == 10, ticked
+    assert sum(i.startswith("- [ ] ") for i in items) == 11
+    assert "Owner decision on step 9's scope" in " ".join(ticked)
+    flat = _flat(SHEET)
+    assert "neither the window nor any gate below" in flat
+    assert "no window is set yet" in flat
+    assert "append" not in " ".join(i for i in items if "MHW maintainer" in i)
