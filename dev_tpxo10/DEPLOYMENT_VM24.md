@@ -1231,7 +1231,8 @@ Tested:
   `OK` for new lines without the message, and for the message only before
   the mark. On a log that was rotated, replaced, or truncated, including
   truncated in place under a writer that keeps its offset, it scans the
-  whole active log, and prints `OK` and the `NOTE` only without the message.
+  whole active log, and prints `OK` and the `NOTE` only without the message;
+  a message only in a rotated file is outside the gate and does not fail it.
   It exits non-zero, without `OK`, when the message is in what it scans, the
   log is missing or unreadable, a read fails, the mark is missing, or the
   log is appended to, rotated, or truncated during the scan. It leaves the
@@ -1533,6 +1534,10 @@ Done, with the evidence recorded:
       live processes readable, exit 0 (see "VM24 preflight D record").
       This shows only that root can read every process; it does not show
       that no process used py311, and it does not make `apply` runnable.
+- [x] Owner decision on step 9's scope, 2026-11-02: the gate checks only the
+      active `err.log` at the scan; content rotated out of it is outside the
+      gate. `OK` with the `NOTE` passes. This covers the scope of that one
+      check, and neither the window nor any gate below.
 
 Sign-off gates, each open until the person named answers:
 
@@ -1995,8 +2000,14 @@ mhw_check "$D-mhw-before" \
        added after the mark.
      - **Rotated, replaced, or truncated:** the whole active log, followed
        by a `NOTE`. A message left over from before step 5 in that log also
-       fails the check. Lines that moved out of the active log before this
-       scan cannot be seen, and the `NOTE` says so.
+       fails the check.
+
+     The owner set this gate's scope on 2026-11-02: "只確認掃描時的 active
+     MHW err.log；輪替到其他檔案、因而不在 active log 的舊內容不屬於本 gate
+     範圍。" So the gate covers the active log as it stands at the scan. Lines
+     that are no longer in it were not checked, and the `NOTE` says so; the
+     check does not claim otherwise. `OK` with the `NOTE` passes step 9. It
+     asks for no search of rotated files and no further decision.
 
      It prints `OK` only after a complete read that finds no message, with
      the log unchanged from before the read to after it. It exits non-zero
@@ -2016,7 +2027,7 @@ mhw_check "$D-mhw-before" \
        [ -f "$MHW_LOG" ] && [ -r "$MHW_LOG" ] || fail "cannot read $MHW_LOG"
        before=$(stat -c '%d:%i %s %y' "$MHW_LOG") || fail "cannot read $MHW_LOG"
        from=1
-       note="NOTE err.log was rotated, replaced, or truncated since step 5: the whole active log was scanned, but not lines moved out of it before this scan"
+       note="NOTE err.log was rotated, replaced, or truncated since step 5: the whole active log was scanned; content no longer in it was not checked and is outside this gate"
        if [ "${before%% *}" = "$mhw_log_id" ]; then
          prefix=$(head -c "$mhw_log_bytes" "$MHW_LOG" | sha256sum) || fail "cannot read $MHW_LOG"
          if [ "$prefix" = "$mhw_log_head" ]; then
@@ -2033,7 +2044,7 @@ mhw_check "$D-mhw-before" \
          echo "FAIL step 9: err.log changed during the scan; run this block again, and follow R4 if it keeps failing" >&2
          exit 1
        fi
-       echo "OK no Dask fallback in the new lines of err.log"
+       echo "OK no Dask fallback in the active err.log"
        [ -z "$note" ] || echo "$note"
      )
      ```
@@ -2051,11 +2062,13 @@ The maintenance is done only when all of these hold, each recorded below:
 - step 8 printed `OK services started`, which covers the Tide smoke, the
   MHW checks with the point query matching the baseline, and one Dask
   worker under its nanny with four clients;
-- step 9 printed `OK no Dask fallback in the new lines of err.log`, and the
-  py311 suite passed its pin test.
+- step 9 printed `OK no Dask fallback in the active err.log`, with or without
+  its `NOTE`, and the py311 suite passed its pin test.
 
-Anything less is not done, whatever the services appear to do. A problem the
-owner accepts under R4 is recorded as an exception, not as a pass. This
+`OK` with the `NOTE` meets this condition within the owner's scope for the
+gate (see step 9): it covers the active log only, not content rotated out of
+it. Anything less is not done, whatever the services appear to do. A problem
+the owner accepts under R4 is recorded as an exception, not as a pass. This
 maintenance changes only Zarr: it does not deploy the v0.3.2 runtime files.
 
 What to record here:
@@ -2067,8 +2080,8 @@ What to record here:
   `pip-check-after.txt` (identical);
 - `STATE after`;
 - numcodecs 0.15.1 and numpy 2.2.4, unchanged;
-- step 9's log check result, with its `NOTE` line if it printed one, and
-  the py311 suite counts.
+- step 9's log check result, with its `NOTE` line if it printed one, which
+  records what the check covered, and the py311 suite counts.
 
 ### Recovery
 
@@ -2161,6 +2174,7 @@ finding the message, nothing is known about the fallback: the log could not
 be read, the mark was lost, or the log kept changing during the scan. Read
 `err.log` by hand and report what it shows; the check still did not pass.
 Do not clear, rename, or reconfigure the log to make the check pass.
+`OK` with the `NOTE` is a pass, not a problem, and does not come here.
 
 **Another attempt.** It needs a new sign-off of the window.
 

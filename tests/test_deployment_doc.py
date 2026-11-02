@@ -1400,7 +1400,7 @@ def test_steps_run_in_order_from_checkout_to_the_final_checks():
                "   stop_services\n",
                'root_quiescent && "$ALIGN" apply --dir "$D"',
                'start_services "$D-smoke" "$D-mhw-after"',
-               "OK no Dask fallback in the new lines of err.log"]
+               "OK no Dask fallback in the active err.log"]
     pos = [SHEET.index(m) for m in markers]
     assert pos == sorted(pos), markers
     numbered = re.findall(r"^(\d)\. ", SHEET[:SHEET.index("What to record here:")], flags=re.M)
@@ -1499,7 +1499,7 @@ def test_done_is_defined_and_needs_every_gate():
     assert "The maintenance is done only when all of these hold" in flat
     for must in ("step 7 printed `OK apply` and `STATE after`",
                  "step 8 printed `OK services started`",
-                 "step 9 printed `OK no Dask fallback in the new lines of err.log`"):
+                 "step 9 printed `OK no Dask fallback in the active err.log`"):
         assert must in flat, must
     assert "it does not deploy the v0.3.2 runtime files" in flat
 
@@ -1538,7 +1538,8 @@ def test_open_sign_offs_stay_open_and_the_owner_intent_is_only_an_intent():
     # No date assumed for the window or for what follows it. The exceptions
     # record things that already happened.
     undated = flat.replace("2027-11-25", "")
-    for record in ("set this limit on 2026-11-02", "(Debian 12, 2026-11-02)"):
+    for record in ("set this limit on 2026-11-02", "(Debian 12, 2026-11-02)",
+                   "scope on 2026-11-02", "scope, 2026-11-02"):
         assert undated.count(record) == 1, record
         undated = undated.replace(record, "")
     assert not re.search(r"2026-1[12]-\d\d|2027-", undated)
@@ -1610,7 +1611,7 @@ def test_step_1_refuses_a_committed_script_that_differs_from_its_reviewed_hash(s
 # --- Step 9: the err.log check fails closed, whatever the log does -------------
 
 STEP_5_MARK = _block_with("mhw_log_id=$(stat")
-STEP_9_LOG = _block_with("OK no Dask fallback in the new lines of err.log")
+STEP_9_LOG = _block_with("OK no Dask fallback in the active err.log")
 FALLBACK = "Dask scheduler unavailable; falling back to local execution."
 MHW_LOG_PATH = "/home/odbadmin/proj/marineheatwave/API/tmp/err.log"
 # GNU `stat -c`, which macOS lacks; a container run covers the real one.
@@ -1736,6 +1737,19 @@ def test_step_9_scans_the_active_log_after_any_log_change(step_9, change):
 def test_step_9_passes_an_active_log_that_is_still_empty(step_9):
     _step_9_passed(step_9(': > "$LOG"'), note=True)
     _step_9_passed(step_9(ROTATE + ': > "$LOG"'), note=True)
+
+
+@pytest.mark.parametrize("between", [
+    # Rotated out, and the active log is clean: outside the gate, by the owner.
+    ROTATE + ADD_FALLBACK.replace('"$LOG"', '"$LOG.1"') + '; echo booted > "$LOG"',
+    ADD_FALLBACK + '; ' + ROTATE + 'echo booted > "$LOG"',
+    # Truncated away: no longer in the active log either.
+    ADD_FALLBACK + '; : > "$LOG"; echo booted >> "$LOG"',
+])
+def test_step_9_passes_with_the_note_when_the_message_left_the_active_log(step_9, between):
+    r = step_9(between)
+    _step_9_passed(r, note=True)
+    assert "content no longer in it was not checked and is outside this gate" in r.stdout
 
 
 def test_step_9_scans_a_copy_from_its_start(step_9):
@@ -1871,8 +1885,8 @@ def test_step_9_does_not_depend_on_a_pipeline_status_to_pass():
 
 def test_a_failed_step_9_check_cannot_count_as_done():
     flat = _flat(SHEET)
-    assert "step 9 printed `OK no Dask fallback in the new lines of err.log`, and the " \
-           "py311 suite passed its pin test." in flat
+    assert "step 9 printed `OK no Dask fallback in the active err.log`, with or without its " \
+           "`NOTE`, and the py311 suite passed its pin test." in flat
     assert "A problem the owner accepts under R4 is recorded as an exception, not as a pass." in flat
     assert "If the log check failed without finding the message, nothing is known about " \
            "the fallback" in flat
@@ -1889,3 +1903,49 @@ def test_the_run_sheet_adapts_to_how_err_log_behaves():
     assert "step 9 does not depend on that" in flat
     # The rest of the MHW maintainer's gate stays open.
     assert "- [ ] MHW maintainer: agree to stopping and starting" in TEXT
+
+
+OWNER_SCOPE = ("只確認掃描時的 active MHW err.log；輪替到其他檔案、因而不在 active log 的舊內容"
+               "不屬於本 gate 範圍。")
+
+
+def _unbroken(text):
+    # Wrapping joins the Chinese quote with spaces that it does not have.
+    return re.sub(r"(?<=[^\x00-\x7f]) (?=[^\x00-\x7f])", "", _flat(text))
+
+
+def test_ok_with_the_note_passes_within_the_owners_scope():
+    flat = _unbroken(SHEET)
+    assert OWNER_SCOPE.replace(" ", "") in flat.replace(" ", "")
+    assert "`OK` with the `NOTE` passes step 9." in flat
+    assert "It asks for no search of rotated files and no further decision." in flat
+    assert "`OK` with the `NOTE` meets this condition within the owner's scope" in flat
+    assert "`OK` with the `NOTE` is a pass, not a problem, and does not come here." in flat
+    assert "- [x] Owner decision on step 9's scope, 2026-11-02" in SHEET
+    # Still a read of the active log only, and it says so.
+    assert "Lines that are no longer in it were not checked" in flat
+    assert "covers the active log only, not content rotated out of it" in flat
+
+
+def test_nothing_claims_the_rotated_content_was_checked_or_leaves_the_note_open():
+    flat = _flat(SHEET)
+    assert "new lines of err.log" not in flat
+    note = re.search(r'note="(NOTE [^"]*)"', STEP_9_LOG).group(1)
+    assert "was not checked" in note and "outside this gate" in note
+    for action in ("check the rotated", "read the rotated", "owner decides", "must", "follow R4"):
+        assert action not in note, action
+    for wrong in ("`NOTE` is an exception", "`NOTE` goes to R4", "`NOTE` needs", "`NOTE` requires",
+                  "rotated content was checked", "rotated files were checked"):
+        assert wrong not in flat, wrong
+
+
+def test_step_9_scope_decision_ticks_nothing_else():
+    items = _checklist()
+    ticked = [i.split(":")[0].split(",")[0] for i in items if i.startswith("- [x] ")]
+    assert len(ticked) == 10, ticked
+    assert sum(i.startswith("- [ ] ") for i in items) == 11
+    assert "Owner decision on step 9's scope" in " ".join(ticked)
+    flat = _flat(SHEET)
+    assert "neither the window nor any gate below" in flat
+    assert "no window is set yet" in flat
+    assert "append" not in " ".join(i for i in items if "MHW maintainer" in i)
