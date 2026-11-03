@@ -2085,3 +2085,67 @@ def test_maintenance_record_and_evidence_hold_no_secrets():
         assert "-----BEGIN" not in text, path
         assert "app.pm2.io" not in text, path
         assert not re.search(r"(?i)\b(password|passwd|token|secret)\s*[=:]\s*\S", text), path
+
+
+# --- v0.3.2 release step 2: the 2026-11-03 py311 suite of ef780ea -------------
+
+V032_SUITE = DOC.parent / "validation" / "2026-11-03_v032_py311_suite.md"
+
+
+def _rollout_items():
+    part = TEXT[TEXT.index("### Outstanding rollout checks"):TEXT.index("### Validation record")]
+    return [" ".join(i.split()) for i in re.findall(r"^- \[[ x]\] .*?(?=^- \[|\Z)", part,
+                                                    flags=re.S | re.M)]
+
+
+def test_v032_py311_suite_ticks_only_the_test_run():
+    items = _rollout_items()
+    suite = [i for i in items if i.startswith("- [x] py311 test suite in a separate VM24 checkout")]
+    assert len(suite) == 1
+    for must in ("for the v0.3.2 merge commit `ef780ea`",
+                 "**Green on 2026-11-03:** 164 passed, 0 failed, 0 skipped, and the 2 known "
+                 "warnings, exit 0.",
+                 "`ef780eaca174cb54b790d488c7854d828b56e48e`",
+                 "`TIDE_DASK_DISABLE=1`",
+                 "`dev_tpxo10/validation/2026-11-03_v032_py311_suite.md`",
+                 "is a different commit and does not count for this item",
+                 "It authorizes no deployment and checks no other item."):
+        assert must in suite[0], must
+    # The deployment authorization stays open, and nothing is deployed or tagged.
+    assert [i for i in items if i.startswith("- [ ] Owner authorization for the production "
+                                             "deployment (step 4).")]
+    assert sum(i.startswith("- [ ] ") for i in items) == 1
+    head = _flat(TEXT[:TEXT.index("## Current Production Layout")])
+    assert "Not tagged and not deployed" in head
+    record = _flat(TEXT[TEXT.index("### Validation record"):TEXT.index("## Production deployment")])
+    assert "**py311 suite, 2026-10-27: not green.**" in record
+    assert "**py311 suite rerun, 2026-11-03: green.**" in record
+
+
+def test_v032_py311_suite_evidence_states_target_command_and_limits():
+    text = V032_SUITE.read_text()
+    flat = _flat(text)
+    for must in ("`ef780eaca174cb54b790d488c7854d828b56e48e` (PR #2)",
+                 "**164 passed, 0 failed, 0 skipped, 2 warnings, exit 0.**",
+                 "TIDE_DASK_DISABLE=1 /home/odbadmin/.pyenv/versions/py311/bin/python -m pytest -rs",
+                 "zarr 2.18.7, numcodecs 0.15.1, numpy 2.2.4",
+                 "Nothing was installed or upgraded.",
+                 "printed 0 entries for both stores",
+                 "It is not the production deployment.",
+                 "It is not the owner's authorization for the deployment (step 4).",
+                 "It does not validate the rollback.",
+                 "`e84b29cad23238e821cbf4930e6493a97a36fe14429cd57d8e36aa0b72122250`"):
+        assert must in flat, must
+    # The appendix is the script whose hash it states, and that script only
+    # reads, links, and tests.
+    import hashlib
+    appendix = text[text.index("## Appendix: the script that ran"):]
+    stated = re.search(r"sha256 is\s+`([0-9a-f]{64})`", appendix).group(1)
+    body = re.search(r"```text\n(.*?)```", appendix, flags=re.S).group(1)
+    assert hashlib.sha256(body.encode()).hexdigest() == stated
+    assert 'TIDE_DASK_DISABLE=1 "$PY" -m pytest -rs' in body
+    for forbidden in ("pip install", "uv ", "pm2 ", "sudo", "systemctl", "rm ",
+                      "tide_tpxo10_atlas_v2/conf", "cp "):
+        assert forbidden not in body, forbidden
+    assert "-----BEGIN" not in text
+    assert not re.search(r"(?i)\b(password|passwd|token|secret)\s*[=:]\s*\S", text)
