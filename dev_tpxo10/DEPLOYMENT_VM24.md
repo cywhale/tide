@@ -5,8 +5,9 @@ cleanup: 2026-07-08. Shared Dask mutual TLS on VM24: 2026-10-24 (host change
 plus a hot patch of two Tide files). API version: v1.1.0.
 
 - Released (tagged): v0.3.1.
-- Target/pending release: v0.3.2 (PR #2, merge commit `ef780ea`). Not tagged
-  and not deployed; see "v0.3.2 release sequence" and "Validation record".
+- v0.3.2 (PR #2, merge commit `ef780ea`): runtime manifest deployed to
+  production on 2026-11-03 (see "v0.3.2 production deployment record").
+  Not tagged; the tag is a separate owner decision.
 - Shared py311 maintenance, 2026-11-03: Zarr aligned from 2.18.6 to 2.18.7,
   and no other package changed. This was not a release and not a runtime
   deployment; see "Py311 Zarr alignment".
@@ -20,10 +21,12 @@ plus a hot patch of two Tide files). API version: v1.1.0.
   files (`tide_app.py`, `__init__.py`, `src/*.py`, `conf/start_app.sh`,
   `conf/ecosystem.config.js`) with the deployed commit. Docs, tests, and
   notebooks are not deployed and may lag.
-- Code: v0.3.1 plus the 2026-10-24 Dask TLS hot patch of `conf/start_app.sh`
-  and `src/dask_client_manager.py`. The hot-patched files are recorded
-  verbatim in the repository as the first commit of PR #2. The hardened
-  v0.3.2 versions are not deployed yet.
+- Code: v0.3.2 since 2026-11-03: the release's runtime files match
+  `ef780ea`. Before that it ran v0.3.1 plus the 2026-10-24 Dask TLS hot
+  patch of `conf/start_app.sh` and `src/dask_client_manager.py`. Those
+  hot-patched files are recorded verbatim in the repository as the first
+  commit of PR #2 (`7928ebb`), and the deploy's backups of them are kept on
+  VM24.
 - Python runtime: VM24 pyenv `py311` (Python 3.11.4) via
   `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn`. See "Runtime
   environment" below: this environment is not managed by `uv.lock`.
@@ -76,7 +79,8 @@ TLS behavior. The Tide API never submits Dask tasks: reads use the direct
 adapter path (`chunks=None`), and the client only holds a connection to the
 scheduler. Removing the client is a separate follow-up slice.
 
-What VM24 runs now (2026-10-24 hot patch):
+What VM24 ran from 2026-10-24 until the v0.3.2 deployment on 2026-11-03
+(the hot patch; its files are kept in the deploy's `WORK/backup`):
 
 - `conf/start_app.sh` exports `DASK_SCHEDULER_ADDRESS=tls://127.0.0.1:8786`
   and the `tide-client` CA/certificate/key paths under
@@ -88,7 +92,7 @@ What VM24 runs now (2026-10-24 hot patch):
   none set it would still try plaintext `tcp://localhost:8786`; the launcher
   always sets them, so this path is not taken on VM24.
 
-v0.3.2 target (this repository, pending deployment):
+v0.3.2 (this repository; what VM24 runs since 2026-11-03):
 
 - The client connects only when the address is `tls://` with a loopback IP
   literal (`127.0.0.0/8` or `::1`; hostnames, even `localhost`, are
@@ -191,9 +195,65 @@ Results so far are in "Validation record" below.
       symlink is left under that checkout. The type, inode, and mtime of
       every link target were the same before and after, and the release's
       runtime hashes were unchanged.
-- [ ] Owner authorization for the production deployment (step 4). The
+- [x] Owner authorization for the production deployment (step 4). The
       2026-10-28 authorization covers only the py311 Zarr change, not
-      these runtime files.
+      these runtime files. Answer: on 2026-11-03, after PR #9 was merged,
+      the owner authorized Claude to run "Production deployment
+      procedure". The authorization covered:
+      - the two manifest files;
+      - the `tide` restart;
+      - the post-deploy checks and the production HTTPS smoke;
+      - `restore` and the prescribed recovery if a check failed while the
+        daemon was alive.
+
+      It excluded MHW, the Dask scheduler and worker, any other PM2 app,
+      Zarr, the data, other runtime files, cleanup, merge, and the tag.
+
+### v0.3.2 production deployment record
+
+Release sequence step 5 ran on 2026-11-03 (VM24, Asia/Taipei), and every
+completion condition under "Restart and post-deploy checks" held. No
+`restore` or recovery was needed. The evidence, with hashes, is in
+`dev_tpxo10/deployment/2026-11-03_v032_production.md`.
+
+- **Checkout:** `SRC=/home/odbadmin/tmp/tide-v0.3.2-91f1330` at
+  `91f13306ecc590d355892bb9ccddde1b779a7ed0` (the PR #9 merge).
+  - It was clean, including ignored files.
+  - Both manifest files there are the same blobs as at `ef780ea`.
+  - The scripts used match `91f1330`.
+- **Pre-deploy checks, read-only, 10:15:45–10:15:53:**
+  - PM2 daemon PID 3352, `PM2 v5.4.2`;
+  - `tide` online as PID 611259, a py311 Gunicorn with 2 workers;
+  - no `GUNICORN_BIN` in the stored `tide` entry;
+  - the Dask TLS client files and the HTTPS key and certificate readable;
+  - the release's other runtime files equal to `91f1330`, and its two
+    manifest files equal to the hot patch (`7928ebb`);
+  - 2 `Client-tideapi-*` entries on the scheduler.
+- **`deploy`, 10:16:09–10:16:10:**
+  - It replaced `conf/start_app.sh` (`8ee7b44d…` → `c96af310…`) and then
+    `src/dask_client_manager.py` (`d74c6690…` → `a8fc7a05…`), and printed
+    `OK deploy`.
+  - The second rename triggered one `--reload` of both workers, as
+    expected.
+  - `WORK=/home/odbadmin/tmp/tide-v0.3.2-deploy-20261103` holds the
+    backups.
+- **Restart and smoke, 10:16:25–10:16:36:**
+  - `OK restart: tide pid 611259 -> 716011, restarts 2 -> 3, stable 10s`,
+    with the py311 Gunicorn command line;
+  - then, in the same chain, `PASS prod: HTTP 200 from port 443`.
+- **Post-deploy, 10:17:01–10:17:03:**
+  - no `Dask client connection failed` in the `tide` log since the restart;
+  - 2 `Client-tideapi-*` entries for 2 Gunicorn workers;
+  - every non-manifest runtime file unchanged;
+  - both manifest files equal to `ef780ea`;
+  - `mhwapi`, `dask-scheduler`, and `dask-worker` still on the same PIDs,
+    with the same restart counts.
+- **Rollback status:** unchanged. The rollback components were validated
+  on 2026-10-27, and the production rollback has not been exercised (see
+  "Rollback"). The deploy's backups allow `restore` on the owner's
+  decision.
+- **Not done:** no tag (release sequence step 6 leaves it to the owner),
+  and no cleanup on VM24.
 
 ### Validation record
 
@@ -857,8 +917,8 @@ warnings (see "Validation record").
 On 2026-10-24, a PM2 restart whose PATH included `uv` started a `uv` sync
 that created an incomplete `.venv` in the release directory; it was moved
 (not deleted) to `/home/odbadmin/tmp/tide-uv-venv-incomplete-20261024`. The
-hot patch made the launcher prefer py311, and the v0.3.2 target removes the
-`uv run` and PATH fallbacks entirely.
+hot patch made the launcher prefer py311, and the v0.3.2 launcher, deployed
+on 2026-11-03, removes the `uv run` and PATH fallbacks entirely.
 
 ## Py311 Zarr alignment
 
@@ -2364,9 +2424,10 @@ Check its log and cron mail.
 
 ## Operational Notes
 
-- Launcher selection: see "Shared Dask TLS". The v0.3.2 target runs only an
-  explicit absolute `GUNICORN_BIN` or the VM24 py311 Gunicorn; the hot patch
-  currently on VM24 still has the `uv run` and PATH fallbacks.
+- Launcher selection: see "Shared Dask TLS". Since the 2026-11-03 v0.3.2
+  deployment, the launcher runs only an explicit absolute `GUNICORN_BIN` or
+  the VM24 py311 Gunicorn; the `uv run` and PATH fallbacks are gone. The
+  PM2 entry for `tide` sets no `GUNICORN_BIN`, so it runs the py311 Gunicorn.
 - The launcher runs Gunicorn with `--reload`, so writing Python sources into
   the release directory reloads the live workers immediately.
 - HTTPS: the public frontend on 443 has a valid certificate; the internal

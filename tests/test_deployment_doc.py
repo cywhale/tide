@@ -2001,9 +2001,9 @@ def test_maintenance_record_says_what_ran_and_what_it_was_not():
                         TEXT.index("### Isolated validation")])
     assert ("This was the shared py311 Zarr alignment only: it was not the v0.3.2 runtime "
             "deployment, not a TPXO10 runtime release, and not a test of the rollback.") in status
-    # The release itself stays where it was.
+    # The Zarr maintenance was not the release; the release is recorded on its own.
     head = _flat(TEXT[:TEXT.index("## Current Production Layout")])
-    assert "Not tagged and not deployed" in head
+    assert "Not tagged; the tag is a separate owner decision." in head
     assert "This was not a release and not a runtime deployment" in head
     assert _flat(TEXT[TEXT.index("### Recovery"):]).startswith(
         "### Recovery Status: none of these branches has run on VM24")
@@ -2111,12 +2111,14 @@ def test_v032_py311_suite_ticks_only_the_test_run():
                  "is a different commit and does not count for this item",
                  "It authorizes no deployment and checks no other item."):
         assert must in suite[0], must
-    # The deployment authorization stays open, and nothing is deployed or tagged.
-    assert [i for i in items if i.startswith("- [ ] Owner authorization for the production "
+    # The suite item checked nothing else; the deployment authorization was
+    # ticked later with the owner's own answer, and nothing is tagged.
+    auth = [i for i in items if i.startswith("- [x] Owner authorization for the production "
                                              "deployment (step 4).")]
-    assert sum(i.startswith("- [ ] ") for i in items) == 1
+    assert len(auth) == 1 and "Answer: on 2026-11-03, after PR #9 was merged" in auth[0]
+    assert sum(i.startswith("- [ ] ") for i in items) == 0
     head = _flat(TEXT[:TEXT.index("## Current Production Layout")])
-    assert "Not tagged and not deployed" in head
+    assert "Not tagged; the tag is a separate owner decision." in head
     record = _flat(TEXT[TEXT.index("### Validation record"):TEXT.index("## Production deployment")])
     assert "**py311 suite, 2026-10-27: not green.**" in record
     assert "**py311 suite rerun, 2026-11-03: green.**" in record
@@ -2148,4 +2150,74 @@ def test_v032_py311_suite_evidence_states_target_command_and_limits():
                       "tide_tpxo10_atlas_v2/conf", "cp "):
         assert forbidden not in body, forbidden
     assert "-----BEGIN" not in text
+    assert not re.search(r"(?i)\b(password|passwd|token|secret)\s*[=:]\s*\S", text)
+
+
+# --- v0.3.2 release step 5: the 2026-11-03 production deployment ---------------
+
+DEPLOY_DIR = DOC.parent / "deployment"
+DEPLOY_DOC = DEPLOY_DIR / "2026-11-03_v032_production.md"
+DEPLOY_SUMS = DEPLOY_DIR / "2026-11-03_v032_production.sha256"
+
+
+def test_v032_deployment_record_meets_every_completion_condition():
+    record = _flat(_section("### v0.3.2 production deployment record"))
+    for must in ("every completion condition under \"Restart and post-deploy checks\" held. "
+                 "No `restore` or recovery was needed.",
+                 "printed `OK deploy`",
+                 "`OK restart: tide pid 611259 -> 716011, restarts 2 -> 3, stable 10s`",
+                 "then, in the same chain, `PASS prod: HTTP 200 from port 443`",
+                 "no `Dask client connection failed` in the `tide` log since the restart",
+                 "2 `Client-tideapi-*` entries for 2 Gunicorn workers",
+                 "every non-manifest runtime file unchanged",
+                 "both manifest files equal to `ef780ea`",
+                 "`WORK=/home/odbadmin/tmp/tide-v0.3.2-deploy-20261103` holds the backups",
+                 "the production rollback has not been exercised",
+                 "**Not done:** no tag"):
+        assert must in record, must
+    # The release is deployed but not tagged, and the layout says what runs now.
+    head = _flat(TEXT[:TEXT.index("## Shared Dask TLS")])
+    assert "runtime manifest deployed to production on 2026-11-03" in head
+    assert "Code: v0.3.2 since 2026-11-03: the release's runtime files match `ef780ea`." in head
+    for stale in ("Not tagged and not deployed", "are not deployed yet", "pending deployment",
+                  "currently on VM24 still has the `uv run`", "What VM24 runs now"):
+        assert stale not in _flat(TEXT), stale
+    rollback = _flat(_section("## Rollback"))
+    assert rollback.startswith("## Rollback Status: **rollback components validated (2026-10-27); "
+                               "production rollback not exercised.**")
+    tagged = re.findall(r"^- Released \(tagged\): (.*)$", TEXT, flags=re.M)
+    assert tagged == ["v0.3.1."], tagged
+    for claim in ("v0.3.2 is tagged", "tagged v0.3.2", "tag `v0.3.2` was created"):
+        assert claim not in _flat(TEXT), claim
+
+
+def test_v032_deployment_evidence_is_consistent_and_scoped():
+    flat = _flat(DEPLOY_DOC.read_text())
+    for must in ("Every completion condition held, and no `restore` or recovery ran.",
+                 "It is not a tag. `v0.3.2` is not tagged",
+                 "It is not a production rollback drill.",
+                 "No password was involved, and no root was used.",
+                 "`Dask client connection failed` lines since the restart: **0**.",
+                 "No runbook check failed.",
+                 "the backups that `restore` needs. Keep it.",
+                 "Nothing was cleaned."):
+        assert must in flat, must
+    sums = {}
+    for line in DEPLOY_SUMS.read_text().splitlines():
+        m = re.fullmatch(r"([0-9a-f]{64})  (/home/odbadmin/(?:tmp/tide-v0\.3\.2-|python/"
+                         r"tide_tpxo10_atlas_v2/)\S+)", line)
+        assert m, line
+        sums[m.group(2)] = m.group(1)
+    assert len(sums) == 8
+    work = "/home/odbadmin/tmp/tide-v0.3.2-deploy-20261103"
+    rel = "/home/odbadmin/python/tide_tpxo10_atlas_v2"
+    # Before and after hashes in the doc agree with the list: backups are the
+    # hot patch, the release now holds ef780ea's files.
+    for f, before, after in (("conf/start_app.sh", "8ee7b44d", "c96af310"),
+                             ("src/dask_client_manager.py", "d74c6690", "a8fc7a05")):
+        assert sums[f"{work}/backup/{f}"].startswith(before), f
+        assert sums[f"{rel}/{f}"].startswith(after), f
+        assert f"`{sums[f'{work}/backup/{f}']}` | `{sums[f'{rel}/{f}']}`" in flat, f
+    text = DEPLOY_DOC.read_text() + DEPLOY_SUMS.read_text()
+    assert "-----BEGIN" not in text and "app.pm2.io" not in text
     assert not re.search(r"(?i)\b(password|passwd|token|secret)\s*[=:]\s*\S", text)
