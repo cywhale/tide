@@ -1360,7 +1360,7 @@ def test_window_is_recorded_and_no_cron_follow_up_is_listed():
     window = [i for i in items if "the window, with its date and time" in i]
     assert len(window) == 1 and window[0].startswith("- [x] Owner and MHW maintainer")
     assert "Answer: 2026-11-03 08:00–09:00 (Asia/Taipei), set by the owner." in window[0]
-    assert "the operator did not confirm this with the maintainer directly" in window[0]
+    assert "The owner is also the MHW maintainer" in window[0]
     assert "no window is set yet" not in window[0]
     for item in items:
         if item.startswith("- [ ]"):
@@ -1528,7 +1528,7 @@ def test_recovery_is_not_described_as_validated():
         assert overclaim not in low, overclaim
 
 
-def test_sign_offs_are_ticked_and_reported_answers_are_not_claimed_as_verified():
+def test_sign_offs_are_ticked_with_their_actual_source():
     items = _checklist()
     for gate in ("Owner and MHW maintainer: the window",
                  "Owner: approve the stop-first order",
@@ -1543,12 +1543,18 @@ def test_sign_offs_are_ticked_and_reported_answers_are_not_claimed_as_verified()
                  "Owner: root in the window for the full quiescence check"):
         assert [i for i in items if i.startswith("- [x] " + gate)], gate
         assert not [i for i in items if i.startswith("- [ ] " + gate)], gate
-    # Answers the owner relayed for someone else stay marked as relayed.
-    for gate in ("MHW maintainer: agree to stopping and starting",
-                 "Reviewer: approve this run sheet"):
-        item = next(i for i in items if i.startswith("- [x] " + gate))
-        assert "reported by the owner" in item, gate
-        assert "did not verify it independently" in item, gate
+    # Each sign-off names where it came from: the owner is the MHW maintainer,
+    # and Codex's review is a conclusion in conversation, not a GitHub review.
+    mhw = next(i for i in items if i.startswith("- [x] MHW maintainer: agree to stopping"))
+    assert "the MHW maintainer is the owner" in mhw
+    assert "the owner's own confirmation before the window" in mhw
+    reviewer = next(i for i in items if i.startswith("- [x] Reviewer: approve this run sheet"))
+    for must in ("Codex reviewed PR #7", "found no blocking issue and recommended the merge",
+                 "it is not a formal GitHub review, and PR #7 has no review on GitHub"):
+        assert must in reviewer, must
+    for item in (mhw, reviewer):
+        assert "reported by the owner" not in item
+    assert "GitHub formal approval" not in TEXT and "approved on GitHub" not in TEXT
     flat = _flat(ZARR_PART)
     assert "That was the owner's stated intent. It was not yet the approval of this exact " \
            "order" in flat
@@ -2034,7 +2040,9 @@ def test_maintenance_evidence_doc_keeps_its_limits():
                  "Result: `574 passed, 2 warnings`, which is 0 skipped and exit 0.",
                  "The two warnings are the known ones",
                  "the check covers only the active `err.log` at the scan",
-                 "**not independently verified**",
+                 "Not independently verified: - the API downtime, which is an estimate;",
+                 "the MHW maintainer is the owner",
+                 "not a formal GitHub review: PR #7 has no review on GitHub",
                  "Do not delete it: a rollback depends on",
                  "This PR cleans nothing"):
         assert must in flat, must

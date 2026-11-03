@@ -1576,9 +1576,9 @@ Sign-off gates, each open until the person named answers:
 - [x] Owner and MHW maintainer: the window, with its date and time. It
       must not overlap the MHW cron at 04:50 on the 18th. Both APIs are
       down for the whole sequence. Answer: 2026-11-03 08:00–09:00
-      (Asia/Taipei), set by the owner. The owner reported that the MHW
-      maintainer agreed; the operator did not confirm this with the
-      maintainer directly.
+      (Asia/Taipei), set by the owner. The owner is also the MHW
+      maintainer, so this one confirmation, given before the window,
+      covers both.
 - [x] Owner: approve the stop-first order, including stopping and starting
       the Dask scheduler and worker in the window, or choose another.
       Answer: the owner approved the run sheet's stop-first order, with
@@ -1586,9 +1586,11 @@ Sign-off gates, each open until the person named answers:
       scheduler, and their smoke expectations.
 - [x] MHW maintainer: agree to stopping and starting `mhwapi`,
       `dask-worker`, and `dask-scheduler` through PM2 (never run against
-      the real apps), and to the smoke expectations. Answer: reported by
-      the owner as agreed. Who agreed and when was not recorded, and the
-      operator did not verify it independently.
+      the real apps), and to the smoke expectations. Answer: the MHW
+      maintainer is the owner. The sign-off is the owner's own
+      confirmation before the window, which accepted the run sheet's
+      stops, starts, and smoke expectations for MHW, Tide, the Dask
+      worker, and the Dask scheduler.
 - [x] Owner or the maintainer of the host Dask runbook: confirm that no
       service other than Tide and MHW needs the Dask scheduler in the
       window. Only those two were connected on 2026-10-28. Answer: the
@@ -1609,9 +1611,12 @@ Sign-off gates, each open until the person named answers:
       operator named by the owner, in one SSH shell on VM24. The owner
       typed the sudo password at its only prompt; sudo did not prompt
       again in steps 6 and 7.
-- [x] Reviewer: approve this run sheet and its scripts. Answer: reported by
-      the owner as approved by Codex. The operator did not verify it
-      independently.
+- [x] Reviewer: approve this run sheet and its scripts. Answer: Codex
+      reviewed PR #7, which holds this run sheet and its scripts at
+      `6436192`. In its conversation with the owner, Codex found no
+      blocking issue and recommended the merge. That is the review
+      conclusion from that conversation; it is not a formal GitHub
+      review, and PR #7 has no review on GitHub.
 - [x] Operator: a checkout `SRC` of the approved commit on VM24, with no
       tracked changes; step 1 repeats this check in the window. The sha256
       of the seven scripts pinned in step 1 must match that commit.
