@@ -629,12 +629,13 @@ def test_mhw_proc_check_fails_on_the_wrong_process(mhw, ps, ss, why):
     assert not (tmp / "out").exists()     # no GET after a failed process check
 
 
-def test_service_order_stays_a_proposal_until_approved():
+def test_service_order_was_approved_and_ran_once():
     section = TEXT[TEXT.index("### Dask and Zarr evidence"):
                    TEXT.index("### MHW post-start smoke")]
     flat = " ".join(section.split())
-    assert "### Service handling: stop first (proposed, not approved)" in section
-    assert "it has never run in production" in flat
+    assert "### Service handling: stop first (approved; ran once on 2026-11-03)" in section
+    assert "That one run is all the production evidence there is." in flat
+    assert "before 2026-11-03 it had never run in production" in flat
     assert "Decision: stop the Dask scheduler too." in flat
     assert "Stopping the APIs does not remove the import risk." in flat
     assert "It shows one moment, not what will arrive during a later window." in flat
@@ -649,10 +650,10 @@ def test_service_order_stays_a_proposal_until_approved():
     sheet = " ".join(TEXT[TEXT.index("### Production run sheet"):
                           TEXT.index("## Operational Notes")].split())
     assert "Do not run `apply` while any item is open." in sheet
-    for item in ("- [ ] Owner: approve the stop-first order",
-                 "- [ ] MHW maintainer: agree to stopping and starting",
-                 "- [ ] Owner and MHW maintainer: the window",
-                 "- [ ] Owner: reachable during the whole window"):
+    for item in ("- [x] Owner: approve the stop-first order",
+                 "- [x] MHW maintainer: agree to stopping and starting",
+                 "- [x] Owner and MHW maintainer: the window",
+                 "- [x] Owner: reachable during the whole window"):
         assert item in sheet, item
     assert "Services start only against a known package state" in sheet
     assert "With `STATE unknown`, nothing starts." in sheet
@@ -1340,34 +1341,44 @@ def test_preflight_d_is_recorded_as_access_only_not_as_apply_readiness():
     assert len(done) == 1
     assert "does not show that no process used py311" in done[0]
     assert "does not make `apply` runnable" in done[0]
-    # The in-window steps stay open: the full check and preflights A to D.
-    for open_item in ("- [ ] Owner: root in the window for the full quiescence check of step 6",
-                      "- [ ] In the window: preflights A to D pass immediately before the stop."):
-        assert [i for i in items if i.startswith(open_item)], open_item
+    # The in-window checks were ticked only with their own 2026-11-03 results;
+    # the earlier access-only record above never stood in for them.
+    full = [i for i in items if i.startswith(
+        "- [x] Owner: root in the window for the full quiescence check of step 6")]
+    assert len(full) == 1
+    assert "PASS on 2026-11-03 at 08:03:43: `OK quiescent: none of 482 live processes" in full[0]
+    pre = [i for i in items if i.startswith(
+        "- [x] In the window: preflights A to D pass immediately before the stop.")]
+    assert len(pre) == 1
+    for result in ("PASS on 2026-11-03", "A at 08:00:28", "B at 08:00:38",
+                   "C (`STATE before`) at 08:00:43", "D at 08:01:16"):
+        assert result in pre[0], result
 
 
-def test_window_stays_open_and_no_cron_follow_up_is_listed():
+def test_window_is_recorded_and_no_cron_follow_up_is_listed():
     items = _checklist()
     window = [i for i in items if "the window, with its date and time" in i]
-    assert len(window) == 1 and window[0].startswith("- [ ] Owner and MHW maintainer")
-    assert "no window is set yet" in window[0]
-    assert not re.search(r"\b20\d\d-\d\d-\d\d\b", window[0])     # no date assumed
+    assert len(window) == 1 and window[0].startswith("- [x] Owner and MHW maintainer")
+    assert "Answer: 2026-11-03 08:00–09:00 (Asia/Taipei), set by the owner." in window[0]
+    assert "the operator did not confirm this with the maintainer directly" in window[0]
+    assert "no window is set yet" not in window[0]
     for item in items:
         if item.startswith("- [ ]"):
             low = item.lower()
             assert not ("cron" in low and re.search(r"pause|investigate|confirm", low)), item
 
 
-def test_checklist_still_blocks_apply_until_the_approvals():
+def test_checklist_records_an_answer_for_every_gate():
     items = _checklist()
-    for still_open in ("- [ ] Owner and MHW maintainer: the window",
-                       "- [ ] Owner: approve the stop-first order",
-                       "- [ ] MHW maintainer: agree to stopping and starting",
-                       "- [ ] Owner or the maintainer of the host Dask runbook: confirm",
-                       "- [ ] Owner: reachable during the whole window",
-                       "- [ ] Reviewer: approve this run sheet and its scripts."):
-        assert [i for i in items if i.startswith(still_open)], still_open
+    gates = items[items.index(next(i for i in items if i.startswith(
+        "- [x] Owner and MHW maintainer: the window"))):]
+    assert len(gates) == 11
+    for gate in gates:
+        assert gate.startswith("- [x] "), gate
+        assert "Answer:" in gate or "PASS on 2026-11-03" in gate, gate
     assert "Do not run `apply` while any item is open." in " ".join(TEXT.split())
+    assert ("The sign-off answers below were given on 2026-11-03 before 08:00, when the "
+            "window started.") in " ".join(TEXT.split())
 
 
 # --- Final readiness: the run sheet as one sequence ----------------------------
@@ -1517,7 +1528,7 @@ def test_recovery_is_not_described_as_validated():
         assert overclaim not in low, overclaim
 
 
-def test_open_sign_offs_stay_open_and_the_owner_intent_is_only_an_intent():
+def test_sign_offs_are_ticked_and_reported_answers_are_not_claimed_as_verified():
     items = _checklist()
     for gate in ("Owner and MHW maintainer: the window",
                  "Owner: approve the stop-first order",
@@ -1530,19 +1541,24 @@ def test_open_sign_offs_stay_open_and_the_owner_intent_is_only_an_intent():
                  "Operator: a checkout `SRC` of the approved commit",
                  "In the window: preflights A to D",
                  "Owner: root in the window for the full quiescence check"):
-        assert [i for i in items if i.startswith("- [ ] " + gate)], gate
-        assert not [i for i in items if i.startswith("- [x] " + gate)], gate
+        assert [i for i in items if i.startswith("- [x] " + gate)], gate
+        assert not [i for i in items if i.startswith("- [ ] " + gate)], gate
+    # Answers the owner relayed for someone else stay marked as relayed.
+    for gate in ("MHW maintainer: agree to stopping and starting",
+                 "Reviewer: approve this run sheet"):
+        item = next(i for i in items if i.startswith("- [x] " + gate))
+        assert "reported by the owner" in item, gate
+        assert "did not verify it independently" in item, gate
     flat = _flat(ZARR_PART)
-    assert "That is the owner's stated intent. It is not yet the approval of this exact order" in flat
-    assert "it is not the MHW maintainer's agreement or a confirmation from other Dask users" in flat
-    # No date assumed for the window or for what follows it. The exceptions
-    # record things that already happened.
-    undated = flat.replace("2027-11-25", "")
-    for record in ("set this limit on 2026-11-02", "(Debian 12, 2026-11-02)",
-                   "scope on 2026-11-02", "scope, 2026-11-02"):
-        assert undated.count(record) == 1, record
-        undated = undated.replace(record, "")
-    assert not re.search(r"2026-1[12]-\d\d|2027-", undated)
+    assert "That was the owner's stated intent. It was not yet the approval of this exact " \
+           "order" in flat
+    assert "it was not the MHW maintainer's agreement or a confirmation from other Dask " \
+           "users" in flat
+    # Every date from the Zarr part to the end is a record of something that
+    # happened, not a future one; 2027-11-25 is the Dask certificate expiry.
+    after = _flat(TEXT[TEXT.index("## Py311 Zarr alignment"):])
+    dates = set(re.findall(r"2026-1[12]-\d\d|2027-\d\d-\d\d", after)) - {"2027-11-25"}
+    assert dates <= {"2026-11-02", "2026-11-03"}, dates
     assert "the next `update_mhw.sh` run on the 18th" in flat
 
 
@@ -1901,8 +1917,9 @@ def test_the_run_sheet_adapts_to_how_err_log_behaves():
     assert "Do not clear, rename, or reconfigure the log to make the check pass." in flat
     assert "Also say whether a restart appends" not in flat
     assert "step 9 does not depend on that" in flat
-    # The rest of the MHW maintainer's gate stays open.
-    assert "- [ ] MHW maintainer: agree to stopping and starting" in TEXT
+    # The MHW maintainer's gate was answered, through the owner, only for the
+    # stops, starts, and smoke expectations; no append sign-off came back.
+    assert "- [x] MHW maintainer: agree to stopping and starting" in TEXT
 
 
 OWNER_SCOPE = ("只確認掃描時的 active MHW err.log；輪替到其他檔案、因而不在 active log 的舊內容"
@@ -1939,13 +1956,102 @@ def test_nothing_claims_the_rotated_content_was_checked_or_leaves_the_note_open(
         assert wrong not in flat, wrong
 
 
-def test_step_9_scope_decision_ticks_nothing_else():
+def test_checklist_after_the_2026_11_03_window():
     items = _checklist()
     ticked = [i.split(":")[0].split(",")[0] for i in items if i.startswith("- [x] ")]
-    assert len(ticked) == 10, ticked
-    assert sum(i.startswith("- [ ] ") for i in items) == 11
+    assert len(ticked) == 21, ticked
+    assert sum(i.startswith("- [ ] ") for i in items) == 0
     assert "Owner decision on step 9's scope" in " ".join(ticked)
     flat = _flat(SHEET)
     assert "neither the window nor any gate below" in flat
-    assert "no window is set yet" in flat
+    assert "no window is set yet" not in flat
     assert "append" not in " ".join(i for i in items if "MHW maintainer" in i)
+
+
+# --- The 2026-11-03 maintenance record and its evidence ------------------------
+
+MAINT_DIR = DOC.parent / "maintenance"
+MAINT_DOC = MAINT_DIR / "2026-11-03_vm24_py311_zarr.md"
+MAINT_SUMS = MAINT_DIR / "2026-11-03_vm24_py311_zarr.sha256"
+D_DIR = "/home/odbadmin/tmp/zarr-align-20261028T103416"
+
+
+def test_maintenance_record_says_what_ran_and_what_it_was_not():
+    record = _flat(_section("### Maintenance record (2026-11-03)"))
+    for must in ("Every step passed, and no Recovery branch ran.",
+                 "the shared py311 Zarr alignment from 2.18.6 to 2.18.7",
+                 "the v0.3.2 runtime deployment, a TPXO10 runtime release, or a test of the "
+                 "rollback",
+                 "`OK apply: zarr 2.18.6 -> 2.18.7, no other package changed, pip check "
+                 "unchanged`",
+                 "`OK services started`",
+                 "`OK no Dask fallback in the active err.log`, without a `NOTE`",
+                 "no content rotated out of it was checked",
+                 "574 passed, 0 skipped, 2 warnings",
+                 "estimated rather than measured",
+                 "`dev_tpxo10/maintenance/2026-11-03_vm24_py311_zarr.md`"):
+        assert must in record, must
+    status = _flat(TEXT[TEXT.index("## Py311 Zarr alignment"):
+                        TEXT.index("### Isolated validation")])
+    assert ("This was the shared py311 Zarr alignment only: it was not the v0.3.2 runtime "
+            "deployment, not a TPXO10 runtime release, and not a test of the rollback.") in status
+    # The release itself stays where it was.
+    head = _flat(TEXT[:TEXT.index("## Current Production Layout")])
+    assert "Not tagged and not deployed" in head
+    assert "This was not a release and not a runtime deployment" in head
+    assert _flat(TEXT[TEXT.index("### Recovery"):]).startswith(
+        "### Recovery Status: none of these branches has run on VM24")
+
+
+def test_maintenance_evidence_hash_list_is_well_formed_and_consistent():
+    lines = MAINT_SUMS.read_text().splitlines()
+    assert len(lines) == 42
+    sums = {}
+    for line in lines:
+        m = re.fullmatch(r"([0-9a-f]{64})  (/home/odbadmin/tmp/(?:zarr-align-20261028T103416"
+                         r"(?:-smoke|-mhw-before|-mhw-after)?|zarr-run-20261103)/\S+)", line)
+        assert m, line
+        sums[m.group(2)] = m.group(1)
+    # The saved wheels are the ones preflight A pins.
+    pins = dict((p, h) for h, p in re.findall(r"^([0-9a-f]{64})  (wheels/\S+)$", TEXT, re.M))
+    for wheel, pinned in pins.items():
+        assert sums[f"{D_DIR}/{wheel}"] == pinned, wheel
+    assert sums[f"{D_DIR}/freeze-pre-apply.txt"] == sums[f"{D_DIR}/freeze-before.txt"]
+    assert sums[f"{D_DIR}/freeze-after.txt"] != sums[f"{D_DIR}/freeze-before.txt"]
+    assert sums[f"{D_DIR}/pip-check-after.txt"] == sums[f"{D_DIR}/pip-check-before.txt"]
+    for name in ("openapi.json", "swagger.html", "point.json", "missing.json"):
+        assert sums[f"{D_DIR}-mhw-after/{name}"] == sums[f"{D_DIR}-mhw-before/{name}"], name
+    assert f"{D_DIR}/applied" in sums and f"{D_DIR}/prepared" in sums
+
+
+def test_maintenance_evidence_doc_keeps_its_limits():
+    flat = _flat(MAINT_DOC.read_text())
+    for must in ("It is not the v0.3.2 runtime deployment.",
+                 "It is not a TPXO10 runtime release.",
+                 "It is not a validation of the production rollback.",
+                 "Every step passed, and no \"Recovery\" branch ran.",
+                 "## API downtime (estimated, not measured)",
+                 "Result: `574 passed, 2 warnings`, which is 0 skipped and exit 0.",
+                 "The two warnings are the known ones",
+                 "the check covers only the active `err.log` at the scan",
+                 "**not independently verified**",
+                 "Do not delete it: a rollback depends on",
+                 "This PR cleans nothing"):
+        assert must in flat, must
+    # The appendix is the suite script whose hash it states.
+    import hashlib
+    text = MAINT_DOC.read_text()
+    appendix = text[text.index("## Appendix: `09b_py311_suite.sh`"):]
+    stated = re.search(r"sha256 `([0-9a-f]{64})`", appendix).group(1)
+    body = re.search(r"```text\n(.*?)```", appendix, flags=re.S).group(1)
+    assert hashlib.sha256(body.encode()).hexdigest() == stated
+    assert f"{stated}  /home/odbadmin/tmp/zarr-run-20261103/09b_py311_suite.sh" \
+        in MAINT_SUMS.read_text()
+
+
+def test_maintenance_record_and_evidence_hold_no_secrets():
+    for path in (DOC, MAINT_DOC, MAINT_SUMS):
+        text = path.read_text()
+        assert "-----BEGIN" not in text, path
+        assert "app.pm2.io" not in text, path
+        assert not re.search(r"(?i)\b(password|passwd|token|secret)\s*[=:]\s*\S", text), path
