@@ -146,16 +146,22 @@ workers.
 Each item stays open until it has been done once with its result recorded.
 Results so far are in "Validation record" below.
 
-- [ ] py311 test suite in a separate VM24 checkout (step 2). **Run; not
-      green**: one failure (Zarr pin) plus known warnings. The owner
-      authorized aligning Zarr only. Its `prepare` ran on VM24 on
-      2026-10-28 and its `apply` on 2026-11-03 (see "Py311 Zarr
-      alignment"). Afterwards, step 9 of that run sheet ran the suite of
-      `6436192` (the PR #7 merge) with py311 in a separate checkout:
-      574 passed, 0 skipped, and the 2 known warnings. That run belongs to
-      the Zarr maintenance at `6436192`; it is not a run of this step for
-      the v0.3.2 merge commit. Whether it closes this item is for the
-      reviewer and the owner to decide.
+- [x] py311 test suite in a separate VM24 checkout (step 2), for the v0.3.2
+      merge commit `ef780ea`. **Green on 2026-11-03:** 164 passed,
+      0 failed, 0 skipped, and the 2 known warnings, exit 0. The run used
+      `/home/odbadmin/tmp/tide-v032-ef780ea-py311-20261103` at
+      `ef780eaca174cb54b790d488c7854d828b56e48e`, with store symlinks, py311
+      with Zarr 2.18.7, and `TIDE_DASK_DISABLE=1`. Evidence:
+      `dev_tpxo10/validation/2026-11-03_v032_py311_suite.md`.
+      - The first run, on 2026-10-27, was not green: one failure (the Zarr
+        pin) and the known warnings.
+      - The owner then authorized aligning Zarr only, which was applied on
+        2026-11-03 (see "Py311 Zarr alignment").
+      - The suite of `6436192`, run in step 9 of that maintenance, is a
+        different commit and does not count for this item.
+
+      This item covers only the test run. It authorizes no deployment and
+      checks no other item.
 - [x] Canary certificate: SAN, expiry, and key match recorded. The curl
       version is implied by `https_smoke.sh` passing, since it refuses curl
       older than 7.76; the exact version was not recorded.
@@ -195,7 +201,7 @@ Isolated validation of merge commit `ef780ea` on VM24 by Codex, reported
 2026-10-27. Nothing was installed or upgraded, and production was not
 changed.
 
-- **py311 suite: not green.** One failure:
+- **py311 suite, 2026-10-27: not green.** One failure:
   `tests/test_app_smoke.py::test_pinned_runtime_versions` expects Zarr
   2.18.7 (the `uv.lock` pin), but production py311 has 2.18.6. Existing
   NumPy ABI (`numpy.ndarray size changed`) and Polars CPU-feature warnings
@@ -203,6 +209,17 @@ changed.
   owner has since authorized aligning Zarr only, through a separate
   approved maintenance step; see "Py311 Zarr alignment" (applied on
   2026-11-03).
+- **py311 suite rerun, 2026-11-03: green.** Claude ran this step again on
+  VM24 after the Zarr alignment, for the same commit `ef780ea`.
+  - Setup: a new checkout,
+    `/home/odbadmin/tmp/tide-v032-ef780ea-py311-20261103`; store symlinks;
+    the command
+    `TIDE_DASK_DISABLE=1 /home/odbadmin/.pyenv/versions/py311/bin/python -m pytest -rs`.
+  - Result: 164 passed, 0 skipped, and the same 2 warnings, exit 0.
+    `test_pinned_runtime_versions` passed.
+  - Nothing was installed, the stores were not written, and production was
+    not touched.
+  - Evidence: `dev_tpxo10/validation/2026-11-03_v032_py311_suite.md`.
 - **Canary certificate:** the Let's Encrypt certificate used for the canary
   (through a symlink in the canary checkout) is valid. Its SAN is
   `eco.odb.ntu.edu.tw`, it is valid until 2026-12-10, its private key
@@ -833,7 +850,9 @@ or installing packages into the shared py311 outside the approved
 maintenance. The owner authorized aligning only Zarr to 2.18.7. Its
 `prepare` ran on VM24 on 2026-10-28 and its `apply` on 2026-11-03, so py311
 now has Zarr 2.18.7 and the pin test passes with py311 (see "Py311 Zarr
-alignment" below). The other differences from `uv.lock` remain.
+alignment" below). The other differences from `uv.lock` remain. The rerun of
+step 2 for `ef780ea` on 2026-11-03 was green: 164 passed, with the same two
+warnings (see "Validation record").
 
 On 2026-10-24, a PM2 restart whose PATH included `uv` started a `uv` sync
 that created an incomplete `.venv` in the release directory; it was moved
