@@ -2057,6 +2057,28 @@ def test_maintenance_evidence_doc_keeps_its_limits():
         in MAINT_SUMS.read_text()
 
 
+def test_approved_maintenance_acts_on_production_but_rehearsals_use_dummy_apps():
+    items = _checklist()
+    mhw = next(i for i in items if i.startswith("- [x] MHW maintainer: agree to stopping"))
+    assert ("Maintenance: in the window the owner approved, PM2 stops and starts the real "
+            "production apps `mhwapi`, `dask-worker`, and `dask-scheduler`, and the approved "
+            "smoke checks verify them.") in mhw
+    assert ("Rehearsals and tests: dummy apps under an isolated `PM2_HOME` only; they never "
+            "act on the production apps.") in mhw
+    flat = _flat(TEXT)
+    # The old wording put the rehearsal rule inside the maintenance sign-off.
+    for vague in ("never run against the real apps", "It has never run against the real `mhwapi`"):
+        assert vague not in flat, vague
+    smoke = _flat(_section("### MHW post-start smoke"))
+    assert "The rehearsal ran it only against a dummy app under a bash launcher" in smoke
+    assert "in that approved window, step 8 started the real `mhwapi` this way" in smoke
+    # The rehearsal rules themselves stay as strict as before.
+    pm2 = _flat(_section("## PM2 environment validation"))
+    assert ("Validate this with an isolated PM2 daemon and a dummy app, never with the "
+            "production daemon or the `tide` entry") in pm2
+    assert "Never start it through PM2 or the `tide` entry, which is the production app." in flat
+
+
 def test_maintenance_record_and_evidence_hold_no_secrets():
     for path in (DOC, MAINT_DOC, MAINT_SUMS):
         text = path.read_text()

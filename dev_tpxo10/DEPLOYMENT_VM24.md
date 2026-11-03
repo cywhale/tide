@@ -1446,8 +1446,10 @@ stopped or restarted.
 MHW is started by `app start mhwapi` (step 8 of the run sheet), which runs
 `pm2_app_lifecycle.sh start` with `--expect-exec
 /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh`: the launcher is
-PM2's PID for `mhwapi`. It has never run against the real `mhwapi`; the
-rehearsal used a dummy app under a bash launcher.
+PM2's PID for `mhwapi`. The rehearsal ran it only against a dummy app
+under a bash launcher, as rehearsals must. Before the 2026-11-03 window it
+had never run against the real `mhwapi`; in that approved window, step 8
+started the real `mhwapi` this way (see "Maintenance record (2026-11-03)").
 
 Then `mhw_check` (defined in the run sheet) runs these read-only checks:
 
@@ -1585,12 +1587,17 @@ Sign-off gates, each open until the person named answers:
       stopping and restarting MHW, Tide, the Dask worker, and the Dask
       scheduler, and their smoke expectations.
 - [x] MHW maintainer: agree to stopping and starting `mhwapi`,
-      `dask-worker`, and `dask-scheduler` through PM2 (never run against
-      the real apps), and to the smoke expectations. Answer: the MHW
-      maintainer is the owner. The sign-off is the owner's own
-      confirmation before the window, which accepted the run sheet's
-      stops, starts, and smoke expectations for MHW, Tide, the Dask
-      worker, and the Dask scheduler.
+      `dask-worker`, and `dask-scheduler` through PM2, and to the smoke
+      expectations. Scope:
+      - Maintenance: in the window the owner approved, PM2 stops and
+        starts the real production apps `mhwapi`, `dask-worker`, and
+        `dask-scheduler`, and the approved smoke checks verify them.
+      - Rehearsals and tests: dummy apps under an isolated `PM2_HOME`
+        only; they never act on the production apps.
+      - Answer: the MHW maintainer is the owner. The sign-off is the
+        owner's own confirmation before the window, which accepted the
+        run sheet's stops, starts, and smoke expectations for MHW, Tide,
+        the Dask worker, and the Dask scheduler.
 - [x] Owner or the maintainer of the host Dask runbook: confirm that no
       service other than Tide and MHW needs the Dask scheduler in the
       window. Only those two were connected on 2026-10-28. Answer: the
