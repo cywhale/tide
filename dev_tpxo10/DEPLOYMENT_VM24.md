@@ -7,6 +7,9 @@ plus a hot patch of two Tide files). API version: v1.1.0.
 - Released (tagged): v0.3.1.
 - Target/pending release: v0.3.2 (PR #2, merge commit `ef780ea`). Not tagged
   and not deployed; see "v0.3.2 release sequence" and "Validation record".
+- Shared py311 maintenance, 2026-11-03: Zarr aligned from 2.18.6 to 2.18.7,
+  and no other package changed. This was not a release and not a runtime
+  deployment; see "Py311 Zarr alignment".
 
 ## Current Production Layout
 
@@ -146,8 +149,13 @@ Results so far are in "Validation record" below.
 - [ ] py311 test suite in a separate VM24 checkout (step 2). **Run; not
       green**: one failure (Zarr pin) plus known warnings. The owner
       authorized aligning Zarr only. Its `prepare` ran on VM24 on
-      2026-10-28; `apply` waits for the open items of the run sheet (see
-      "Py311 Zarr alignment").
+      2026-10-28 and its `apply` on 2026-11-03 (see "Py311 Zarr
+      alignment"). Afterwards, step 9 of that run sheet ran the suite of
+      `6436192` (the PR #7 merge) with py311 in a separate checkout:
+      574 passed, 0 skipped, and the 2 known warnings. That run belongs to
+      the Zarr maintenance at `6436192`; it is not a run of this step for
+      the v0.3.2 merge commit. Whether it closes this item is for the
+      reviewer and the owner to decide.
 - [x] Canary certificate: SAN, expiry, and key match recorded. The curl
       version is implied by `https_smoke.sh` passing, since it refuses curl
       older than 7.76; the exact version was not recorded.
@@ -193,7 +201,8 @@ changed.
   NumPy ABI (`numpy.ndarray size changed`) and Polars CPU-feature warnings
   also appear. The pin and py311 were deliberately left unchanged. The
   owner has since authorized aligning Zarr only, through a separate
-  approved maintenance step; see "Py311 Zarr alignment" (not executed).
+  approved maintenance step; see "Py311 Zarr alignment" (applied on
+  2026-11-03).
 - **Canary certificate:** the Let's Encrypt certificate used for the canary
   (through a symlink in the canary checkout) is valid. Its SAN is
   `eco.odb.ntu.edu.tw`, it is valid until 2026-12-10, its private key
@@ -821,9 +830,10 @@ The 2026-10-27 py311 run (step 2) was **not green**: the Zarr version pin
 test failed (py311 has 2.18.6, `uv.lock` pins 2.18.7), with the known NumPy
 ABI and Polars CPU-feature warnings. Do not hide this by changing the pin
 or installing packages into the shared py311 outside the approved
-maintenance. The owner has authorized aligning only Zarr to 2.18.7. Its
-`prepare` has run on VM24, and its `apply` has not; the run sheet and what
-must still be settled first are in "Py311 Zarr alignment" below.
+maintenance. The owner authorized aligning only Zarr to 2.18.7. Its
+`prepare` ran on VM24 on 2026-10-28 and its `apply` on 2026-11-03, so py311
+now has Zarr 2.18.7 and the pin test passes with py311 (see "Py311 Zarr
+alignment" below). The other differences from `uv.lock` remain.
 
 On 2026-10-24, a PM2 restart whose PATH included `uv` started a `uv` sync
 that created an incomplete `.venv` in the release directory; it was moved
@@ -833,7 +843,19 @@ hot patch made the launcher prefer py311, and the v0.3.2 target removes the
 
 ## Py311 Zarr alignment
 
-Status: **`prepare` done on 2026-10-28; `apply` not run.** On 2026-10-28
+Status: **done on 2026-11-03.** `prepare` ran on 2026-10-28, and the
+run sheet below ran in the window 2026-11-03 08:00–09:00 (Asia/Taipei).
+Every step passed, and no "Recovery" branch ran. py311 now has Zarr 2.18.7
+and no other package changed. This was the shared py311 Zarr alignment only:
+it was not the v0.3.2 runtime deployment, not a TPXO10 runtime release, and
+not a test of the rollback. The outcome is in "Maintenance record
+(2026-11-03)" below, and the evidence with its hashes is in
+`dev_tpxo10/maintenance/2026-11-03_vm24_py311_zarr.md`. The sections between
+here and the run sheet record what was known before the window; where they
+call something proposed, unknown, or not yet run on VM24, they describe that
+earlier state.
+
+On 2026-10-28
 the owner authorized the production maintenance for one package change:
 the shared py311 Zarr from 2.18.6 to the `uv.lock` pin 2.18.7. No other
 package may change. This authorization does not cover deploying the v0.3.2
@@ -1045,20 +1067,26 @@ What this means for the service order:
 - Hence the stop-first proposal below stops the Dask worker and scheduler
   as well.
 
-### Service handling: stop first (proposed, not approved)
+### Service handling: stop first (approved; ran once on 2026-11-03)
 
-Proposed order, not validated on VM24: stop every py311 service, check that
-no process uses py311, run `apply`, check the package, then start Dask, Tide,
-and MHW and run their checks. Both APIs are down from the first stop to the
-last start. The rehearsal below ran this sequence against real PM2 and Dask
-with dummy apps; it has never run in production.
+Status, 2026-11-03: the owner approved this order before the window, and it
+ran once in production with every check passing (see "Maintenance record
+(2026-11-03)"). That one run is all the production evidence there is. The
+rest of this section is the proposal as written before the window.
 
-The owner has said that, if quiescing is needed, Tide, MHW, the Dask worker,
+Proposed order, not validated on VM24 at the time: stop every py311 service,
+check that no process uses py311, run `apply`, check the package, then start
+Dask, Tide, and MHW and run their checks. Both APIs are down from the first
+stop to the last start. The rehearsal below ran this sequence against real
+PM2 and Dask with dummy apps; before 2026-11-03 it had never run in
+production.
+
+The owner had said that, if quiescing is needed, Tide, MHW, the Dask worker,
 and the scheduler this runbook needs would be stopped for the maintenance and
-restarted afterwards. That is the owner's stated intent. It is not yet the
-approval of this exact order, and it is not the MHW maintainer's agreement or
-a confirmation from other Dask users: those stay open in the run sheet's
-checklist.
+restarted afterwards. That was the owner's stated intent. It was not yet the
+approval of this exact order, and it was not the MHW maintainer's agreement
+or a confirmation from other Dask users: those stayed open in the run sheet's
+checklist until the answers recorded there.
 
 | PM2 app | Stopped | Why |
 |---|---|---|
@@ -1418,8 +1446,10 @@ stopped or restarted.
 MHW is started by `app start mhwapi` (step 8 of the run sheet), which runs
 `pm2_app_lifecycle.sh start` with `--expect-exec
 /home/odbadmin/proj/marineheatwave/API/conf/start_app.sh`: the launcher is
-PM2's PID for `mhwapi`. It has never run against the real `mhwapi`; the
-rehearsal used a dummy app under a bash launcher.
+PM2's PID for `mhwapi`. The rehearsal ran it only against a dummy app
+under a bash launcher, as rehearsals must. Before the 2026-11-03 window it
+had never run against the real `mhwapi`; in that approved window, step 8
+started the real `mhwapi` this way (see "Maintenance record (2026-11-03)").
 
 Then `mhw_check` (defined in the run sheet) runs these read-only checks:
 
@@ -1505,8 +1535,12 @@ here, before the window starts; every in-window gate is checked as it
 passes. Do not run `apply` while any item is open.
 
 The owner's Zarr-only authorization does not settle any of them. In
-particular, it does not approve the stop-first order, which is still a
-proposal.
+particular, it did not approve the stop-first order, which stayed a proposal
+until the owner approved it for the 2026-11-03 window.
+
+The sign-off answers below were given on 2026-11-03 before 08:00, when the
+window started. They were written into this file afterwards, with the
+maintenance record.
 
 Done, with the evidence recorded:
 
@@ -1541,50 +1575,88 @@ Done, with the evidence recorded:
 
 Sign-off gates, each open until the person named answers:
 
-- [ ] Owner and MHW maintainer: the window, with its date and time. It
+- [x] Owner and MHW maintainer: the window, with its date and time. It
       must not overlap the MHW cron at 04:50 on the 18th. Both APIs are
-      down for the whole sequence. The owner will choose a window that does
-      not conflict with the existing schedules; no window is set yet.
-- [ ] Owner: approve the stop-first order, including stopping and starting
-      the Dask scheduler and worker in the window, or choose another. The
-      owner's stated intent is recorded under "Service handling"; it does
-      not check this item.
-- [ ] MHW maintainer: agree to stopping and starting `mhwapi`,
-      `dask-worker`, and `dask-scheduler` through PM2 (never run against
-      the real apps), and to the smoke expectations.
-- [ ] Owner or the maintainer of the host Dask runbook: confirm that no
+      down for the whole sequence. Answer: 2026-11-03 08:00–09:00
+      (Asia/Taipei), set by the owner. The owner is also the MHW
+      maintainer, so this one confirmation, given before the window,
+      covers both.
+- [x] Owner: approve the stop-first order, including stopping and starting
+      the Dask scheduler and worker in the window, or choose another.
+      Answer: the owner approved the run sheet's stop-first order, with
+      stopping and restarting MHW, Tide, the Dask worker, and the Dask
+      scheduler, and their smoke expectations.
+- [x] MHW maintainer: agree to stopping and starting `mhwapi`,
+      `dask-worker`, and `dask-scheduler` through PM2, and to the smoke
+      expectations. Scope:
+      - Maintenance: in the window the owner approved, PM2 stops and
+        starts the real production apps `mhwapi`, `dask-worker`, and
+        `dask-scheduler`, and the approved smoke checks verify them.
+      - Rehearsals and tests: dummy apps under an isolated `PM2_HOME`
+        only; they never act on the production apps.
+      - Answer: the MHW maintainer is the owner. The sign-off is the
+        owner's own confirmation before the window, which accepted the
+        run sheet's stops, starts, and smoke expectations for MHW, Tide,
+        the Dask worker, and the Dask scheduler.
+- [x] Owner or the maintainer of the host Dask runbook: confirm that no
       service other than Tide and MHW needs the Dask scheduler in the
-      window. Only those two were connected on 2026-10-28.
-- [ ] Owner: accept the risk that the real `dask-scheduler` and
+      window. Only those two were connected on 2026-10-28. Answer: the
+      owner confirmed that no other service used the scheduler in the
+      window.
+- [x] Owner: accept the risk that the real `dask-scheduler` and
       `dask-worker` PM2 entries have never been restarted with the
       production certificates (see "Unknown until the window"), or ask for
-      another isolated test first.
-- [ ] Owner: reachable during the whole window for the recovery decisions
-      below.
-- [ ] Owner: name who runs the run sheet. It runs in one shell, and steps
+      another isolated test first. Answer: the owner accepted the risk.
+      In the window both entries restarted cleanly with the production
+      certificates (step 8).
+- [x] Owner: reachable during the whole window for the recovery decisions
+      below. Answer: confirmed. The owner was present and typed the sudo
+      password at the step 4 prompt.
+- [x] Owner: name who runs the run sheet. It runs in one shell, and steps
       4, 6, and 7 need root in that shell, so it must be the owner or a
-      root-capable operator the owner names.
-- [ ] Reviewer: approve this run sheet and its scripts.
-- [ ] Operator: a checkout `SRC` of the approved commit on VM24, with no
+      root-capable operator the owner names. Answer: Claude, as the
+      operator named by the owner, in one SSH shell on VM24. The owner
+      typed the sudo password at its only prompt; sudo did not prompt
+      again in steps 6 and 7.
+- [x] Reviewer: approve this run sheet and its scripts. Answer: Codex
+      reviewed PR #7, which holds this run sheet and its scripts at
+      `6436192`. In its conversation with the owner, Codex found no
+      blocking issue and recommended the merge. That is the review
+      conclusion from that conversation; it is not a formal GitHub
+      review, and PR #7 has no review on GitHub.
+- [x] Operator: a checkout `SRC` of the approved commit on VM24, with no
       tracked changes; step 1 repeats this check in the window. The sha256
       of the seven scripts pinned in step 1 must match that commit.
       `py311_quiescent.sh` runs as root, so its hash matters most. The
       2026-10-28 `prepare` directory stays valid: this change to the
       aligner touches only `rollback`. The `ea22a03` checkout passed these
       checks for six scripts on 2026-10-30 (see "VM24 preflight D record"),
-      but any later approved commit needs its own new checkout.
+      but any later approved commit needs its own new checkout. Answer:
+      `/home/odbadmin/tmp/tide-zarr-6436192` at
+      `64361922fd169a535cd1d9759459ba21660f244f` (the PR #7 merge),
+      approved by the owner. It was built and checked read-only on
+      2026-11-02, and in the window step 1 printed `OK checkout` at
+      08:00:20.
 
 In-window gates, checked in order as they pass. Both must be checked before
 step 7:
 
-- [ ] In the window: preflights A to D pass immediately before the
+- [x] In the window: preflights A to D pass immediately before the
       stop. Preflight D here, like the record above, checks access only.
-- [ ] Owner: root in the window for the full quiescence check of step 6
+      PASS on 2026-11-03:
+      - A at 08:00:28;
+      - B at 08:00:38;
+      - C (`STATE before`) at 08:00:43;
+      - D at 08:01:16, with `OK inspectable` for 490 processes.
+- [x] Owner: root in the window for the full quiescence check of step 6
       (`root_quiescent` inside `stop_services`, run after every service
       stopped). It must read every process's memory maps; as odbadmin it
       fails closed while other users' processes run, and then no `apply`
       is possible. Only this check looks for py311 use, and it must print
-      `OK quiescent`.
+      `OK quiescent`. PASS on 2026-11-03 at 08:03:43:
+      `OK quiescent: none of 482 live processes runs or maps a file from
+      /home/odbadmin/.pyenv/versions/py311/`. Step 7 repeated it before
+      `apply`, with 481 processes.
 
 Only Zarr may change. In the window, run no `pip`, `pyenv`, or `uv`
 command against py311 other than the ones below. Do not re-run `prepare`
@@ -2083,6 +2155,85 @@ What to record here:
 - step 9's log check result, with its `NOTE` line if it printed one, which
   records what the check covered, and the py311 suite counts.
 
+### Maintenance record (2026-11-03)
+
+The run sheet ran once, on 2026-11-03 in the window 08:00–09:00, with VM24
+local time Asia/Taipei (UTC+08:00). The checkout was
+`/home/odbadmin/tmp/tide-zarr-6436192` at `64361922…`, run by Claude as the
+operator named by the owner, in one SSH shell. Every step passed, and no
+Recovery branch ran.
+
+The evidence, with sha256 for every file kept on VM24, is in
+`dev_tpxo10/maintenance/2026-11-03_vm24_py311_zarr.md`.
+
+What this was: the shared py311 Zarr alignment from 2.18.6 to 2.18.7, with
+no other package changed. What it was not: the v0.3.2 runtime deployment, a
+TPXO10 runtime release, or a test of the rollback. The release directory was
+not touched.
+
+- Step 1, 08:00:20: `OK checkout: /home/odbadmin/tmp/tide-zarr-6436192 at
+  6436192, clean, seven scripts match`.
+- Preflights, all PASS:
+  - A, 08:00:28: `OK preflight A: zarr 2.18.6; freeze identical to the
+    prepare snapshot`;
+  - B, 08:00:38: `OK preflight B: PM2 5.4.2 alive; MHW launcher unchanged;
+    no MHW update; four apps online; Dask as expected`;
+  - C, 08:00:43: `STATE before`;
+  - D, 08:01:16: `OK inspectable: all 490 live processes could be read`,
+    exit 0.
+- Step 5, 08:02:34: `OK mhw process`, `PASS mhw http: 4 GETs as expected`,
+  `OK baseline: err.log marked at 4723275 bytes`.
+- Step 6, 08:02:50–08:03:43. The apps stopped in this order: `mhwapi`
+  (96946), `tide` (97326), then `OK drained: clients=0 tasks=0`, then
+  `dask-worker` (101867) and `dask-scheduler` (96637). Each stopped with
+  10 s and no respawn. Then `OK quiescent: none of 482 live processes runs
+  or maps a file from /home/odbadmin/.pyenv/versions/py311/` and
+  `OK services stopped`.
+- Step 7, 08:03:54–08:03:58: `OK quiescent` (481 processes), then
+  `OK apply: zarr 2.18.6 -> 2.18.7, no other package changed, pip check
+  unchanged`, then `STATE after`.
+- Freeze and packages:
+  - `diff $D/freeze-before.txt $D/freeze-after.txt` shows only line 231,
+    `zarr==2.18.6` → `zarr==2.18.7`;
+  - `pip-check-before.txt` and `pip-check-after.txt` are identical;
+  - numcodecs 0.15.1 and numpy 2.2.4 are unchanged.
+- Step 8, 08:04:26–08:05:14. Each app came up online and stable for 10 s:
+  - `dask-scheduler` 609785;
+  - `dask-worker` 610501, whose nanny owns the worker's nanny port;
+  - `tide` 611259, then Tide smoke `PASS prod: HTTP 200 from port 443`;
+  - `mhwapi` 611920, then `PASS mhw http: 4 GETs as expected; point query
+    identical to …-mhw-before`.
+
+  Then `OK ready: clients=4 tasks=0 workers=1` and `OK services started`.
+  Both Dask entries restarted cleanly with the production certificates.
+- Step 9, 08:05:34: `OK no Dask fallback in the active err.log`, without a
+  `NOTE`. The check covers the active log only, as the owner scoped it; no
+  content rotated out of it was checked.
+- Step 9 py311 suite, 08:06:30–08:09:49. It ran in the separate checkout
+  `/home/odbadmin/tmp/tide-zarr-6436192-pytest`, with store symlinks and
+  `TIDE_DASK_DISABLE=1`. Result: 574 passed, 0 skipped, 2 warnings, the
+  known NumPy ABI and Polars CPU-feature ones. `test_pinned_runtime_versions`
+  passed.
+- API downtime, estimated rather than measured, since no timestamp was
+  taken at each stop and start:
+  - both APIs were up at least until 08:02:50 and serving again by 08:05:14;
+  - MHW was down about 2 min 25 s, Tide about 2 min.
+- At the end:
+  - `$SRC` was clean;
+  - `$D` has its `applied` marker, dated 08:03:55, so it accepts no second
+    `apply`;
+  - the four apps were online with the same restart counts as before;
+  - the MHW launcher is now PID 611920, so preflight B's PID 96946 no
+    longer holds for any later run.
+
+Keep `/home/odbadmin/tmp/zarr-align-20261028T103416`: `rollback` depends on
+its 2.18.6 wheel and `zarr-2.18.6.req`. Keep `$D-smoke`, `$D-mhw-before`, and
+`$D-mhw-after` as evidence for now. Two things are left for the owner to
+decide, and nothing has been cleaned:
+
+- the suite checkout with its two store symlinks;
+- the extracted step files in `/home/odbadmin/tmp/zarr-run-20261103`.
+
 ### Recovery
 
 Status: none of these branches has run on VM24, and none is validated there.
@@ -2216,10 +2367,19 @@ Check its log and cron mail.
   path uses it (reads are direct); removing it would also allow retiring
   the `tide-client` identity.
 - Make the py311 runtime reproducible (a lock or recorded freeze) or move
-  production to an environment built from `uv.lock`. Until then the py311
-  suite fails `test_pinned_runtime_versions` (Zarr 2.18.6 vs 2.18.7). The
-  owner authorized aligning Zarr only; see "Production run sheet" for the
-  steps and the items still to settle.
+  production to an environment built from `uv.lock`. The 2026-11-03 Zarr
+  alignment made `test_pinned_runtime_versions` pass with py311, but the
+  other differences from `uv.lock` remain (see "Runtime environment").
+- VM24 data from the 2026-11-03 Zarr maintenance (see "Maintenance record
+  (2026-11-03)"):
+  - keep `/home/odbadmin/tmp/zarr-align-20261028T103416`, since
+    `rollback` depends on it;
+  - keep `$D-smoke`, `$D-mhw-before`, and `$D-mhw-after` as evidence;
+  - the owner decides on the suite checkout
+    `/home/odbadmin/tmp/tide-zarr-6436192-pytest` and its two store
+    symlinks, and on `/home/odbadmin/tmp/zarr-run-20261103`.
+- After the 2026-11-03 Zarr alignment, check the log and cron mail of the
+  next `update_mhw.sh` run on the 18th, the first MHW append under 2.18.7.
 - MHW (for its maintainer, not part of the Zarr maintenance):
   - the monthly `update_mhw.sh` cron cannot find `pm2`, so its
     `pm2 restart mhwapi` has not run since at least July 2026;
