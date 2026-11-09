@@ -1266,7 +1266,6 @@ name = "tide-api"
 version = "0.3.0.dev0"
 source = { virtual = "." }
 dependencies = [
-    { name = "dask", extra = ["complete"] },
     { name = "fastapi", extra = ["standard"] },
     { name = "gunicorn" },
     { name = "matplotlib" },
@@ -1286,13 +1285,15 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+dask-tools = [
+    { name = "dask", extra = ["complete"] },
+]
 dev = [
     { name = "pytest" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "dask", extras = ["complete"], specifier = "==2025.11.0" },
     { name = "fastapi", extras = ["standard"], specifier = "==0.121.1" },
     { name = "gunicorn", specifier = "==23.0.0" },
     { name = "matplotlib", specifier = "==3.10.1" },
@@ -1312,6 +1313,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+dask-tools = [{ name = "dask", extras = ["complete"], specifier = "==2025.11.0" }]
 dev = [{ name = "pytest", specifier = ">=8.3" }]
 
 [[package]]

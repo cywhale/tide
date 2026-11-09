@@ -1,3 +1,8 @@
+#### Unreleased (not deployed) Remove Tide's unused Dask client
+
+    -- Tide no longer creates a client connection to the shared Dask scheduler; `conf/start_app.sh` no longer requires or forwards Tide Dask TLS credentials. The shared scheduler, worker, MHW client, and their TLS configuration are unchanged.
+    -- Dask is removed from Tide's runtime requirements and retained in the `dask-tools` dependency group for local simulation and benchmark tooling.
+
 #### ver 0.0.1 create tpxo9.zarr
 
 #### ver 0.0.2 u,v = U/(D/100) from transport (API not yet)/n1
@@ -89,12 +94,12 @@
     -- TPXO9-atlas-v5 is deprecated for public API users. It remains an operator rollback store only and is documented in deployment/operator notes.
     -- `conf/start_app.sh` made robust for PM2 non-interactive environments by resolving gunicorn through `GUNICORN_BIN`, `uv run`, PATH, or the VM24 py311 fallback.
 
-#### ver 0.3.2 / API v1.1.0 (pending release) Shared Dask mutual TLS
+#### ver 0.3.2 / API v1.1.0 (deployed and tagged 2026-11-03) Shared Dask mutual TLS
 
     -- The Dask client connects only over mutual TLS to a loopback scheduler (`tls://` with a loopback IP, plus CA, client certificate, and key, with `require_encryption=True`); missing, partial, or mismatched settings or a non-loopback address create no client instead of falling back to plaintext, and the API keeps serving.
     -- `conf/start_app.sh` exports the VM24 Tide Dask TLS identity and runs only an explicit absolute `GUNICORN_BIN` or the VM24 py311 Gunicorn; the `uv run` and PATH fallbacks are removed, so a PM2 start never triggers a `uv` environment sync.
     -- Rollback now stays on the current runtime and switches stores by an absolute `TIDE_ZARR_PATH`; the pre-v0.3.0 checkout is no longer a standard rollback path.
     -- Operator scripts: `conf/replace_runtime_files.sh` deploys or restores the runtime manifest by hash-verified atomic renames, one per file (not one transaction; a failure between them is recovered with `restore`), `conf/pm2_restart_check.sh` restarts `tide` with its stored environment and verifies the restart took effect, and `conf/https_smoke.sh` runs a fail-fast HTTPS smoke with certificate verification.
-    -- `conf/py311_zarr_align.sh` (prepare/apply/rollback) aligns only the shared VM24 py311 Zarr 2.18.6 to the pinned 2.18.7 from hash-pinned offline wheels, fails closed on any pip or verification error, and requires the freeze to change only in the zarr line; validated in isolation, not yet run on VM24.
-    -- Stop-first Zarr maintenance (proposed, not yet run on VM24): `conf/pm2_app_lifecycle.sh` stops or starts one PM2 app and verifies it (whole process tree gone, no respawn, no orphan; started with `pm2 restart`, stable, one process tree), `conf/dask_scheduler_check.sh` checks the scheduler read-only for drain and readiness, `conf/py311_quiescent.sh` (run as root) requires that no live process uses py311 and fails closed on any process it cannot inspect, and `conf/py311_zarr_state.sh` reports whether py311 is exactly in the before or after state, including every zarr file against its RECORD. `py311_zarr_align.sh rollback` now uses `--force-reinstall`, so a damaged 2.18.6 is rewritten instead of reported as already satisfied.
+    -- `conf/py311_zarr_align.sh` (prepare/apply/rollback) aligned the shared VM24 py311 Zarr 2.18.6 to 2.18.7 from hash-pinned offline wheels on 2026-11-03; only the zarr line changed in the package freeze, and the py311 test suite passed.
+    -- Stop-first Zarr maintenance ran on VM24 on 2026-11-03: `conf/pm2_app_lifecycle.sh` stopped or started each PM2 app with process-tree and stability checks, `conf/dask_scheduler_check.sh` verified drain/readiness, root `conf/py311_quiescent.sh` confirmed no process used py311, and `conf/py311_zarr_state.sh` verified package state before and after. Rollback was not exercised.
     -- `pm2_app_lifecycle.sh` reads the PM2 5.4.2 `jlist` entry of an app loaded as stopped from a dump, which has no `pid` (found on VM24 in a read-only preflight, where it blocked every mode): every mode now accepts only `online` with a positive integer PID, `stopped` with PID 0 or no or a null `pid` (read as 0), and `errored` with PID 0. Any other pair (including `launching` or `stopping` with PID 0, or stopped with a PID), an unknown status, or a malformed entry fails the read before any pm2 action; `launching` and `stopping` are waited through only for the target app, while polling for the script's own stop or restart of it; any other app in a transition fails the read even then.

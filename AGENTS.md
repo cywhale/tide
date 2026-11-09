@@ -16,16 +16,20 @@ live in `specs/`, and regression fixtures/scripts reside in `test/` and
 Use the production/runtime environment from the repo root:
 ```bash
 uv sync
-TIDE_DASK_DISABLE=1 uv run pytest
+uv run pytest
 ```
 Run the API locally with hot reload when you do not need TLS:
 ```bash
 uvicorn tide_app:app --reload --port 8040
 ```
-`conf/start_app.sh` is the VM24 production launcher: it requires the VM24
-Dask TLS identity files and binds `127.0.0.1:8040`, so it exits early on
-other hosts. For a local production-like stack, run Gunicorn directly. The
-TPXO10 conversion environment is separate:
+`conf/start_app.sh` is the VM24 production launcher: it selects the approved
+Gunicorn binary and binds `127.0.0.1:8040`; Tide does not need Dask TLS files.
+For a local production-like stack, run Gunicorn directly. Dask is kept in the
+`dask-tools` dependency group for local simulation and benchmark tools:
+```bash
+uv sync --group dask-tools
+```
+The TPXO10 conversion environment is separate:
 ```bash
 cd dev_tpxo10
 uv sync
@@ -67,21 +71,17 @@ through hardcoded `xr.open_zarr(...)`. Bbox/map queries must go through
 `plan_bbox()` so `MAX_BBOX_CELLS=500_000` (env
 `TIDE_MAX_BBOX_CELLS`) is enforced before materialization. TPXO10 invalid
 cells (`flag==2`) must propagate as missing/null, never as fabricated zero.
-`TIDE_DASK_DISABLE=1` skips the Dask client for tests/single-process runs;
-TPXO10 store reads use the direct adapter path, so Dask is optional and must
-not be treated as part of the bbox critical path.
+TPXO10 store reads use the direct adapter path (`chunks=None`). The Tide API
+does not create a Dask client or submit Dask tasks. Dask remains available in
+the separate `dask-tools` dependency group for benchmarks and local
+simulation; it is not part of the Tide API runtime dependency set.
 
-The shared Dask scheduler is mutual-TLS only and loopback-only (production
-address `tls://127.0.0.1:8786`). The client must never connect over
-plaintext or to a routable host: unless `DASK_SCHEDULER_ADDRESS` is `tls://`
-with a loopback IP literal (hostnames, even `localhost`, are rejected) and
-`DASK_TLS_CA_FILE`, `DASK_TLS_CLIENT_CERT`, and `DASK_TLS_CLIENT_KEY` are all
-set, `src/dask_client_manager.py` creates no client and the API keeps
-serving. Keep `tests/test_dask_client_manager.py` covering every refusal
-case. The Tide API never submits Dask tasks; the client only holds a
-scheduler connection, and removing it is a planned follow-up slice. Dask
-client credentials are separate from the HTTPS
-`conf/privkey.pem`/`fullchain.pem`; never commit either.
+The shared Dask scheduler remains mutual-TLS and loopback-only for services
+that use it, including MHW. This Tide change removes only the Tide API's
+client and its `tide-client` credential requirement; it does not stop or
+reconfigure the scheduler, worker, MHW client, or their credentials. The
+`src/dask_client_manager.py` module is a no-op compatibility shim during the
+runtime rollout. Never commit Dask or HTTPS credentials.
 
 ## Production Notes
 VM24 production serves TPXO10 from the non-git release directory
@@ -92,11 +92,11 @@ Operator details, rollback commands, and their verification status live in
 `dev_tpxo10/DEPLOYMENT_VM24.md`; host-level Dask TLS operations live in the
 VM24 runbook `/home/odbadmin/python/conf/DASK_TLS_RUNBOOK.md`.
 
-v0.3.2 is a pending release: VM24 still runs v0.3.1 plus the 2026-10-24
-Dask TLS hot patch. Release order: merge, then py311 tests and canary from a
-separate checkout on VM24, then a production deployment only with the
-owner's separate authorization, then the `v0.3.2` tag. Never modify the
-release directory before the canary passes. A deployment writes only the
+v0.3.2 was deployed and tagged `v0.3.2` on 2026-11-03. The separate Tide
+Dask-client-removal change in this branch is not yet deployed; production may
+still use the v0.3.2 client until a separately authorized rollout. Never
+modify the release directory before the applicable canary passes. A
+deployment writes only the
 runtime manifest files, each staged outside the release directory, verified
 by hash, and swapped in with its own atomic rename (Gunicorn runs with
 `--reload`); use `conf/replace_runtime_files.sh` (`deploy`/`restore`) rather
@@ -125,18 +125,17 @@ run.
 Never `pip install` into the shared VM24 py311 by hand. It also serves MHW
 and the Dask scheduler and worker, and Tide and MHW run with `--reload`, so
 they reload as soon as package files change. The owner-authorized Zarr
-2.18.7 alignment goes only through `conf/py311_zarr_align.sh`, from the
-"Production run sheet" in `dev_tpxo10/DEPLOYMENT_VM24.md`: the proposed
-order stops MHW, Tide, the Dask worker, and the Dask scheduler with
-`conf/pm2_app_lifecycle.sh`, requires no process to use py311
+2.18.7 alignment was applied to the shared VM24 py311 on 2026-11-03 through
+`conf/py311_zarr_align.sh`. The validated stop-first order stopped MHW, Tide,
+the Dask worker, and the Dask scheduler with
+`conf/pm2_app_lifecycle.sh`, required no process to use py311
 (`conf/py311_quiescent.sh`, run as root, fails closed on any live process it
-cannot inspect), applies,
-requires `conf/py311_zarr_state.sh` to report the expected state, and only
-then starts the services with their checks. Services never start against
-`STATE unknown`. Run it in an approved window, after every open item in
-that checklist is confirmed. Start a stopped PM2 app with `pm2 restart`
+cannot inspect), applied Zarr, verified the result with
+`conf/py311_zarr_state.sh`, and started the services with their checks.
+Services never started against `STATE unknown`. Start a stopped PM2 app with `pm2 restart`
 (as the lifecycle script does), never `pm2 start NAME`, which can create a
-new app. Do not assume the MHW cron uses py311.
+new app. This 2026-11-03 maintenance is complete; do not repeat it without a
+new owner-approved change. Do not assume the MHW cron uses py311.
 
 For deployment scripts, do not assume an interactive shell PATH.
 `conf/start_app.sh` runs only an explicitly set absolute `GUNICORN_BIN` or
@@ -161,10 +160,14 @@ certificate's hostname with `conf/https_smoke.sh` (`curl --resolve`,
 with an explicit `--prod-port 443`. The internal Gunicorn listener on 8040
 still serves an expired certificate, so verified requests to it fail. Use
 a valid certificate for the canary itself, not the release directory's
-`conf/*.pem`. PM2 dummy configs under `/home/odbadmin/tmp` must be `.cjs`,
+`conf/*.pem`. Dask scheduler TLS checks apply to the shared cluster and its
+clients, not Tide API startup after the client-removal change. PM2 dummy
+configs under `/home/odbadmin/tmp` must be `.cjs`,
 because that tree is in ES module scope. Report Dask transport evidence
 (scheduler client registration, a trivial task with the same credentials)
-separately from the Tide API/store smoke. PM2 environment tests must use a
+separately from the Tide API/store smoke only when testing the shared Dask
+service itself; the Tide API no longer has a Dask client in this branch.
+PM2 environment tests must use a
 separate `PM2_HOME` on every `pm2` command, with a dummy app that has no
 `pre_stop` and is not a `tide_app` process; never use the production
 `conf/ecosystem.config.js` for them. The full procedures are in
