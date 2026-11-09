@@ -1,4 +1,4 @@
-"""v0.3.2 operator scripts: manifest replacement by per-file atomic rename,
+"""Operator scripts: manifest replacement by per-file atomic rename,
 HTTPS smoke, and the verified PM2 restart.
 
 All three run for real against sandboxes (a temp release directory and a
@@ -22,12 +22,14 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPLACE = REPO_ROOT / "conf" / "replace_runtime_files.sh"
 SMOKE = REPO_ROOT / "conf" / "https_smoke.sh"
-MANIFEST = ("conf/start_app.sh", "src/dask_client_manager.py")
+MANIFEST = ("conf/start_app.sh", "tide_app.py", "src/dask_client_manager.py")
 OLD = {"conf/start_app.sh": "#!/bin/bash\necho old launcher\n",
+       "tide_app.py": "OLD_APP = True\n",
        "src/dask_client_manager.py": "OLD_CLIENT = True\n"}
 NEW = {"conf/start_app.sh": "#!/bin/bash\necho new launcher\n",
+       "tide_app.py": "NEW_APP = True\n",
        "src/dask_client_manager.py": "NEW_CLIENT = True\n"}
-OTHER = {"tide_app.py": "app = 1\n", "__init__.py": "",
+OTHER = {"__init__.py": "",
          "src/store_adapter.py": "ADAPTER = 1\n",
          "conf/ecosystem.config.js": "module.exports = {};\n"}
 
@@ -115,7 +117,7 @@ def test_deploy_refuses_existing_work_dir(sb):
 
 
 def test_deploy_hash_mismatch_replaces_nothing(sb):
-    # The second manifest file differs from the commit: the first must not be
+    # A manifest file differs from the commit: no earlier file may be
     # replaced either, because all files are verified before any rename.
     (sb["src"] / "src/dask_client_manager.py").write_text("TAMPERED = True\n")
     before = _contents(sb["rel"])
@@ -125,7 +127,7 @@ def test_deploy_hash_mismatch_replaces_nothing(sb):
     assert _contents(sb["rel"]) == before
 
 
-# `chmod` wrapper: when the second manifest file is staged, alter the first
+# `chmod` wrapper: when the last manifest file is staged, alter the first
 # staged copy (already verified) in the same staging directory.
 STUB_CHMOD_TAMPER = r'''#!/bin/bash
 /bin/chmod "$@" || exit $?
@@ -155,7 +157,7 @@ def test_staged_copy_altered_after_its_check_replaces_nothing(sb, tmp_path, mode
     assert {f: (sb["rel"] / f).stat().st_ino for f in MANIFEST} == before_inodes
 
 
-# `mv` wrapper: after the first rename, alter the second staged copy.
+# `mv` wrapper: after the first rename, alter a later staged copy.
 STUB_MV_TAMPER = r'''#!/bin/bash
 /bin/mv "$@" || exit $?
 for a in "$@"; do last=$a; done
@@ -218,7 +220,7 @@ def test_restore_puts_back_backups(sb):
     assert stat.S_IMODE((sb["rel"] / "conf/start_app.sh").stat().st_mode) == 0o755
 
 
-# Second `mv` (the src/dask_client_manager.py swap) fails outright, or
+# Second `mv` (the tide_app.py swap) fails outright, or
 # "succeeds" but leaves wrong content, after conf/start_app.sh was replaced.
 STUB_MV = r'''#!/bin/bash
 n=$(( $(cat "$MV_COUNT" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$MV_COUNT"
@@ -239,9 +241,9 @@ def test_partial_replacement_failure_is_recoverable_by_restore(sb, tmp_path, mv_
                  env_extra={"MV_COUNT": str(tmp_path / "mv.count"), "MV_MODE": mv_mode})
     assert r.returncode != 0
     assert "restore --rel" in r.stderr          # the error names the recovery
-    # Mixed state: the launcher was replaced, the client was not (or is bad).
+    # Mixed state: the launcher was replaced, but tide_app.py was not (or is bad).
     assert (sb["rel"] / "conf/start_app.sh").read_text() == NEW["conf/start_app.sh"]
-    assert (sb["rel"] / "src/dask_client_manager.py").read_text() != NEW["src/dask_client_manager.py"]
+    assert (sb["rel"] / "tide_app.py").read_text() != NEW["tide_app.py"]
 
     r = _replace(sb, "restore")                 # normal mv again
     assert r.returncode == 0, r.stderr

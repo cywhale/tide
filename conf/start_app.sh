@@ -2,17 +2,9 @@
 
 set -e
 
-DASK_TLS_DIR=/home/odbadmin/.config/dask/tls
-export DASK_SCHEDULER_ADDRESS=tls://127.0.0.1:8786
-export DASK_TLS_CA_FILE="$DASK_TLS_DIR/certs/ca.crt"
-export DASK_TLS_CLIENT_CERT="$DASK_TLS_DIR/certs/tide-client.crt"
-export DASK_TLS_CLIENT_KEY="$DASK_TLS_DIR/private/tide-client.key"
-for tls_file in "$DASK_TLS_CA_FILE" "$DASK_TLS_CLIENT_CERT" "$DASK_TLS_CLIENT_KEY"; do
-  if [ ! -r "$tls_file" ]; then
-    echo "Required Dask TLS file is not readable: $tls_file" >&2
-    exit 1
-  fi
-done
+# Tide no longer uses the shared Dask service. Do not pass inherited client
+# credentials or scheduler settings to the API process.
+unset DASK_SCHEDULER_ADDRESS DASK_TLS_CA_FILE DASK_TLS_CLIENT_CERT DASK_TLS_CLIENT_KEY
 
 # Production runs only the VM24 py311 Gunicorn, or an explicitly configured
 # absolute GUNICORN_BIN. There is deliberately no `uv run` or PATH fallback:

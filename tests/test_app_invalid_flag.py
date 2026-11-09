@@ -3,7 +3,7 @@ MISSING (empty/null), never as 0, across point / const / forecast.
 
 Uses a synthetic tpxo10 toy store (deterministic, no canonical needed)
 with one invalid (flag==2) node and valid ocean nodes; drives the real
-FastAPI app. Dask is disabled (TIDE_DASK_DISABLE) so the app starts fast.
+FastAPI app without requiring a Dask scheduler.
 """
 import importlib
 import os
@@ -55,7 +55,6 @@ def tpxo10_app(tmp_path, monkeypatch):
     ds.to_zarr(store, mode="w", consolidated=True)
 
     monkeypatch.setenv("TIDE_ZARR_PATH", str(store))
-    monkeypatch.setenv("TIDE_DASK_DISABLE", "1")
     # mock the USNO sun/moon dependency so forecast tests never touch the
     # network (reviewer suggestion round 23)
     import src.tide_forecast as tf

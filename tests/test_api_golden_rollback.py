@@ -5,7 +5,7 @@ legacy (tpxo9-shape) store and a synthetic tpxo10 store that encode the
 IDENTICAL quantized hc field, so the API responses must match across
 schemas (rollback parity), plus tpxo10 response-shape / missing / cap
 behavior. Covers /api/tide point, /api/tide bbox, /api/tide/const.
-Dask disabled + USNO mocked -> fast, no network.
+USNO mocked -> deterministic, no network. Tide no longer creates a Dask client.
 """
 import importlib
 
@@ -85,7 +85,6 @@ def _build_stores(tmp_path):
 
 def _client(store, monkeypatch):
     monkeypatch.setenv("TIDE_ZARR_PATH", str(store))
-    monkeypatch.setenv("TIDE_DASK_DISABLE", "1")
     import src.tide_forecast as tf
     monkeypatch.setattr(tf, "_fetch_usno_oneday", lambda *a, **k: (None, ""))
     from fastapi.testclient import TestClient

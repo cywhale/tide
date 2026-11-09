@@ -17,11 +17,7 @@ import src.config as config
 from src import store_adapter
 from src.store_adapter import get_zarr_path
 from src.query_planner import plan_bbox, get_max_bbox_cells, BboxCapError, EmptyBboxError
-# from dask.distributed import Client
-# client = Client('tcp://localhost:8786')
-from src.dask_client_manager import get_dask_client, close_dask_client
 from src.tide_forecast import forecast_router
-client = get_dask_client("tideapi")
 
 
 def generate_custom_openapi():
@@ -64,7 +60,6 @@ async def lifespan(app: FastAPI):
     yield
     # below code to execute when app is shutting down
     config.adapter.ds.close()
-    close_dask_client("tideapi")
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, default_response_class=ORJSONResponse)

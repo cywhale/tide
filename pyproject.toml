@@ -6,7 +6,6 @@ requires-python = ">=3.11,<3.12"
 # Dependencies frozen to the production requirements.txt versions
 # (spec v0.3.0 Stage 0 / D7: runtime stays on pyTMD 2.2.8 + zarr 2.x).
 dependencies = [
-    "dask[complete]==2025.11.0",
     "fastapi[standard]==0.121.1",
     "gunicorn==23.0.0",
     "matplotlib==3.10.1",
@@ -28,6 +27,10 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.3",
+]
+# Dask is only needed by local simulation/benchmark tooling, not Tide API.
+dask-tools = [
+    "dask[complete]==2025.11.0",
 ]
 
 [tool.uv]

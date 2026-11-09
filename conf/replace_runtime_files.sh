@@ -1,5 +1,5 @@
 #!/bin/bash
-# Replace the v0.3.2 runtime manifest in a release directory file by file,
+# Replace the Tide runtime manifest in a release directory file by file,
 # or restore it from the backups taken by an earlier deploy.
 #
 #   replace_runtime_files.sh deploy  --rel DIR --src CHECKOUT --commit SHA --work NEW_DIR
@@ -24,7 +24,7 @@ set -euo pipefail
 # bash >= 4.4: keep errexit inside $(...); critical steps also check explicitly.
 shopt -s inherit_errexit 2>/dev/null || true
 
-MANIFEST=(conf/start_app.sh src/dask_client_manager.py)
+MANIFEST=(conf/start_app.sh tide_app.py src/dask_client_manager.py)
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 usage() { sed -n '2,22p' "$0" >&2; exit 2; }
