@@ -1579,9 +1579,9 @@ def test_sign_offs_are_ticked_with_their_actual_source():
            "order" in flat
     assert "it was not the MHW maintainer's agreement or a confirmation from other Dask " \
            "users" in flat
-    # Every date from the Zarr part to the end is a record of something that
-    # happened, not a future one; 2027-11-25 is the Dask certificate expiry.
-    after = _flat(TEXT[TEXT.index("## Py311 Zarr alignment"):])
+    # Dates in this historical Zarr section must describe events already
+    # recorded there; later deployment records are outside its scope.
+    after = _flat(ZARR_PART)
     dates = set(re.findall(r"2026-1[12]-\d\d|2027-\d\d-\d\d", after)) - {"2027-11-25"}
     assert dates <= {"2026-11-02", "2026-11-03"}, dates
     assert "the next `update_mhw.sh` run on the 18th" in flat
@@ -2177,6 +2177,8 @@ def test_v032_py311_suite_evidence_states_target_command_and_limits():
 DEPLOY_DIR = DOC.parent / "deployment"
 DEPLOY_DOC = DEPLOY_DIR / "2026-11-03_v032_production.md"
 DEPLOY_SUMS = DEPLOY_DIR / "2026-11-03_v032_production.sha256"
+REMOVAL_DOC = DEPLOY_DIR / "2026-11-09_tide_dask_client_removal.md"
+REMOVAL_SUMS = DEPLOY_DIR / "2026-11-09_tide_dask_client_removal.sha256"
 
 
 def test_v032_deployment_record_meets_every_completion_condition():
@@ -2194,10 +2196,11 @@ def test_v032_deployment_record_meets_every_completion_condition():
                  "the production rollback has not been exercised",
                  "this operation did not create a tag; the owner created `v0.3.2` separately later on 2026-11-03"):
         assert must in record, must
-    # The release was deployed and tagged later; the layout says what runs now.
+    # This section records the historical v0.3.2 deployment; current runtime
+    # state is asserted separately by the Dask-client-removal test below.
     head = _flat(TEXT[:TEXT.index("## Shared Dask TLS")])
     assert "runtime manifest deployed to production on 2026-11-03" in head
-    assert "Code: last verified at v0.3.2 since 2026-11-03: the release's runtime files match `ef780ea`." in head
+    assert "v0.3.2 (PR #2, merge commit `ef780ea`)" in head
     for stale in ("Not tagged and not deployed", "are not deployed yet", "pending deployment",
                   "currently on VM24 still has the `uv run`", "What VM24 runs now"):
         assert stale not in _flat(TEXT), stale
@@ -2208,21 +2211,29 @@ def test_v032_deployment_record_meets_every_completion_condition():
     assert tagged == ["v0.3.1 and v0.3.2 (tag `v0.3.2` created 2026-11-03)."], tagged
 
 
-def test_dask_client_removal_rollout_is_scoped_and_not_misrepresented_as_deployed():
+def test_dask_client_removal_rollout_is_scoped_and_records_deployment():
     head = _flat(TEXT[:TEXT.index("## Current Production Layout")])
-    assert "PR #11" in head and "not deployed" in head
-    assert "last verified production runtime remains v0.3.2" in head
+    assert "PR #11" in head and "merged and deployed to production on 2026-11-09" in head
+    assert "no new release version or tag was assigned" in head
+    layout = _flat(TEXT[TEXT.index("## Current Production Layout"):
+                        TEXT.index("## Shared Dask TLS")])
+    assert "Dask-client-removal runtime manifest from PR #11" in layout
+    assert "was deployed on 2026-11-09" in layout
+    assert "has not been deployed" not in layout
+    assert "The v0.3.2 tag remains the latest release tag" in layout
 
     rollout = _flat(TEXT[TEXT.index("## Tide Dask-client removal rollout"):
                          TEXT.index("## Production deployment procedure (v0.3.2 historical)")])
     for must in (
-        "PR #11; merged, not deployed",
+        "PR #11; merged and deployed 2026-11-09",
         "f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8",
         "API version remains v1.1.0",
+        "deployed to `/home/odbadmin/python/tide_tpxo10_atlas_v2` on 2026-11-09",
+        "retire the `tide-client` identity",
         "After the recent Ubuntu/security updates, take a fresh read-only baseline",
         "earlier October/November preflight records do not substitute",
         "Do not run `pip install`, `uv sync`, or any dependency operation on VM24",
-        "No root quiescence check or stop-first Zarr maintenance is needed",
+        "No root quiescence check or stop-first Zarr maintenance was needed",
         "without `TIDE_DASK_DISABLE`",
         "The canary must add none",
         "`conf/start_app.sh`",
@@ -2231,10 +2242,10 @@ def test_dask_client_removal_rollout_is_scoped_and_not_misrepresented_as_deploye
         "This rollout restarts only `tide`",
         "no `Client-tideapi-*` entries after the Tide restart",
         "shared py311 package freeze is unchanged",
-        "never reuse the v0.3.2 deployment work directory",
-        "PR #11 merge is not deployment authorization",
+        "the v0.3.2 work directory was not reused",
+        "The owner authorized this production change on 2026-11-09",
         "The historical v0.3.2 `WORK` is not a valid restore source",
-        "Decide the release version/tag separately",
+        "The owner may assign a release version/tag separately",
     ):
         assert must in rollout, must
 
@@ -2242,6 +2253,51 @@ def test_dask_client_removal_rollout_is_scoped_and_not_misrepresented_as_deploye
     assert "retained as evidence, not for the Dask-client-removal rollout below" in old
     assert "Deployment manifest for v0.3.2 (runtime files only)" in old
     assert "`conf/start_app.sh`" in old and "`src/dask_client_manager.py`" in old
+
+
+def test_dask_client_removal_deployment_evidence_is_complete_and_pinned():
+    evidence = REMOVAL_DOC.read_text()
+    flat = _flat(evidence)
+    for must in (
+        "# Tide Dask-client removal deployment, 2026-11-09",
+        "f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8",
+        "564 passed, 0 skipped, 2 warnings",
+        "Python 3.11.4, Zarr 2.18.7, NumPy 2.2.4",
+        "canary added no Tide Dask client",
+        "One initial observer query failed because its callback parameter did not match the keyword Dask supplied.",
+        "The failed query submitted no task and did not change service state.",
+        "A fresh scheduler client-list read showed **zero** `Client-tideapi-*` entries",
+        "/home/odbadmin/tmp/tide-dask-remove-deploy-20261109T170010",
+        "Tide restart changed PID 716011 to 1044542 and restart count 3 to 4",
+        "No new release version or tag was assigned",
+        "credential retirement is a separate host-level decision",
+    ):
+        assert must in flat, must
+
+    expected = {
+        "/home/odbadmin/tmp/tide-dask-remove-f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8-main.bundle": "ef895d27d96a0101768974631e81609ddf6f9982143cfd98ef21dfe2e812727f",
+        "/home/odbadmin/tmp/tide-dask-remove-f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8-pytest-20261109T165017/pytest.log": "b2b61015c9541e351b6786e87dc8602c56bfa6f26e11f1c73f97a565b44e6889",
+        "/home/odbadmin/tmp/tide-dask-remove-f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8-canary.64oH1i": "d440864d5a421d3224b0bd94dfe3b126b6c98ad91811c36e101bbd9d130dd4bf",
+        "/home/odbadmin/tmp/tide-dask-remove-f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8-smoke/20261109T165604-same-tLixd7/canary.json": "8a3491e0f8525a0719283e23b76fb5d90de9e507376624c20b7d3efa9b897266",
+        "/home/odbadmin/tmp/tide-dask-remove-f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8-smoke/20261109T165604-same-tLixd7/prod.json": "8a3491e0f8525a0719283e23b76fb5d90de9e507376624c20b7d3efa9b897266",
+        "/home/odbadmin/tmp/tide-dask-remove-f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8-smoke/20261109T170021-prod-HXy4r8/prod.json": "8a3491e0f8525a0719283e23b76fb5d90de9e507376624c20b7d3efa9b897266",
+        "/home/odbadmin/tmp/tide-dask-remove-f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8-logdelta.9A4OZp": "e476fbcacf005aac5171ddb50e8eb459b4d03b8379e622e8cf8ab224016f03aa",
+        "/home/odbadmin/tmp/tide-dask-remove-scratch-rehearsal-20261109T165827.log": "7effc820214592298770dea8748354d34ddfca723c22eea6c011af2a595d4738",
+        "/home/odbadmin/tmp/tide-dask-remove-f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8-py311-freeze-before.txt": "41388e8336b30f40e8e61f160c338deabe2b7c5ea52b18115cf307ceed903eb3",
+        "/home/odbadmin/tmp/tide-dask-remove-f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8-py311-freeze-after.txt": "41388e8336b30f40e8e61f160c338deabe2b7c5ea52b18115cf307ceed903eb3",
+        "/home/odbadmin/tmp/tide-dask-remove-deploy-20261109T170010/backup.sha256": "047cf4da03caad37fe82dec209ee186854e931b04166d46733a20ad6650ebe95",
+    }
+    actual = {}
+    for line in REMOVAL_SUMS.read_text().splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64})  (/home/odbadmin/tmp/\S+)", line)
+        assert match, line
+        actual[match.group(2)] = match.group(1)
+    assert actual == expected
+    assert "-----BEGIN" not in evidence
+    assert not re.search(r"(?i)\b(password|passwd|token|secret)\s*[=:]\s*\S", evidence)
+
+    changelog = (DOC.parents[1] / "change_log.md").read_text()
+    assert "Unreleased (production code deployed 2026-11-09; release version/tag pending)" in changelog
 
 
 def test_v032_deployment_evidence_is_consistent_and_scoped():
