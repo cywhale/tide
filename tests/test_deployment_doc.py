@@ -62,7 +62,10 @@ def test_no_angle_bracket_placeholders_in_commands():
         assert not re.search(r"<[A-Za-z][\w.-]*>", c), c
 
 
-CANARY = [b for b in BLOCKS if "gunicorn tide_app:app" in b]
+CANARY = [b for b in BLOCKS if "gunicorn tide_app:app" in b
+          and "export DASK_SCHEDULER_ADDRESS" in b]
+DASK_REMOVAL_CANARY = [b for b in BLOCKS if "gunicorn tide_app:app" in b
+                       and "unset DASK_SCHEDULER_ADDRESS" in b]
 
 
 def test_canary_start_is_a_runnable_block():
@@ -81,6 +84,22 @@ def test_canary_start_is_a_runnable_block():
                    '[[ $head == "$SHA"* ]]', "git diff --quiet HEAD --"):
         assert needle in block, needle
         assert block.index(needle) < block.index("gunicorn tide_app:app")
+
+
+def test_dask_removal_canary_does_not_inherit_or_configure_dask():
+    assert len(DASK_REMOVAL_CANARY) == 1
+    block = DASK_REMOVAL_CANARY[0]
+    assert block.startswith("CANARY_PID=$(\n  set -euo pipefail\n")
+    assert "unset DASK_SCHEDULER_ADDRESS" in block
+    for key in ("DASK_SCHEDULER_ADDRESS", "DASK_TLS_CA_FILE",
+                "DASK_TLS_CLIENT_CERT", "DASK_TLS_CLIENT_KEY",
+                "TIDE_DASK_DISABLE"):
+        assert key in block, key
+        assert block.index(key) < block.index("gunicorn tide_app:app")
+    assert "export DASK_" not in block
+    assert "--reload" not in block
+    assert "--chdir \"$CHECKOUT\"" in block
+    assert "-b 127.0.0.1:8041" in block
 
 
 @pytest.fixture
@@ -2003,7 +2022,7 @@ def test_maintenance_record_says_what_ran_and_what_it_was_not():
             "deployment, not a TPXO10 runtime release, and not a test of the rollback.") in status
     # The Zarr maintenance was not the release; the release is recorded on its own.
     head = _flat(TEXT[:TEXT.index("## Current Production Layout")])
-    assert "Not tagged; the tag is a separate owner decision." in head
+    assert "tag `v0.3.2` created 2026-11-03" in head
     assert "This was not a release and not a runtime deployment" in head
     assert _flat(TEXT[TEXT.index("### Recovery"):]).startswith(
         "### Recovery Status: none of these branches has run on VM24")
@@ -2112,13 +2131,13 @@ def test_v032_py311_suite_ticks_only_the_test_run():
                  "It authorizes no deployment and checks no other item."):
         assert must in suite[0], must
     # The suite item checked nothing else; the deployment authorization was
-    # ticked later with the owner's own answer, and nothing is tagged.
+    # ticked later with the owner's own answer.
     auth = [i for i in items if i.startswith("- [x] Owner authorization for the production "
                                              "deployment (step 4).")]
     assert len(auth) == 1 and "Answer: on 2026-11-03, after PR #9 was merged" in auth[0]
     assert sum(i.startswith("- [ ] ") for i in items) == 0
     head = _flat(TEXT[:TEXT.index("## Current Production Layout")])
-    assert "Not tagged; the tag is a separate owner decision." in head
+    assert "tag `v0.3.2` created 2026-11-03" in head
     record = _flat(TEXT[TEXT.index("### Validation record"):TEXT.index("## Production deployment")])
     assert "**py311 suite, 2026-10-27: not green.**" in record
     assert "**py311 suite rerun, 2026-11-03: green.**" in record
@@ -2173,12 +2192,12 @@ def test_v032_deployment_record_meets_every_completion_condition():
                  "both manifest files equal to `ef780ea`",
                  "`WORK=/home/odbadmin/tmp/tide-v0.3.2-deploy-20261103` holds the backups",
                  "the production rollback has not been exercised",
-                 "**Not done:** no tag"):
+                 "this operation did not create a tag; the owner created `v0.3.2` separately later on 2026-11-03"):
         assert must in record, must
-    # The release is deployed but not tagged, and the layout says what runs now.
+    # The release was deployed and tagged later; the layout says what runs now.
     head = _flat(TEXT[:TEXT.index("## Shared Dask TLS")])
     assert "runtime manifest deployed to production on 2026-11-03" in head
-    assert "Code: v0.3.2 since 2026-11-03: the release's runtime files match `ef780ea`." in head
+    assert "Code: last verified at v0.3.2 since 2026-11-03: the release's runtime files match `ef780ea`." in head
     for stale in ("Not tagged and not deployed", "are not deployed yet", "pending deployment",
                   "currently on VM24 still has the `uv run`", "What VM24 runs now"):
         assert stale not in _flat(TEXT), stale
@@ -2186,15 +2205,49 @@ def test_v032_deployment_record_meets_every_completion_condition():
     assert rollback.startswith("## Rollback Status: **rollback components validated (2026-10-27); "
                                "production rollback not exercised.**")
     tagged = re.findall(r"^- Released \(tagged\): (.*)$", TEXT, flags=re.M)
-    assert tagged == ["v0.3.1."], tagged
-    for claim in ("v0.3.2 is tagged", "tagged v0.3.2", "tag `v0.3.2` was created"):
-        assert claim not in _flat(TEXT), claim
+    assert tagged == ["v0.3.1 and v0.3.2 (tag `v0.3.2` created 2026-11-03)."], tagged
+
+
+def test_dask_client_removal_rollout_is_scoped_and_not_misrepresented_as_deployed():
+    head = _flat(TEXT[:TEXT.index("## Current Production Layout")])
+    assert "PR #11" in head and "not deployed" in head
+    assert "last verified production runtime remains v0.3.2" in head
+
+    rollout = _flat(TEXT[TEXT.index("## Tide Dask-client removal rollout"):
+                         TEXT.index("## Production deployment procedure (v0.3.2 historical)")])
+    for must in (
+        "PR #11; merged, not deployed",
+        "f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8",
+        "API version remains v1.1.0",
+        "After the recent Ubuntu/security updates, take a fresh read-only baseline",
+        "earlier October/November preflight records do not substitute",
+        "Do not run `pip install`, `uv sync`, or any dependency operation on VM24",
+        "No root quiescence check or stop-first Zarr maintenance is needed",
+        "without `TIDE_DASK_DISABLE`",
+        "The canary must add none",
+        "`conf/start_app.sh`",
+        "`tide_app.py`",
+        "`src/dask_client_manager.py`",
+        "This rollout restarts only `tide`",
+        "no `Client-tideapi-*` entries after the Tide restart",
+        "shared py311 package freeze is unchanged",
+        "never reuse the v0.3.2 deployment work directory",
+        "PR #11 merge is not deployment authorization",
+        "The historical v0.3.2 `WORK` is not a valid restore source",
+        "Decide the release version/tag separately",
+    ):
+        assert must in rollout, must
+
+    old = _flat(TEXT[TEXT.index("## Production deployment procedure (v0.3.2 historical)"):])
+    assert "retained as evidence, not for the Dask-client-removal rollout below" in old
+    assert "Deployment manifest for v0.3.2 (runtime files only)" in old
+    assert "`conf/start_app.sh`" in old and "`src/dask_client_manager.py`" in old
 
 
 def test_v032_deployment_evidence_is_consistent_and_scoped():
     flat = _flat(DEPLOY_DOC.read_text())
     for must in ("Every completion condition held, and no `restore` or recovery ran.",
-                 "It is not a tag. `v0.3.2` is not tagged",
+                 "This deployment operation did not create a tag. The owner created tag `v0.3.2` separately after deployment on 2026-11-03.",
                  "It is not a production rollback drill.",
                  "No password was involved, and no root was used.",
                  "`Dask client connection failed` lines since the restart: **0**.",
