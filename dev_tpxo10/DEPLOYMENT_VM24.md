@@ -9,10 +9,10 @@ plus a hot patch of two Tide files). API version: v1.1.0.
   production on 2026-11-03 (see "v0.3.2 production deployment record").
   The owner created its tag after the deployment.
 - Tide Dask-client removal (PR #11, merge commit
-  `f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8`): merged to `main` on
-  2026-11-09, **not deployed**. The last verified production runtime remains
-  v0.3.2; this change needs its own canary, runbook review, and owner
-  authorization before deployment.
+  `f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8`): merged and deployed to
+  production on 2026-11-09. API version remains v1.1.0; no new release
+  version or tag was assigned. See "Tide Dask-client removal rollout" and
+  `dev_tpxo10/deployment/2026-11-09_tide_dask_client_removal.md`.
 - Shared py311 maintenance, 2026-11-03: Zarr aligned from 2.18.6 to 2.18.7,
   and no other package changed. This was not a release and not a runtime
   deployment; see "Py311 Zarr alignment".
@@ -26,13 +26,14 @@ plus a hot patch of two Tide files). API version: v1.1.0.
   files (`tide_app.py`, `__init__.py`, `src/*.py`, `conf/start_app.sh`,
   `conf/ecosystem.config.js`) with the deployed commit. Docs, tests, and
   notebooks are not deployed and may lag.
-- Code: last verified at v0.3.2 since 2026-11-03: the release's runtime
-  files match `ef780ea`. The merged Dask-client-removal change has not been
-  deployed. Before v0.3.2 it ran v0.3.1 plus the 2026-10-24 Dask TLS hot
-  patch of `conf/start_app.sh` and `src/dask_client_manager.py`. Those
-  hot-patched files are recorded verbatim in the repository as the first
-  commit of PR #2 (`7928ebb`), and the deploy's backups of them are kept on
-  VM24.
+- Code: the Dask-client-removal runtime manifest from PR #11, merge commit
+  `f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8`, was deployed on 2026-11-09.
+  The v0.3.2 tag remains the latest release tag; the 2026-11-09 code change
+  has no release version or tag yet. Before the v0.3.2 deployment it ran
+  v0.3.1 plus the 2026-10-24 Dask TLS hot patch of `conf/start_app.sh` and
+  `src/dask_client_manager.py`. Those hot-patched files are recorded
+  verbatim in the repository as the first commit of PR #2 (`7928ebb`), and
+  the deploy's backups of them are kept on VM24.
 - Python runtime: VM24 pyenv `py311` (Python 3.11.4) via
   `/home/odbadmin/.pyenv/versions/py311/bin/gunicorn`. See "Runtime
   environment" below: this environment is not managed by `uv.lock`.
@@ -47,7 +48,9 @@ plus a hot patch of two Tide files). API version: v1.1.0.
 - Runtime store: `data/tpxo10.zarr` (TPXO10-atlas-v2).
 - Rollback store: `/home/odbadmin/python/tide/data/tpxo9.zarr`
   (TPXO9-atlas-v5), served by the current runtime (see "Rollback").
-- Shared Dask: `tls://127.0.0.1:8786`, Tide client identity `tide-client`.
+- Shared Dask: `tls://127.0.0.1:8786`. Tide no longer connects; its old
+  `tide-client` credentials remain on the host and were not retired by this
+  deployment.
 
 The legacy `~/python/tide` checkout (pre-v0.3.0 code) is kept unchanged
 because it holds the TPXO9 store. Its code is not a standard rollback path
@@ -80,12 +83,14 @@ operations (certificate issuance/renewal, scheduler/worker restarts, PM2
 dump handling) are documented in the VM24 runbook
 `/home/odbadmin/python/conf/DASK_TLS_RUNBOOK.md`, not in this repository.
 
-The last verified production runtime, v0.3.2, keeps Tide's Dask client. The
-Tide API never submits Dask tasks: reads use the direct adapter path
-(`chunks=None`), and the client only holds a connection to the scheduler.
-PR #11 removes this unused client in code, but that change is merged and not
-deployed yet; until its separate rollout passes, treat the production
-`tide-client` connection and credentials as active.
+Before 2026-11-09, the production runtime kept Tide's Dask client. The Tide
+API never submitted Dask tasks: reads use the direct adapter path
+(`chunks=None`), and the client only held a connection to the scheduler.
+PR #11 removed this unused client and was deployed on 2026-11-09; the
+post-restart scheduler check found no `Client-tideapi-*` entries. The shared
+Dask scheduler, worker, MHW clients, and TLS configuration were not changed.
+The `tide-client` certificate and key files remain present; retiring that
+identity is a separate host-level change and was not part of this rollout.
 
 What VM24 ran from 2026-10-24 until the v0.3.2 deployment on 2026-11-03
 (the hot patch; its files are kept in the deploy's `WORK/backup`):
@@ -403,20 +408,21 @@ matched the commit. No service was stopped, started, or restarted, and no
   See "MHW facts for the maintenance" and "MHW restart and post-restart
   smoke".
 
-## Tide Dask-client removal rollout (PR #11; merged, not deployed)
+## Tide Dask-client removal rollout (PR #11; merged and deployed 2026-11-09)
 
 Target code commit: `f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8` (PR #11
-merge). The last verified production runtime is still v0.3.2 and still opens
-Tide Dask clients. API version remains v1.1.0. The changelog entry is
-Unreleased; the owner will select any release version/tag separately.
+merge), deployed to `/home/odbadmin/python/tide_tpxo10_atlas_v2` on
+2026-11-09. API version remains v1.1.0. No new release version or tag was
+assigned; the changelog entry remains Unreleased pending that decision.
 
-This rollout changes Tide only. It does not uninstall Dask from shared
+This rollout changed Tide only. It did not uninstall Dask from shared
 py311, stop or reconfigure the Dask scheduler/worker or MHW, change their
 TLS credentials, or retire the `tide-client` identity. Do not run `pip
 install`, `uv sync`, or any dependency operation on VM24 for this rollout.
-No root quiescence check or stop-first Zarr maintenance is needed: no shared
-Python packages are changed. The production change still requires its own
-canary, review, and explicit owner authorization.
+No root quiescence check or stop-first Zarr maintenance was needed: no
+shared Python packages changed. The deployment evidence is recorded in
+`dev_tpxo10/deployment/2026-11-09_tide_dask_client_removal.md`; the
+pre-deployment procedure and recovery commands below are retained for audit.
 
 ### Pre-deployment validation
 
@@ -489,12 +495,10 @@ canary, review, and explicit owner authorization.
 
 ### Production deployment
 
-This is a separate production change; PR #11 merge is not deployment
-authorization. Before the owner authorizes it, rehearse the current
-`conf/replace_runtime_files.sh` on a scratch copy on VM24 and confirm the
-three-file manifest and restore behavior. Use a new `WORK` directory; never
-reuse the v0.3.2 deployment work directory, whose backup record contains
-only the historical two-file manifest.
+The owner authorized this production change on 2026-11-09. Before it ran,
+`conf/replace_runtime_files.sh` was rehearsed on a scratch copy on VM24 and
+its three-file manifest and restore behavior passed. The production deploy
+used a new `WORK` directory; the v0.3.2 work directory was not reused.
 
 The scratch rehearsal must prove: deploy replaces exactly the three staged
 files with target-commit hashes; a reused `WORK` is refused; an edited source
@@ -531,20 +535,20 @@ Replacing Python files can trigger Gunicorn `--reload`; after `OK deploy`,
 run the restart and smoke chain above. This rollout restarts only `tide`; do
 not stop or restart `mhwapi`, `dask-worker`, or `dask-scheduler`.
 
-Completion checks:
+Completion checks (all passed on 2026-11-09; detailed evidence is linked above):
 
-- `OK deploy`, `OK restart`, and `PASS prod` all appear for this attempt.
+- `OK deploy`, `OK restart`, and `PASS prod` appeared for this attempt.
 - All three manifest files match the target commit; non-manifest runtime
   files are unchanged.
-- Tide is online and the production HTTPS point smoke returns HTTP 200.
-- The scheduler has no `Client-tideapi-*` entries after the Tide restart.
+- Tide is online and the production HTTPS point smoke returned HTTP 200.
+- The scheduler had no `Client-tideapi-*` entries after the Tide restart.
   Other clients, including MHW, are not required to be absent.
 - MHW, scheduler, and worker remain online with their pre-deploy PIDs; the
   shared py311 package freeze is unchanged.
 - No new Tide Dask connection attempt or startup failure appears in the
   relevant log interval.
 
-If a check fails while the PM2 daemon is alive, restore the three backups
+If a future check fails while the PM2 daemon is alive, restore the three backups
 from this attempt's `WORK` with the same target checkout, then run the
 verified Tide restart and smoke:
 
@@ -560,9 +564,8 @@ If the PM2 daemon check reports a
 daemon failure, follow the existing "Daemon failures" stop-and-report
 procedure; do not invoke PM2 or restore independently.
 
-After a successful rollout, update this runbook and the changelog with the
-evidence. Decide the release version/tag separately; do not imply that
-merging PR #11 created a release or deployed it.
+The owner may assign a release version/tag separately. The PR #11 merge and
+this deployment did not create a release tag; do not imply otherwise.
 
 ## Production deployment procedure (v0.3.2 historical)
 
@@ -2620,11 +2623,10 @@ Check its log and cron mail.
 
 ## Open Operational Items
 
-- Tide Dask-client removal (PR #11) is merged but not deployed. After its
-  authorized rollout, verify that Tide has no scheduler client before
-  considering retirement of the `tide-client` identity. Credential removal
-  is a separate host-level change and must not affect MHW or the shared
-  Dask cluster.
+- Tide Dask-client removal (PR #11) was deployed on 2026-11-09; the
+  scheduler showed no Tide client after restart. The `tide-client` files
+  remain on the host. Any retirement is a separate, owner-authorized
+  host-level change and must not affect MHW or the shared Dask cluster.
 - Make the py311 runtime reproducible (a lock or recorded freeze) or move
   production to an environment built from `uv.lock`. The 2026-11-03 Zarr
   alignment made `test_pinned_runtime_versions` pass with py311, but the

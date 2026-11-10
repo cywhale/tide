@@ -1,4 +1,4 @@
-#### Unreleased (not deployed) Remove Tide's unused Dask client
+#### Unreleased (production code deployed 2026-11-09; release version/tag pending) Remove Tide's unused Dask client
 
     -- Tide no longer creates a client connection to the shared Dask scheduler; `conf/start_app.sh` no longer requires or forwards Tide Dask TLS credentials. The shared scheduler, worker, MHW client, and their TLS configuration are unchanged.
     -- Dask is removed from Tide's runtime requirements and retained in the `dask-tools` dependency group for local simulation and benchmark tooling.
