@@ -4,15 +4,15 @@ Initial TPXO10 cutover: 2026-06-18. Formal v0.3.1 release-directory
 cleanup: 2026-07-08. Shared Dask mutual TLS on VM24: 2026-10-24 (host change
 plus a hot patch of two Tide files). API version: v1.1.0.
 
-- Released (tagged): v0.3.1 and v0.3.2 (tag `v0.3.2` created 2026-11-03).
+- Previously tagged releases: v0.3.1 and v0.3.2 (tag `v0.3.2` created
+  2026-11-03).
 - v0.3.2 (PR #2, merge commit `ef780ea`): runtime manifest deployed to
   production on 2026-11-03 (see "v0.3.2 production deployment record").
   The owner created its tag after the deployment.
-- Tide Dask-client removal (PR #11, merge commit
-  `f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8`): merged and deployed to
-  production on 2026-11-09. API version remains v1.1.0; no new release
-  version or tag was assigned. See "Tide Dask-client removal rollout" and
-  `dev_tpxo10/deployment/2026-11-09_tide_dask_client_removal.md`.
+- v0.3.3 / API v1.1.0 (Tide Dask-client removal; PR #11, merge commit
+  `f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8`): deployed to production on
+  2026-11-09. See "Tide Dask-client removal rollout" and the deployment
+  evidence. The API version remains v1.1.0.
 - Shared py311 maintenance, 2026-11-03: Zarr aligned from 2.18.6 to 2.18.7,
   and no other package changed. This was not a release and not a runtime
   deployment; see "Py311 Zarr alignment".
@@ -27,9 +27,8 @@ plus a hot patch of two Tide files). API version: v1.1.0.
   `conf/ecosystem.config.js`) with the deployed commit. Docs, tests, and
   notebooks are not deployed and may lag.
 - Code: the Dask-client-removal runtime manifest from PR #11, merge commit
-  `f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8`, was deployed on 2026-11-09.
-  The v0.3.2 tag remains the latest release tag; the 2026-11-09 code change
-  has no release version or tag yet. Before the v0.3.2 deployment it ran
+  `f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8`, was deployed on 2026-11-09
+  and is designated v0.3.3 / API v1.1.0. Before the v0.3.2 deployment it ran
   v0.3.1 plus the 2026-10-24 Dask TLS hot patch of `conf/start_app.sh` and
   `src/dask_client_manager.py`. Those hot-patched files are recorded
   verbatim in the repository as the first commit of PR #2 (`7928ebb`), and
@@ -412,8 +411,9 @@ matched the commit. No service was stopped, started, or restarted, and no
 
 Target code commit: `f9c1e47f14f3048a5a04d117c4cb8c05943bc5f8` (PR #11
 merge), deployed to `/home/odbadmin/python/tide_tpxo10_atlas_v2` on
-2026-11-09. API version remains v1.1.0. No new release version or tag was
-assigned; the changelog entry remains Unreleased pending that decision.
+2026-11-09. This deployed change is designated v0.3.3; the API version
+remains v1.1.0. The initial deployment record below preserves the state as
+it was recorded on deployment day.
 
 This rollout changed Tide only. It did not uninstall Dask from shared
 py311, stop or reconfigure the Dask scheduler/worker or MHW, change their
