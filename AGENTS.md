@@ -80,8 +80,9 @@ The shared Dask scheduler remains mutual-TLS and loopback-only for services
 that use it, including MHW. This Tide change removes only the Tide API's
 client and its `tide-client` credential requirement; it does not stop or
 reconfigure the scheduler, worker, MHW client, or their credentials. The
-`src/dask_client_manager.py` module is a no-op compatibility shim during the
-runtime rollout. Never commit Dask or HTTPS credentials.
+`src/dask_client_manager.py` module remains as a no-op compatibility shim;
+the Tide Dask-client removal is deployed. Never commit Dask or HTTPS
+credentials.
 
 ## Production Notes
 VM24 production serves TPXO10 from the non-git release directory
@@ -92,12 +93,12 @@ Operator details, rollback commands, and their verification status live in
 `dev_tpxo10/DEPLOYMENT_VM24.md`; host-level Dask TLS operations live in the
 VM24 runbook `/home/odbadmin/python/conf/DASK_TLS_RUNBOOK.md`.
 
-v0.3.2 was deployed and tagged `v0.3.2` on 2026-11-03. The separate Tide
-Dask-client-removal change in this branch is not yet deployed; production may
-still use the v0.3.2 client until a separately authorized rollout. Never
-modify the release directory before the applicable canary passes. A
-deployment writes only the
-runtime manifest files, each staged outside the release directory, verified
+The production runtime is designated v0.3.3 / API v1.1.0. The Tide
+Dask-client-removal change (PR #11) was deployed on 2026-11-09; Tide no longer
+connects to the shared Dask scheduler. The v0.3.2 release was the previous
+tagged version. Never modify the release directory before the applicable
+canary passes. Deployments write only runtime manifest files, each staged
+outside the release directory, verified
 by hash, and swapped in with its own atomic rename (Gunicorn runs with
 `--reload`); use `conf/replace_runtime_files.sh` (`deploy`/`restore`) rather
 than hand-typed commands. The renames together are not one transaction: if
@@ -166,7 +167,7 @@ configs under `/home/odbadmin/tmp` must be `.cjs`,
 because that tree is in ES module scope. Report Dask transport evidence
 (scheduler client registration, a trivial task with the same credentials)
 separately from the Tide API/store smoke only when testing the shared Dask
-service itself; the Tide API no longer has a Dask client in this branch.
+service itself; the deployed Tide API no longer has a Dask client.
 PM2 environment tests must use a
 separate `PM2_HOME` on every `pm2` command, with a dummy app that has no
 `pre_stop` and is not a `tide_app` process; never use the production

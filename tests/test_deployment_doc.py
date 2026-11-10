@@ -2207,20 +2207,20 @@ def test_v032_deployment_record_meets_every_completion_condition():
     rollback = _flat(_section("## Rollback"))
     assert rollback.startswith("## Rollback Status: **rollback components validated (2026-10-27); "
                                "production rollback not exercised.**")
-    tagged = re.findall(r"^- Released \(tagged\): (.*)$", TEXT, flags=re.M)
-    assert tagged == ["v0.3.1 and v0.3.2 (tag `v0.3.2` created 2026-11-03)."], tagged
+    assert ("Previously tagged releases: v0.3.1 and v0.3.2 "
+            "(tag `v0.3.2` created 2026-11-03).") in head
 
 
 def test_dask_client_removal_rollout_is_scoped_and_records_deployment():
     head = _flat(TEXT[:TEXT.index("## Current Production Layout")])
-    assert "PR #11" in head and "merged and deployed to production on 2026-11-09" in head
-    assert "no new release version or tag was assigned" in head
+    assert "PR #11" in head and "deployed to production on 2026-11-09" in head
+    assert "v0.3.3 / API v1.1.0 (Tide Dask-client removal;" in head
     layout = _flat(TEXT[TEXT.index("## Current Production Layout"):
                         TEXT.index("## Shared Dask TLS")])
     assert "Dask-client-removal runtime manifest from PR #11" in layout
     assert "was deployed on 2026-11-09" in layout
     assert "has not been deployed" not in layout
-    assert "The v0.3.2 tag remains the latest release tag" in layout
+    assert "is designated v0.3.3 / API v1.1.0" in layout
 
     rollout = _flat(TEXT[TEXT.index("## Tide Dask-client removal rollout"):
                          TEXT.index("## Production deployment procedure (v0.3.2 historical)")])
@@ -2253,6 +2253,20 @@ def test_dask_client_removal_rollout_is_scoped_and_records_deployment():
     assert "retained as evidence, not for the Dask-client-removal rollout below" in old
     assert "Deployment manifest for v0.3.2 (runtime files only)" in old
     assert "`conf/start_app.sh`" in old and "`src/dask_client_manager.py`" in old
+
+
+def test_v033_release_status_is_current_in_maintainer_docs():
+    changelog = (DOC.parents[1] / "change_log.md").read_text()
+    agents = (DOC.parents[1] / "AGENTS.md").read_text()
+    workspace = (DOC.parent / "README.md").read_text()
+
+    assert changelog.startswith(
+        "#### ver 0.3.3 / API v1.1.0 (production deployed 2026-11-09)")
+    assert "designated v0.3.3 / API v1.1.0" in agents
+    assert "deployed on 2026-11-09" in agents
+    assert "not yet deployed" not in agents
+    assert "production now runs v0.3.3 / API v1.1.0" in workspace
+    assert "Deployment to VM24 is not part of this workspace" not in workspace
 
 
 def test_dask_client_removal_deployment_evidence_is_complete_and_pinned():
@@ -2297,7 +2311,7 @@ def test_dask_client_removal_deployment_evidence_is_complete_and_pinned():
     assert not re.search(r"(?i)\b(password|passwd|token|secret)\s*[=:]\s*\S", evidence)
 
     changelog = (DOC.parents[1] / "change_log.md").read_text()
-    assert "Unreleased (production code deployed 2026-11-09; release version/tag pending)" in changelog
+    assert "ver 0.3.3 / API v1.1.0 (production deployed 2026-11-09)" in changelog
 
 
 def test_v032_deployment_evidence_is_consistent_and_scoped():

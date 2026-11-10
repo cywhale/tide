@@ -47,7 +47,8 @@ temporary `.zarr.partial` directories.
 
 ## Current Status
 
-As of v0.3.0 pre-deployment, all binding gates are green:
+The v0.3.0 migration's binding gates were completed before deployment and are
+recorded in `TESTING.md` and `STAGE3_G3_CLOSEOUT.md`:
 
 - G0 source/environment inspection.
 - G1 conversion contract and chunk/open-mode decisions.
@@ -55,9 +56,12 @@ As of v0.3.0 pre-deployment, all binding gates are green:
 - G3 runtime migration, performance warm/cold, T-D2 prediction golden, and
   NOAA T-F observation gate.
 
-Deployment to VM24 is not part of this workspace. Codex owns the rollout:
-isolated worktree, out-of-band `data/tpxo10.zarr` transfer, service switch,
-smoke tests, and rollback drill. See `STAGE3_G3_CLOSEOUT.md`.
+VM24 production now runs v0.3.3 / API v1.1.0 with TPXO10-atlas-v2; the Tide
+Dask-client removal was deployed on 2026-11-09. This directory remains the
+conversion, validation, and evidence workspace, not the production runtime.
+Current host procedures and deployment records are in
+`dev_tpxo10/DEPLOYMENT_VM24.md`; `STAGE3_G3_CLOSEOUT.md` is the historical
+v0.3.0 handoff.
 
 ## Visual QA Notebook
 
